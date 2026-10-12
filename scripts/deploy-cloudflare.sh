@@ -14,7 +14,8 @@ else
 fi
 echo "==> 2/6 D1 データベースを用意"
 npx --yes wrangler@4 d1 create "$DB_NAME" || true
-DB_ID=$(npx --yes wrangler@4 d1 list --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s);const r=Array.isArray(a)?a:(a.result||[]);const m=r.find(x=>x.name===process.env.DB_NAME);console.log(m?m.uuid||m.id:'')})")
+DB_ID=$(npx --yes wrangler@4 d1 list --json 2>/dev/null | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{let a;try{a=JSON.parse(s)}catch(e){return}const r=Array.isArray(a)?a:(a.result||a.databases||[]);const m=r.find(x=>x.name===process.env.DB_NAME);console.log(m?(m.uuid||m.id||''):'')})" || true)
+if [ -z "$DB_ID" ] && [ -n "${D1_DATABASE_ID:-}" ]; then DB_ID="$D1_DATABASE_ID"; fi
 if [ -z "$DB_ID" ]; then echo "D1 のIDを取得できませんでした。Cloudflare ダッシュボードの D1 画面で確認し、wrangler.toml の database_id を書き換えてください。"; exit 1; fi
 echo "    database_id = $DB_ID"
 sed -i.bak "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/$DB_ID/" wrangler.toml && rm -f wrangler.toml.bak

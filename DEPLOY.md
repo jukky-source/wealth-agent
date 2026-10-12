@@ -1,3 +1,18 @@
+# Wealth Agent — 常設デプロイ手順
+
+## 稼働中のURL（デプロイ済み）
+
+| 項目 | 値 |
+|---|---|
+| アプリURL | https://wealth-agent.wealthagent-app.workers.dev |
+| ホスティング | Cloudflare Workers（無料枠） |
+| DB | Cloudflare D1 `wealth-agent`（無料枠） |
+| スケジューラ | Cron `*/5 * * * *`（稼働中） |
+| 認証 | `OWNER_TOKEN` を設定済み。iPhone で初回に1回入力 |
+
+iPhone の Safari でアプリURLを開き、「共有 → ホーム画面に追加」で常設アイコンになります。
+`OWNER_TOKEN` の値はこのリポジトリには保存していません（デプロイ実行者が保管してください）。
+
 # デプロイ手順（無料枠のみ / 0円運用）
 
 ## まず「常設」させる方法は3つ（おすすめ順）

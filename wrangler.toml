@@ -17,7 +17,7 @@ not_found_handling = "single-page-application"
 [[d1_databases]]
 binding = "DB"
 database_name = "wealth-agent"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "ceb1ddc7-0351-4d0f-afbd-ac8989814e74"
 
 [observability]
 enabled = true
@@ -38,3 +38,4 @@ AGENT_NAME = "Wealth Agent"
 ENGINE_STEPS_PER_TICK = "3"
 AI_DAILY_CALL_BUDGET = "300"
 ALLOW_PAID_AI = "false"
+RUNNER_ENABLED = "true"
