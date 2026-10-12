@@ -17,6 +17,15 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       DB_NAME: wealth-agent
     steps:
+      - name: 認証情報の確認（未設定ならデプロイをスキップ）
+        id: gate
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN が未設定のためデプロイをスキップしました（テストのみ実行）"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -29,13 +38,15 @@ jobs:
           node tests/fleet.test.mjs
           node tests/runner.test.mjs
       - name: D1 を用意してIDを書き込む
+        if: steps.gate.outputs.ok == 'true'
         run: |
           npx --yes wrangler@4 d1 create "$DB_NAME" || true
           DB_ID=$(npx --yes wrangler@4 d1 list --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s);const r=Array.isArray(a)?a:(a.result||[]);const m=r.find(x=>x.name===process.env.DB_NAME);console.log(m?m.uuid||m.id:'')})")
           test -n "$DB_ID" || { echo "D1 ID を取得できませんでした"; exit 1; }
-          sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/$DB_ID/" wrangler.toml
+          sed -i -E "s/^database_id = \".*\"/database_id = \"$DB_ID\"/; s/REPLACE_WITH_YOUR_D1_DATABASE_ID/$DB_ID/" wrangler.toml
           npx --yes wrangler@4 d1 execute "$DB_NAME" --file=./schema.sql --remote
       - name: シークレットを反映（未設定はスキップ）
+        if: steps.gate.outputs.ok == 'true'
         run: |
           push() { name="$1"; value="$2"; if [ -n "$value" ]; then printf '%s' "$value" | npx --yes wrangler@4 secret put "$name"; echo "secret $name を反映"; else echo "secret $name は未設定のためスキップ"; fi; }
           push OWNER_TOKEN "${{ secrets.OWNER_TOKEN }}"
@@ -44,4 +55,5 @@ jobs:
           push OPENROUTER_API_KEY "${{ secrets.OPENROUTER_API_KEY }}"
           push RUNNER_TOKEN "${{ secrets.RUNNER_TOKEN }}"
       - name: デプロイ
+        if: steps.gate.outputs.ok == 'true'
         run: npx --yes wrangler@4 deploy
