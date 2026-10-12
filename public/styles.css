@@ -10,8 +10,8 @@
   --line:#232329;
   --line-2:#2f2f38;
   --fg:#f4f4f6;
-  --fg-2:#a6a6b0;
-  --mut:#71717c;
+  --fg-2:#b9b9c3;
+  --mut:#91919d;
   --accent:#6d8cff;
   --accent-soft:rgba(109,140,255,.14);
   --ok:#3ecf8e;
@@ -74,7 +74,7 @@ body::before{
 .icon-btn:active{background:var(--panel)}
 
 /* ------------------------------------------------------------------ thread */
-.thread{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:18px 14px 6px;display:flex;flex-direction:column;gap:14px;scrollbar-width:none}
+.thread{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:18px 14px 14px;display:flex;flex-direction:column;gap:14px;scrollbar-width:none}
 .thread::-webkit-scrollbar{display:none}
 
 .m{display:flex;flex-direction:column;max-width:88%;animation:in .26s ease both}

@@ -141,11 +141,9 @@ const RULES = [
       if (tasks.length) cards.push(taskList(tasks, 'いま動いている作業'));
       const progress = m.mission?.progress != null ? `（進捗 ${m.mission.progress}%）` : '';
       const lines = [
-        `エンジンは${st.status === 'running' ? '稼働中' : st.status === 'paused' ? '一時停止中' : '停止中'}です。`,
-        m.mission ? `目標「${m.mission.title}」${progress}に取り組んでいます。` : 'まだ目標が設定されていません。',
-        `作業は 実行中 ${m.counts.running} 件 / 待機 ${m.counts.queued} 件 / 完了 ${m.counts.completed} 件${m.counts.failed ? ` / 失敗 ${m.counts.failed} 件` : ''}。`,
-        m.led.revenue.measured > 0 ? `実測収益は ${yen(m.led.revenue.measured)} です。` : '実測収益はまだ0円です（推定値は実績に数えていません）。',
-        m.lastSuccess?.title ? `直近の完了: ${m.lastSuccess.title}` : null,
+      const lines = [
+        `エンジンは${st.status === 'running' ? '稼働中' : st.status === 'paused' ? '一時停止中' : '停止中'}です。${m.mission ? `目標「${m.mission.title}」${progress}を進めています。` : 'まだ目標が設定されていません。'}`,
+        m.lastSuccess?.title ? `直近で終わったのは「${m.lastSuccess.title}」です。` : null,
       ].filter(Boolean);
       if (m.counts.waiting) events.push({ text: `あなたの判断待ちが ${m.counts.waiting} 件あります`, tone: 'warn' });
       return { reply: lines.join('\n'), cards, events, suggest: ['次の一手を進めて', '収益はいくら？', '始めて'] };
@@ -190,7 +188,7 @@ const RULES = [
       const ok = steps.filter((x) => x.result !== 'failed' && x.ok !== false).length;
       const lines = [
         steps.length ? `${steps.length}ステップ進めました（完了 ${ok} / 失敗 ${steps.length - ok}）。` : '実行できるステップがありませんでした。目標が未設定かもしれません。',
-        `いま 実行中 ${m.counts.running} 件・待機 ${m.counts.queued} 件、完了は通算 ${m.counts.completed} 件です。`,
+        'いまの状況はこちらです。',
       ];
       return {
         reply: lines.join('\n'),
@@ -275,8 +273,8 @@ const RULES = [
       const m = await boardMetrics(d);
       return {
         reply: m.led.revenue.measured > 0
-          ? `実測の収益は ${yen(m.led.revenue.measured)}、そこから費用を引いた純益は ${yen(m.led.net_profit_measured)} です。推定収益 ${yen(m.led.revenue.total_estimated)} は実績に数えていません。`
-          : `まだ実測の収益は0円です。推定で ${yen(m.led.revenue.total_estimated)} ぶんの見込みはありますが、実績としては数えません。稼げそうな候補から確度の高い順に進めます。`,
+          ? '実測でこれだけ入っています。内訳はこちらです。'
+          : 'まだ実測の収益は0円です。下の見込みは実績には数えません。確度の高い候補から進めます。',
         cards: [moneyCard(m.led)],
         suggest: ['稼げる方法を探して', '次の一手を進めて'],
       };
