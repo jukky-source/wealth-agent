@@ -16,12 +16,16 @@ const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
 function amountOf(s) {
+  // `first()` returns the WHOLE match ("3000円"), so strip everything that is
+  // not a digit before converting — otherwise Number() is NaN and the amount is
+  // silently dropped.
+  const num = (x) => Number(String(x).replace(/[^\d.]/g, ''));
   const man = first(/(\d[\d,]*(?:\.\d+)?)\s*万/, s);
-  if (man) return Math.round(Number(man.replace(/,/g, '')) * 10000);
+  if (man && Number.isFinite(num(man))) return Math.round(num(man) * 10000);
   const en = first(/(\d[\d,]*(?:\.\d+)?)\s*円/, s);
-  if (en) return Math.round(Number(en.replace(/,/g, '')));
+  if (en && Number.isFinite(num(en))) return Math.round(num(en));
   const bare = first(/(?:^|\s)(\d{3,})(?:\s|$)/, s);
-  if (bare) return Math.round(Number(bare));
+  if (bare && Number.isFinite(num(bare))) return Math.round(num(bare));
   return null;
 }
 
@@ -227,6 +231,30 @@ const RULES = [
       } catch { planned = 0; }
       return {
         reply: `目標を「${title}」に設定しました。${planned ? `最初の${planned}件の作業に分解して、キューに入れました。` : 'これから作業に分解します。'}\n「始めて」と言えば自走を開始します。`,
+        suggest: ['始めて', '今どうなってる？'],
+      };
+    },
+  },
+  {
+    id: 'learn',
+    // Grok Bot's best trick: watch how the work was done once, then run it as a
+    // routine next time. Here the routine is built from the steps that actually
+    // completed, so it can only contain things the agent really did.
+    test: (s) => has(s, '手順を覚え', 'この手順', 'このやり方', 'ルーティン', '定型', 'やり方を覚え', '手順として'),
+    run: async (s, d) => {
+      const rows = await d.store.all(
+        `SELECT title, tool_name FROM tasks WHERE state='completed' ORDER BY finished_at DESC LIMIT 6`).catch(() => []);
+      if (!rows.length) {
+        return { reply: '覚えられる手順がまだありません。先に作業をいくつか進めてもらえれば、その流れを定型として保存します。' };
+      }
+      const steps = rows.reverse().map((r, i) => ({ id: `step${i + 1}`, title: r.title, tool: r.tool_name || 'noop', args: {} }));
+      const w = await d.workflows.save({
+        name: `覚えた手順 ${new Date().toLocaleDateString('ja-JP')}`,
+        definition: { schedule: '0 9 * * *', steps },
+      });
+      return {
+        reply: `直近に完了した作業 ${steps.length} 件から手順を組み立てて、「${w?.name || '定型'}」として保存しました。次からは同じ流れを自分で回します。違う動きをさせたいときは、その場で直してください。`,
+        cards: [{ type: 'list', icon: 'branch', title: '保存した手順', items: steps.map((x, i) => ({ title: `${i + 1}. ${x.title}`, sub: x.tool, badge: null })) }],
         suggest: ['始めて', '今どうなってる？'],
       };
     },

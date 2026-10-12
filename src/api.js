@@ -591,13 +591,97 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
     return { ok: true, reply: r.text, provider: r.provider, fallback: !!r.fallback, note: r.note || null };
   });
 
+  // ---------------------------------------------------------------- threads
+  // The conversation list the owner keeps on the left. Stored in D1 so a thread
+  // started on the phone continues on the desktop.
+  on('GET', '/api/threads', async (req) => {
+    const q = String(req?.query?.get?.('q') || '').trim();
+    const rows = await store.all(
+      `SELECT t.*,
+              (SELECT text FROM chat_messages m WHERE m.thread_id=t.id ORDER BY m.created_at DESC LIMIT 1) AS preview,
+              (SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id=t.id) AS message_count
+         FROM chat_threads t ${q ? 'WHERE t.title LIKE ?' : ''}
+        ORDER BY t.pinned DESC, t.updated_at DESC LIMIT 100`,
+      ...(q ? [`%${q}%`] : []),
+    );
+    return { ok: true, threads: rows, query: q || null };
+  });
+  on('POST', '/api/threads', async (req, body) => {
+    const id = `thr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const at = nowIso();
+    const title = String(body?.title || '新しい会話').slice(0, 120);
+    await store.run(`INSERT INTO chat_threads (id,title,mode,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?)`,
+      id, title, body?.mode || 'normal', 0, at, at);
+    return { ok: true, thread: { id, title, mode: body?.mode || 'normal', pinned: 0, created_at: at, updated_at: at } };
+  });
+  on('GET', '/api/threads/:id', async (req, body, p) => {
+    const thread = await store.get('chat_threads', p.id);
+    if (!thread) return { ok: false, error: 'not_found' };
+    const rows = await store.all(`SELECT * FROM chat_messages WHERE thread_id=? ORDER BY created_at LIMIT 500`, p.id);
+    return {
+      ok: true, thread,
+      messages: rows.map((m) => ({ ...m, cards: safeJson(m.cards_json, []), events: safeJson(m.events_json, []) })),
+    };
+  });
+  on('POST', '/api/threads/:id', async (req, body, p) => {
+    const thread = await store.get('chat_threads', p.id);
+    if (!thread) return { ok: false, error: 'not_found' };
+    if (body?.action === 'delete') {
+      await store.run(`DELETE FROM chat_messages WHERE thread_id=?`, p.id);
+      await store.run(`DELETE FROM chat_threads WHERE id=?`, p.id);
+      return { ok: true, deleted: p.id };
+    }
+    const title = body?.title !== undefined ? String(body.title).slice(0, 120) : thread.title;
+    const pinned = body?.pinned !== undefined ? (body.pinned ? 1 : 0) : thread.pinned;
+    const at = nowIso();
+    await store.run(`UPDATE chat_threads SET title=?, pinned=?, updated_at=? WHERE id=?`, title, pinned, at, p.id);
+    return { ok: true, thread: { ...thread, title, pinned, updated_at: at } };
+  });
+
   // ---------------------------------------------------------------- chat actions (chat-first UI)
   on('POST', '/api/chat/act', async (req, body) => {
+    const message = body && body.message ? String(body.message).slice(0, 4000) : '';
     const cmds = await import('./agent/commands.js');
-    return cmds.runCommand({
-      message: body && body.message ? String(body.message) : '',
-      deps: { store, env, engine, router, memory, research, deepResearch, knowledge, workflows, ranking, scheduler, browser, tools, fleet: fleetApi, runner: runnerApi },
-    });
+    const deps = { store, env, engine, router, memory, research, deepResearch, knowledge, workflows, ranking, scheduler, browser, tools, fleet: fleetApi, runner: runnerApi };
+
+    // Active memory: bring back anything from earlier conversations that bears
+    // on this message BEFORE answering, and show the owner what was recalled.
+    let recalled = [];
+    try {
+      const hits = await memory.digest(message, { scope: 'global', limit: 5 });
+      recalled = (hits || []).map((h) => ({ kind: h.kind, text: truncate(h.text, 200) }));
+    } catch { recalled = []; }
+
+    const out = await cmds.runCommand({ message, deps });
+
+    // Store the exchange so the thread survives reloads and devices. Storage is
+    // best-effort: a failure here never blocks the reply.
+    let threadId = body?.thread_id || null;
+    try {
+      const at = nowIso();
+      if (!threadId) {
+        threadId = `thr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        await store.run(`INSERT INTO chat_threads (id,title,mode,pinned,created_at,updated_at) VALUES (?,?,?,?,?,?)`,
+          threadId, message.replace(/\s+/g, ' ').trim().slice(0, 38) || '新しい会話', 'normal', 0, at, at);
+      } else {
+        await store.run(`UPDATE chat_threads SET updated_at=? WHERE id=?`, at, threadId);
+      }
+      await store.insert('chat_messages', {
+        id: `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        thread_id: threadId, role: 'me', text: message, cards_json: j([]), events_json: j([]), kind: null, created_at: at,
+      });
+      await store.insert('chat_messages', {
+        id: `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}a`,
+        thread_id: threadId, role: 'agent', text: String(out.reply || ''), cards_json: j(out.cards || []),
+        events_json: j(out.events || []), kind: out.kind || null, created_at: nowIso(),
+      });
+      const n = await store.first(`SELECT COUNT(*) AS c FROM chat_messages WHERE thread_id=?`, threadId);
+      if (Number(n?.c || 0) <= 2) {
+        await store.run(`UPDATE chat_threads SET title=? WHERE id=?`, message.replace(/\s+/g, ' ').trim().slice(0, 38) || '新しい会話', threadId);
+      }
+    } catch { /* keep the reply even if storage is unavailable */ }
+
+    return { ...out, thread_id: threadId, memory: recalled };
   });
 
   // ---------------------------------------------------------------- fleet (multi-agent)

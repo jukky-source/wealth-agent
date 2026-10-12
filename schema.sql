@@ -379,3 +379,26 @@ CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 --   missions.agent_id  which agent owns the mission
 --   tasks.agent_id     denormalised from the mission for fast filtering
 --   runs.agent_id      stamped by the engine after each agent slice
+
+-- Conversation storage: the owner's threads and every exchange inside them,
+-- so the same conversation can be picked up from any device.
+CREATE TABLE IF NOT EXISTS chat_threads (
+  id TEXT PRIMARY KEY,
+  title TEXT,
+  mode TEXT DEFAULT 'normal',
+  pinned INTEGER DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT,
+  role TEXT,
+  text TEXT,
+  cards_json TEXT,
+  events_json TEXT,
+  kind TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at);

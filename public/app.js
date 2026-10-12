@@ -1,44 +1,63 @@
 import { icon } from './icons.js';
 
-// Wealth Agent — chat-first front end.
-// One thread, one composer. The agent does the work; the interface just talks.
+// Wealth Agent — chat-first front end with a conversation rail.
+// Talk to the agent; every thread you have ever had stays on the left, and the
+// agent's own work is one tap away. No dashboards, no tab maze.
 
 const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (v) => {
   if (v === null || v === undefined || v === '') return '—';
   const n = Number(v);
   return Number.isFinite(n) ? n.toLocaleString('ja-JP') : esc(String(v));
 };
-const fmtDate = (s) => { try { return new Date(s).toLocaleString('ja-JP', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch { return String(s || ''); } };
+const fmtTime = (s) => {
+  if (!s) return '';
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return '';
+  const hhmm = d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+  const today = new Date();
+  const same = d.toDateString() === today.toDateString();
+  return same ? hhmm : `${d.getMonth() + 1}/${d.getDate()} ${hhmm}`;
+};
+/** ChatGPT-style buckets for the conversation list. */
+function bucketOf(iso) {
+  const d = new Date(iso || 0);
+  if (Number.isNaN(d.getTime())) return '以前';
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days <= 0) return '今日';
+  if (days === 1) return '昨日';
+  if (days <= 7) return '過去7日';
+  if (days <= 30) return '過去30日';
+  return '以前';
+}
 
 const LS_TOKEN = 'wa_token';
-const LS_LOG = 'wa_chat_v2';
 const DEFAULT_SUGGEST = ['今どうなってる？', '次の一手を進めて', '収益はいくら？', '稼げる方法を探して'];
 
-const url = new URL(location.href);
-if (url.searchParams.get('token')) {
-  localStorage.setItem(LS_TOKEN, url.searchParams.get('token'));
-  url.searchParams.delete('token');
-  history.replaceState(null, '', url.pathname + url.hash);
+{
+  const u = new URL(location.href);
+  if (u.searchParams.get('token')) {
+    localStorage.setItem(LS_TOKEN, u.searchParams.get('token'));
+    u.searchParams.delete('token');
+    history.replaceState(null, '', u.pathname + u.hash);
+  }
 }
 
 const state = {
   token: localStorage.getItem(LS_TOKEN) || '',
-  log: [],
+  threads: [],
+  threadsAvailable: true,
+  query: '',
+  currentId: null,
+  messages: [],
   dash: null,
   suggest: DEFAULT_SUGGEST.slice(),
   busy: false,
 };
 
-try {
-  const raw = JSON.parse(localStorage.getItem(LS_LOG) || '[]');
-  if (Array.isArray(raw)) state.log = raw.slice(-40);
-} catch { state.log = []; }
-
-function saveLog() {
-  try { localStorage.setItem(LS_LOG, JSON.stringify(state.log.slice(-40))); } catch { /* quota */ }
-}
+// ------------------------------------------------------------------ helpers
 
 function toast(msg, ms = 2800) {
   const t = $('#toast');
@@ -100,55 +119,72 @@ function cardHTML(c) {
   return '';
 }
 
-function msgHTML(m) {
+function msgHTML(m, index) {
   const mine = m.role === 'me';
+  const at = m.created_at || m.at;
   const events = (m.events || []).map((e) => `<div class="ev">${icon(e.tick ? 'check' : 'dot', e.tick ? 'i tick' : 'i')}<span>${esc(e.text || '')}</span></div>`).join('');
   const cards = (m.cards || []).map(cardHTML).join('');
-  const action = m.action === 'settings' ? `<div class="btn-row" style="margin-top:8px"><button class="btn" data-open="settings">設定を開く</button></div>` : '';
+  const memory = (m.memory && m.memory.length)
+    ? `<div class="card"><div class="card-h">${icon('book')}<span>覚えていること（過去の会話から）</span></div>
+       <div class="card-b"><div class="rows">${m.memory.map((x) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(x.text)}</div><div class="row-s">${esc(x.kind || '')}</div></div></div>`).join('')}</div></div></div>`
+    : '';
+  const action = m.action === 'settings'
+    ? `<div class="btn-row" style="margin-top:8px"><button class="btn" data-open="settings">設定を開く</button></div>` : '';
+  const acts = !mine && !m.pending
+    ? `<div class="msg-acts">
+         <button class="msg-act" data-copy="${index}">${icon('file', 'i sm')}コピー</button>
+         <button class="msg-act" data-remember="index">${icon('branch', 'i sm')}手順として覚える</button>
+       </div>` : '';
   return `
     <div class="m ${mine ? 'me' : 'agent'}">
       <div class="bub">${esc(m.text || '')}${events ? `<div class="events">${events}</div>` : ''}</div>
-      ${cards}${action}
-      <span class="t">${mine ? 'あなた' : 'エージェント'} · ${fmtDate(m.at)}</span>
+      ${cards}${memory}${action}${acts}
+      <span class="t">${mine ? 'あなた' : 'エージェント'} · ${fmtTime(at)}</span>
     </div>`;
 }
 
-function thread() { return $('#thread'); }
+function threadEl() { return $('#thread'); }
 
 function scrollDown(smooth = true) {
-  const el = thread();
+  const el = threadEl();
   el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
 }
 
+function bindMsg(root) {
+  $$('[data-open]', root).forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)));
+  $$('[data-copy]', root).forEach((b) => b.addEventListener('click', async () => {
+    const m = state.messages[Number(b.dataset.copy)];
+    try { await navigator.clipboard.writeText(m?.text || ''); toast('コピーしました'); } catch { toast('コピーできませんでした'); }
+  }));
+  $$('[data-remember]', root).forEach((b) => b.addEventListener('click', () => send('この手順を覚えて')));
+}
+
 function renderThread() {
-  const el = thread();
-  if (!state.log.length) {
+  const el = threadEl();
+  if (!state.messages.length) {
     const name = state.dash?.character?.name || 'Wealth Agent';
     el.innerHTML = `
       <div class="m agent"><div class="bub">${esc(`はじめまして、${name} です。\n\n目標を教えてもらえれば、計画を立てて調査・実行・検証まで自分で進めます。むずかしい設定は要りません — 話しかけるだけで動きます。`)}</div>
       <span class="t">エージェント</span></div>`;
     return;
   }
-  el.innerHTML = state.log.map(msgHTML).join('');
-  el.querySelectorAll('[data-open]').forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)));
+  el.innerHTML = state.messages.map(msgHTML).join('');
+  bindMsg(el);
 }
 
-function append(m) {
-  state.log.push(m);
-  saveLog();
-  const el = thread();
-  if (state.log.length === 1) { renderThread(); }
-  else {
-    const holder = document.createElement('div');
-    holder.innerHTML = msgHTML(m);
-    const node = holder.firstElementChild;
-    el.appendChild(node);
-    node.querySelectorAll?.('[data-open]').forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)));
-  }
+function addMessage(m) {
+  state.messages.push(m);
+  const el = threadEl();
+  if (state.messages.length === 1) { renderThread(); return; }
+  const holder = document.createElement('div');
+  holder.innerHTML = msgHTML(m, state.messages.length - 1);
+  const node = holder.firstElementChild;
+  el.appendChild(node);
+  bindMsg(node);
   scrollDown();
 }
 
-function push(m) { append({ at: Date.now(), ...m }); }
+function push(m) { addMessage({ at: Date.now(), ...m }); }
 
 function thinking(on) {
   let el = $('#thinking');
@@ -157,8 +193,8 @@ function thinking(on) {
     el = document.createElement('div');
     el.id = 'thinking';
     el.className = 'm agent typing';
-    el.innerHTML = `<div class="bub"><span class="dots"><i></i><i></i><i></i></span></div>`;
-    thread().appendChild(el);
+    el.innerHTML = '<div class="bub"><span class="dots"><i></i><i></i><i></i></span></div>';
+    threadEl().appendChild(el);
     scrollDown();
   } else if (el) el.remove();
 }
@@ -166,7 +202,133 @@ function thinking(on) {
 function renderChips() {
   const el = $('#chips');
   el.innerHTML = state.suggest.map((s) => `<button class="chip" type="button">${esc(s)}</button>`).join('');
-  el.querySelectorAll('.chip').forEach((b) => b.addEventListener('click', () => send(b.textContent)));
+  $$('.chip', el).forEach((b) => b.addEventListener('click', () => send(b.textContent)));
+}
+
+// ------------------------------------------------------------------ rail
+
+function renderRail() {
+  const list = $('#railList');
+  const q = state.query.trim().toLowerCase();
+  const rows = state.threads.filter((t) => !q || String(t.title || '').toLowerCase().includes(q));
+  if (!rows.length) {
+    list.innerHTML = `<div class="rail-empty">${state.threadsAvailable
+      ? 'まだ会話はありません。下の入力欄から話しかけると、ここに並びます。'
+      : '会話の保存はサーバー更新後に有効になります。いまはこの端末の中だけで会話します。'}</div>`;
+  } else {
+    let html = '';
+    let last = '';
+    for (const t of rows) {
+      const b = t.pinned ? 'ピン留め' : bucketOf(t.updated_at);
+      if (b !== last) { html += `<div class="rail-sec">${esc(b)}</div>`; last = b; }
+      const preview = String(t.preview || '').replace(/\s+/g, ' ').slice(0, 46);
+      html += `
+        <div class="thr ${t.id === state.currentId ? 'active' : ''}" data-thr="${esc(t.id)}" role="button" tabindex="0">
+          <div class="thr-t">
+            <div class="thr-n">${esc(t.title || '新しい会話')}</div>
+            <div class="thr-s">${esc(preview || `${t.message_count || 0} 件`)}</div>
+          </div>
+          <button class="thr-menu" data-thr-menu="${esc(t.id)}" aria-label="メニュー">⋯</button>
+        </div>`;
+    }
+    list.innerHTML = html;
+  }
+
+  $$('[data-thr]', list).forEach((el) => {
+    el.addEventListener('click', (e) => { if (!e.target.closest('[data-thr-menu]')) openThread(el.dataset.thr); });
+  });
+  $$('[data-thr-menu]', list).forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); threadMenu(b.dataset.thrMenu); }));
+
+  renderFoot();
+}
+
+async function renderFoot() {
+  const d = state.dash || {};
+  const waiting = d.notifications?.waiting_approval || 0;
+  const fleet = await api('/api/fleet', { quiet: true }).catch(() => null);
+  const agents = (fleet?.agents || []).slice(0, 4);
+  const teammates = agents.length
+    ? `<div class="rail-sec">チーム</div><div class="rail-teammates">${agents.map((a) => `
+        <div class="tm"><i class="dot ${a.status === 'running' ? 'on' : 'wait'}"></i><span>${esc(a.name || 'エージェント')}</span></div>`).join('')}</div>`
+    : '';
+  $('#railFoot').innerHTML = `
+    ${teammates}
+    <div class="rail-sec">エージェント</div>
+    <button class="rail-item" data-open="work">${icon('eye', 'i sm')}作業をのぞく</button>
+    <button class="rail-item" data-open="approvals">${icon('shield', 'i sm')}承認${waiting ? `<span class="badge warn">${waiting}</span>` : ''}</button>
+    <button class="rail-item" data-open="settings">${icon('gear', 'i sm')}設定</button>`;
+  $$('[data-open]', $('#railFoot')).forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)));
+}
+
+function openRail(open = true) {
+  $('#rail').classList.toggle('open', open);
+  $('#railScrim').classList.toggle('open', open);
+  $('#rail').setAttribute('aria-hidden', open ? 'false' : 'true');
+}
+
+async function loadThreads() {
+  const r = await api('/api/threads', { quiet: true });
+  if (r && r.ok !== false && Array.isArray(r.threads)) {
+    state.threads = r.threads;
+    state.threadsAvailable = true;
+  } else {
+    state.threadsAvailable = false;
+  }
+  renderRail();
+}
+
+async function openThread(id) {
+  if (!id || id === state.currentId) { openRail(false); return; }
+  const r = await api(`/api/threads/${encodeURIComponent(id)}`, { quiet: true });
+  if (!r || r.ok === false) { toast('会話を開けませんでした'); return; }
+  state.currentId = id;
+  state.messages = (r.messages || []).map((m) => ({
+    role: m.role, text: m.text, cards: m.cards || [], events: m.events || [], created_at: m.created_at,
+  }));
+  state.suggest = DEFAULT_SUGGEST.slice();
+  renderChips();
+  renderThread();
+  renderRail();
+  scrollDown(false);
+  openRail(false);
+}
+
+function newThread() {
+  state.currentId = null;
+  state.messages = [];
+  state.suggest = DEFAULT_SUGGEST.slice();
+  renderChips();
+  renderThread();
+  renderRail();
+  openRail(false);
+  $('#input').focus();
+}
+
+function threadMenu(id) {
+  const t = state.threads.find((x) => x.id === id);
+  if (!t) return;
+  openSheetRaw('会話', `
+    <div class="field"><span>タイトル</span><input id="thrTitle" value="${esc(t.title || '')}"></div>
+    <div class="btn-row">
+      <button class="btn primary" id="thrSave">保存</button>
+      <button class="btn" id="thrPin">${t.pinned ? 'ピン留めを外す' : 'ピン留め'}</button>
+      <button class="btn danger" id="thrDel">削除</button>
+    </div>
+    <div class="muted" style="font-size:12.5px">作成 ${esc(fmtTime(t.created_at))} · 更新 ${esc(fmtTime(t.updated_at))} · ${fmt(t.message_count || 0)} 件</div>
+  `);
+  $('#thrSave').addEventListener('click', async () => {
+    await api(`/api/threads/${encodeURIComponent(id)}`, { method: 'POST', body: { title: $('#thrTitle').value } });
+    closeSheet(); await loadThreads(); toast('保存しました');
+  });
+  $('#thrPin').addEventListener('click', async () => {
+    await api(`/api/threads/${encodeURIComponent(id)}`, { method: 'POST', body: { pinned: t.pinned ? 0 : 1 } });
+    closeSheet(); await loadThreads();
+  });
+  $('#thrDel').addEventListener('click', async () => {
+    await api(`/api/threads/${encodeURIComponent(id)}`, { method: 'POST', body: { action: 'delete' } });
+    if (state.currentId === id) newThread();
+    closeSheet(); await loadThreads(); toast('削除しました');
+  });
 }
 
 // ------------------------------------------------------------------ header
@@ -176,20 +338,18 @@ function renderHeader() {
   const ch = d?.character;
   const eng = d?.engine || {};
   $('#agentName').textContent = ch?.name || 'Wealth Agent';
-  const st = $('#agentStatus');
-  const pulse = $('#pulse');
   const running = eng.status === 'running';
-  pulse.className = `pulse ${running ? 'on' : eng.status === 'paused' ? 'warn' : ''}`;
-  const waiting = (d?.notifications?.waiting_approval || 0);
-  st.textContent = [
+  $('#pulse').className = `pulse ${running ? 'on' : eng.status === 'paused' ? 'warn' : ''}`;
+  const waiting = d?.notifications?.waiting_approval || 0;
+  $('#agentStatus').textContent = [
     running ? '稼働中' : eng.status === 'paused' ? '一時停止中' : '待機中',
-    `${d?.completed_tasks?.length ? '' : ''}${(d?.engine?.total_steps ?? '') !== '' && d?.engine?.total_steps != null ? `通算 ${d.engine.total_steps} ステップ` : null}`,
+    d?.engine?.total_steps != null ? `通算 ${d.engine.total_steps} ステップ` : null,
     waiting ? `承認待ち ${waiting} 件` : null,
   ].filter(Boolean).join(' · ');
-
-  const a = $('#avaBtn');
   const ava = ch?.avatar_url;
-  a.innerHTML = /^data:image\//i.test(String(ava || '')) ? `<img src="${esc(ava)}" alt="">` : esc(String(ch?.avatar || ch?.name || 'WA').replace(/\p{Extended_Pictographic}+/gu, '').slice(0, 2) || 'WA');
+  $('#avaBtn').innerHTML = /^data:image\//i.test(String(ava || ''))
+    ? `<img src="${esc(ava)}" alt="">`
+    : esc(String(ch?.avatar || ch?.name || 'WA').replace(/\p{Extended_Pictographic}+/gu, '').slice(0, 2) || 'WA');
 }
 
 async function refresh({ quiet = true } = {}) {
@@ -205,123 +365,121 @@ async function send(text) {
   if (!msg || state.busy) return;
   state.busy = true;
   $('#sendBtn').disabled = true;
-  $('#input').value = '';
-  autoGrow();
-  if (!state.log.length) { push({ role: 'agent', text: 'はい、始めます。' }); } else { append({ role: 'me', text: msg, at: Date.now() }); }
-  state.log.push({ role: 'me', text: msg, at: Date.now() });
-  saveLog();
-  const el = thread();
-  const holder = document.createElement('div');
-  holder.innerHTML = msgHTML(state.log[state.log.length - 1]);
-  el.appendChild(holder.firstElementChild);
-  scrollDown();
+  const ta = $('#input');
+  ta.value = '';
+  ta.style.height = 'auto';
+
+  addMessage({ role: 'me', text: msg, at: Date.now() });
   thinking(true);
 
-  const r = await api('/api/chat/act', { method: 'POST', body: { message: msg }, quiet: true });
+  const r = await api('/api/chat/act', { method: 'POST', body: { message: msg, thread_id: state.currentId }, quiet: true });
   thinking(false);
 
   if (!r) {
     push({ role: 'agent', text: '通信できませんでした。電波のある場所でもう一度試してください。' });
-  } else if (r.ok === false && r.reply) {
-    push({ role: 'agent', text: r.reply });
   } else {
-    push({ role: 'agent', text: r.reply || '処理しました。', cards: r.cards || [], events: r.events || [] });
+    push({ role: 'agent', text: r.reply || '処理しました。', cards: r.cards || [], events: r.events || [], memory: r.memory || [] });
+    if (r.thread_id && r.thread_id !== state.currentId) state.currentId = r.thread_id;
   }
   if (Array.isArray(r?.suggest) && r.suggest.length) { state.suggest = r.suggest; renderChips(); }
 
   state.busy = false;
   $('#sendBtn').disabled = false;
   refresh({ quiet: true });
+  loadThreads();
 }
 
-// ------------------------------------------------------------------ sheet
+// ------------------------------------------------------------------ sheets
+
+function closeSheet() {
+  $('#sheet').classList.remove('open');
+  $('#sheet').setAttribute('aria-hidden', 'true');
+  $('#sheetScrim').classList.remove('open');
+}
+
+function openSheetRaw(title, bodyHTML) {
+  $('#sheetIn').innerHTML = `
+    <div class="sheet-h"><b>${esc(title)}</b><button class="icon-btn" id="sheetX" aria-label="閉じる">✕</button></div>
+    <div class="sheet-b">${bodyHTML}</div>`;
+  $('#sheet').classList.add('open');
+  $('#sheet').setAttribute('aria-hidden', 'false');
+  $('#sheetScrim').classList.add('open');
+  $('#sheetX').addEventListener('click', closeSheet);
+}
 
 function kv(k, v) { return `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`; }
 
 async function openSheet(which = 'info') {
+  if (which === 'work') return openWork();
+  if (which === 'approvals') return openApprovals();
+
   const d = state.dash || (await refresh({ quiet: false })) || {};
-  const led = d.ledger?.revenue || {};
   const ch = d.character || {};
   const eng = d.engine || {};
+  const led = d.ledger?.revenue || {};
   const runner = await api('/api/runner', { quiet: true }).catch(() => null);
   const paired = Array.isArray(runner?.runners) ? runner.runners.length > 0 : !!runner?.runner;
 
-  const tasks = (d.running_tasks || []).slice(0, 3).map((t) => `
-    <div class="row"><div class="row-main"><div class="row-t">${esc(t.title)}</div>
-    <div class="row-s">${esc(t.category || '')}</div></div><span class="badge accent">実行中</span></div>`).join('');
+  openSheetRaw(which === 'settings' ? '設定' : 'エージェント', `
+    <div>
+      <div class="sec-t">いまの目標</div>
+      ${d.current_mission
+        ? kv('目標', esc(d.current_mission.title)) + kv('進捗', `${fmt(d.current_mission.progress)}%`) + kv('目標値', `${fmt(d.current_mission.target_value)} ${esc(d.current_mission.metric_unit || 'JPY')}`)
+        : '<div class="muted" style="font-size:13.5px">まだ設定されていません。「月5万円を稼ぐ目標にして」のように話しかけてください。</div>'}
+    </div>
 
-  $('#sheetIn').innerHTML = `
-    <div class="sheet-h"><b>${which === 'settings' ? '設定' : 'エージェント'}</b>
-      <button class="icon-btn" id="sheetX" aria-label="閉じる">✕</button></div>
-    <div class="sheet-b">
-      <div>
-        <div class="sec-t">いまの目標</div>
-        ${d.current_mission
-          ? kv('目標', esc(d.current_mission.title)) + kv('進捗', `${fmt(d.current_mission.progress)}%`) + kv('目標値', `${fmt(d.current_mission.target_value)} ${esc(d.current_mission.metric_unit || 'JPY')}`)
-          : `<div class="muted" style="font-size:13.5px">まだ設定されていません。「月5万円を稼ぐ目標にして」のように話しかけてください。</div>`}
+    <div>
+      <div class="sec-t">数字</div>
+      ${kv('実測収益', `${fmt(led.measured)} 円`)}
+      ${kv('推定収益（実績に数えない）', `${fmt(led.total_estimated)} 円`)}
+      ${kv('完了した作業', `${fmt((d.completed_tasks || []).length)} 件`)}
+    </div>
+
+    <div>
+      <div class="sec-t">動きかた</div>
+      ${kv('状態', esc(eng.status === 'running' ? '稼働中' : eng.status === 'paused' ? '一時停止中' : '停止中'))}
+      ${kv('最終実行', esc(eng.last_tick ? fmtTime(eng.last_tick) : '—'))}
+      ${kv('自律性', `L${esc(ch.autonomy_level ?? 4)}`)}
+      ${kv('口調', esc(ch.tone || '未設定'))}
+      ${kv('AIキー', (d.ai?.configured || []).some((p) => p.key_present) ? '設定済み' : '未設定（決定的モードで動作中）')}
+    </div>
+
+    <div>
+      <div class="sec-t">作業環境</div>
+      ${kv('状態', paired ? '接続済み' : 'エージェントが裏で準備します')}
+      <div class="muted" style="font-size:12.5px;margin-top:8px">必要なときだけエージェントが自分で使います。あなたが操作することはありません。</div>
+      <details class="disclosure" style="margin-top:10px">
+        <summary>自分で用意する場合（任意）</summary>
+        <div class="muted" style="font-size:12.5px;margin-bottom:8px">自分のPCを1台つないでおくと、重い作業や提出物づくりをそこで実行できます。ふだんは不要です。</div>
+        <div class="code" id="runnerCmd">RUNNER_URL=${esc(location.origin)} RUNNER_TOKEN=&lt;トークン&gt; bash -c "$(curl -fsSL ${esc(location.origin)}/cloud-pc.sh)"</div>
+        <div class="btn-row" style="margin-top:8px"><button class="btn" id="copyCmd">コマンドをコピー</button></div>
+      </details>
+    </div>
+
+    <div>
+      <div class="sec-t">この端末</div>
+      <div class="field"><span>アクセストークン</span>
+        <input id="sToken" type="password" placeholder="サーバーで設定したトークン" value="${esc(state.token)}"></div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn primary" id="saveTok">保存</button>
+        <button class="btn danger" id="wipe">この端末の情報を消す</button>
       </div>
+    </div>
+  `);
 
-      <div>
-        <div class="sec-t">数字</div>
-        ${kv('実測収益', `${fmt(led.measured)} 円`)}
-        ${kv('推定収益（実績に数えない）', `${fmt(led.total_estimated)} 円`)}
-        ${kv('完了した作業', `${fmt((d.completed_tasks || []).length)} 件`)}
-      </div>
-
-      ${tasks ? `<div><div class="sec-t">進行中</div><div class="rows">${tasks}</div></div>` : ''}
-
-      <div>
-        <div class="sec-t">動きかた</div>
-        ${kv('状態', esc(eng.status === 'running' ? '稼働中' : eng.status === 'paused' ? '一時停止中' : '停止中'))}
-        ${kv('最終実行', esc(eng.last_tick ? fmtDate(eng.last_tick) : '—'))}
-        ${kv('自律性', `L${esc(ch.autonomy_level ?? 4)}`)}
-        ${kv('口調', esc(ch.tone || '未設定'))}
-        ${kv('AIキー', (d.ai?.configured || []).some((p) => p.key_present) ? '設定済み' : '未設定（決定的モードで動作中）')}
-      </div>
-
-      <div>
-        <div class="sec-t">作業環境</div>
-        ${kv('状態', paired ? '接続済み' : 'エージェントが裏で準備します')}
-        <div class="muted" style="font-size:12.5px;margin-top:8px">必要なときだけエージェントが自分で使います。あなたが操作することはありません。</div>
-        <details class="disclosure" style="margin-top:10px">
-          <summary>自分で用意する場合（任意）</summary>
-          <div class="muted" style="font-size:12.5px;margin-bottom:8px">自分のPCを1台つないでおくと、重い作業や提出物づくりをそこで実行できます。ふだんは不要です。</div>
-          <div class="code" id="runnerCmd">RUNNER_URL=${esc(location.origin)} RUNNER_TOKEN=&lt;トークン&gt; bash -c "$(curl -fsSL ${esc(location.origin)}/cloud-pc.sh)"</div>
-          <div class="btn-row" style="margin-top:8px"><button class="btn" id="copyCmd">コマンドをコピー</button></div>
-        </details>
-      </div>
-
-      <div>
-        <div class="sec-t">この端末</div>
-        <div class="field"><span>アクセストークン</span>
-          <input id="sToken" type="password" placeholder="サーバーで設定したトークン" value="${esc(state.token)}"></div>
-        <div class="btn-row" style="margin-top:10px">
-          <button class="btn primary" id="saveTok">保存</button>
-          <button class="btn" id="clearChat">会話を消す</button>
-          <button class="btn danger" id="wipe">全消去</button>
-        </div>
-      </div>
-    </div>`;
-
-  $('#sheet').classList.add('open');
-  $('#sheet').setAttribute('aria-hidden', 'false');
-  $('#sheetScrim').classList.add('open');
-
-  $('#sheetX').addEventListener('click', closeSheet);
-  $('#saveTok').addEventListener('click', () => {
+  $('#saveTok').addEventListener('click', async () => {
     state.token = $('#sToken').value.trim();
     localStorage.setItem(LS_TOKEN, state.token);
-    toast('保存しました');
     closeSheet();
-    push({ role: 'agent', text: '本人確認を更新しました。さっそく「今どうなってる？」と聞いてみてください。' });
-    refresh({ quiet: true });
-  });
-  $('#clearChat').addEventListener('click', () => {
-    state.log = []; saveLog(); renderThread(); closeSheet();
+    toast('保存しました');
+    await refresh({ quiet: true });
+    await loadThreads();
   });
   $('#wipe').addEventListener('click', () => {
-    state.token = ''; state.log = [];
-    localStorage.removeItem(LS_TOKEN); saveLog(); renderThread(); closeSheet();
+    state.token = '';
+    localStorage.removeItem(LS_TOKEN);
+    newThread();
+    closeSheet();
     toast('この端末の情報を消しました');
   });
   $('#copyCmd')?.addEventListener('click', async () => {
@@ -330,25 +488,65 @@ async function openSheet(which = 'info') {
   });
 }
 
-function closeSheet() {
-  $('#sheet').classList.remove('open');
-  $('#sheet').setAttribute('aria-hidden', 'true');
-  $('#sheetScrim').classList.remove('open');
+/** "What it did, what it is doing, what it will do" — the audit trail every
+ *  always-on agent needs before you can trust it (dots/Muse both ship one). */
+async function openWork() {
+  const [dash, logs] = await Promise.all([
+    state.dash || refresh({ quiet: true }),
+    api('/api/logs?limit=12', { quiet: true }).catch(() => null),
+  ]);
+  const runs = (logs?.logs || logs?.runs || []).slice(0, 8);
+  const running = (dash?.running_tasks || []).slice(0, 4);
+  const finalNote = (logs?.routes || dash?.notifications) ? null : null;
+  const trail = [
+    ...runs.map((r) => ({ cls: 'ok', t: r.summary || r.state || '実行', s: `${fmtTime(r.created_at)} · ${r.state || ''}` })),
+    ...running.map((t) => ({ cls: 'now', t: t.title, s: `いま実行中 · ${t.category || ''}` })),
+    dash?.next_task ? { cls: 'next', t: dash.next_task.title, s: `次にやる予定 · ${dash.next_task.tool || ''}${dash.next_task.score != null ? ` · 確度 ${Math.round(dash.next_task.score)}` : ''}` } : null,
+  ].filter(Boolean);
+
+  openSheetRaw('エージェントの作業', `
+    ${dash?.current_mission ? `<div><div class="sec-t">目標</div>${kv('目標', esc(dash.current_mission.title))}${kv('進捗', `${fmt(dash.current_mission.progress)}%`)}</div>` : ''}
+    <div>
+      <div class="sec-t">やったこと / いま / これから</div>
+      ${trail.length ? `<div class="trail">${trail.map((x) => `<div class="trail-i ${x.cls}"><div class="trail-t">${esc(x.t)}</div><div class="trail-s">${esc(x.s)}</div></div>`).join('')}</div>` : '<div class="muted" style="font-size:13px">まだ記録はありません。「始めて」と言えば動き出します。</div>'}
+      ${finalNote || ''}
+    </div>
+    ${dash?.next_task?.reasons?.length ? `<div><div class="sec-t">なぜ次にこれを選んだか</div><div class="rows">${dash.next_task.reasons.map((r) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(typeof r === 'string' ? r : JSON.stringify(r))}</div></div></div>`).join('')}</div></div>` : ''}
+    <div class="btn-row">
+      <button class="btn primary" id="workTick">この場で1手進める</button>
+      <button class="btn" id="workOpen">会話で聞く</button>
+    </div>
+  `);
+  $('#workTick').addEventListener('click', () => { closeSheet(); send('次の一手を進めて'); });
+  $('#workOpen').addEventListener('click', () => { closeSheet(); $('#input').focus(); });
+}
+
+async function openApprovals() {
+  const a = await api('/api/approvals', { quiet: true });
+  const pending = (a?.approvals || []);
+  openSheetRaw('承認', `
+    <div>
+      <div class="sec-t">あなたの判断が必要な操作</div>
+      ${pending.length ? `<div class="rows">${pending.map((x) => `<div class="row"><div class="row-main"><div class="row-t">${esc(x.summary || x.action || x.kind || '承認要求')}</div><div class="row-s">${esc(x.reason || '')}</div></div><span class="badge warn">承認待ち</span></div>`).join('')}</div>`
+        : '<div class="muted" style="font-size:13px">いま承認待ちはありません。</div>'}
+    </div>
+    <div>
+      <div class="sec-t">エージェントが自分でやってよいこと</div>
+      <div class="rows">${((a?.policy?.autonomous) || []).map((x) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(x)}</div></div><span class="badge ok">自動</span></div>`).join('') || '<div class="muted" style="font-size:13px">情報を取得できませんでした。</div>'}</div>
+    </div>
+    <div>
+      <div class="sec-t">必ずあなたの承認を待つこと</div>
+      <div class="rows">${((a?.policy?.approval_required) || []).map((x) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(x)}</div></div><span class="badge warn">承認必須</span></div>`).join('') || '<div class="muted" style="font-size:13px">—</div>'}</div>
+    </div>
+  `);
 }
 
 // ------------------------------------------------------------------ composer
 
-function autoGrow() {
-  const ta = $('#input');
-  ta.style.height = 'auto';
-  ta.style.height = `${Math.min(ta.scrollHeight, 132)}px`;
-}
-
 function bind() {
-  const form = $('#composer');
-  form.addEventListener('submit', (e) => { e.preventDefault(); send($('#input').value); });
+  $('#composer').addEventListener('submit', (e) => { e.preventDefault(); send($('#input').value); });
   const ta = $('#input');
-  ta.addEventListener('input', autoGrow);
+  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 132)}px`; });
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(ta.value); }
   });
@@ -356,7 +554,16 @@ function bind() {
   $('#avaBtn').addEventListener('click', () => openSheet('info'));
   $('#whoBtn').addEventListener('click', () => openSheet('info'));
   $('#sheetScrim').addEventListener('click', closeSheet);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSheet(); });
+  $('#railBtn').addEventListener('click', () => openRail(true));
+  $('#railClose').addEventListener('click', () => openRail(false));
+  $('#railScrim').addEventListener('click', () => openRail(false));
+  $('#newChat').addEventListener('click', newThread);
+  let timer = null;
+  $('#threadSearch').addEventListener('input', (e) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { state.query = e.target.value; renderRail(); }, 140);
+  });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeSheet(); openRail(false); } });
 }
 
 // ------------------------------------------------------------------ boot
@@ -364,14 +571,14 @@ function bind() {
 async function boot() {
   bind();
   renderChips();
-  await refresh({ quiet: true });
+  await Promise.all([refresh({ quiet: true }), loadThreads()]);
   renderThread();
   scrollDown(false);
   if (!state.token) {
-    setTimeout(() => push({ role: 'agent', text: 'はじめての端末ですね。右上の「⋯」からアクセストークンを貼り付けると、あなた専用のエージェントとして動きます。', action: 'settings' }), 400);
+    setTimeout(() => push({ role: 'agent', text: 'はじめての端末ですね。「⋯」からアクセストークンを貼り付けると、あなた専用のエージェントとして動きます。', action: 'settings' }), 400);
   }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
-  setInterval(() => refresh({ quiet: true }), 45000);
+  setInterval(() => { refresh({ quiet: true }); renderFoot(); }, 45000);
 }
 
 boot();
