@@ -121,6 +121,11 @@ export async function ensureSchema(store) {
     `CREATE INDEX IF NOT EXISTS idx_chunk_doc ON doc_chunks(doc_id, seq)`,
     `CREATE VIRTUAL TABLE IF NOT EXISTS doc_chunks_fts USING fts5(text, content='doc_chunks', content_rowid='rowid')`,
     `CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, definition TEXT NOT NULL, enabled INTEGER DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+    // Conversation storage — the thread list the owner keeps on the left.
+    `CREATE TABLE IF NOT EXISTS chat_threads (id TEXT PRIMARY KEY, title TEXT, mode TEXT DEFAULT 'normal', pinned INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)`,
+    `CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, thread_id TEXT, role TEXT, text TEXT, cards_json TEXT, events_json TEXT, kind TEXT, created_at TEXT)`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at)`, 
     `CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT, status TEXT DEFAULT 'queued', cursor INTEGER DEFAULT 0, context TEXT, log_json TEXT DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, task_id TEXT, action TEXT NOT NULL, risk_level TEXT NOT NULL, payload TEXT, status TEXT DEFAULT 'pending', requested_at TEXT NOT NULL, decided_at TEXT, note TEXT)`,
     `CREATE INDEX IF NOT EXISTS idx_appr_status ON approvals(status)`,

@@ -66,7 +66,7 @@ function moneyCard(led) {
     title: '収支（実測と推定は分けて数えます）',
     items: [
       { label: '実測収益', value: led.revenue.measured, unit: '円', hl: true },
-      { label: '推定収益（実績に数えない）', value: led.revenue.total_estimated, unit: '円' },
+      { label: '推定収益（不算入）', value: led.revenue.total_estimated, unit: '円' },
       { label: '実測費用', value: led.cost.measured, unit: '円' },
       { label: '実測の純益', value: led.net_profit_measured, unit: '円' },
     ],
