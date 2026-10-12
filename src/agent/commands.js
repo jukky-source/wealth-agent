@@ -141,7 +141,6 @@ const RULES = [
       if (tasks.length) cards.push(taskList(tasks, 'いま動いている作業'));
       const progress = m.mission?.progress != null ? `（進捗 ${m.mission.progress}%）` : '';
       const lines = [
-      const lines = [
         `エンジンは${st.status === 'running' ? '稼働中' : st.status === 'paused' ? '一時停止中' : '停止中'}です。${m.mission ? `目標「${m.mission.title}」${progress}を進めています。` : 'まだ目標が設定されていません。'}`,
         m.lastSuccess?.title ? `直近で終わったのは「${m.lastSuccess.title}」です。` : null,
       ].filter(Boolean);
