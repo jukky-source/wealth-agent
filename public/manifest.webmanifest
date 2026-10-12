@@ -1,0 +1,25 @@
+{
+  "name": "Wealth Agent — 自律型収益エージェント",
+  "short_name": "Wealth Agent",
+  "description": "長期目標を持ち、調査・実行・検証・改善を自分で回し続ける自律型AIエージェント",
+  "lang": "ja",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait-primary",
+  "background_color": "#0b0f19",
+  "theme_color": "#0b0f19",
+  "categories": ["productivity", "finance", "utilities"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Mission Control", "url": "./index.html#/home" },
+    { "name": "タスクキュー", "url": "./index.html#/tasks" },
+    { "name": "実行ログ", "url": "./index.html#/logs" }
+  ]
+}

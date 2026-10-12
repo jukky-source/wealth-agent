@@ -1,0 +1,40 @@
+# Cloudflare Workers configuration — Wealth Agent backend
+# Free plan: 100k requests/day, D1 5M rows read & 100k rows written/day, 5 cron triggers/account.
+# NOTE: Free plan gives 10ms CPU per invocation. All heavy loop work is therefore
+# step-chunked: each tick performs a bounded number of steps and returns.
+
+name = "wealth-agent"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Static PWA assets are served by the Worker from ./public
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wealth-agent"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[observability]
+enabled = true
+
+# --- Scheduler ---------------------------------------------------------------
+# Cron Triggers are the heartbeat of the autonomous loop. Free plan allows
+# 15 minutes wall-time per invocation (network wait is free), 10ms CPU.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+# Non-secret configuration. Secrets (OWNER_TOKEN, API keys) go through:
+#   wrangler secret put OWNER_TOKEN
+#   wrangler secret put GEMINI_API_KEY
+#   wrangler secret put GROQ_API_KEY
+#   wrangler secret put OPENROUTER_API_KEY
+AGENT_NAME = "Wealth Agent"
+ENGINE_STEPS_PER_TICK = "3"
+AI_DAILY_CALL_BUDGET = "300"
+ALLOW_PAID_AI = "false"

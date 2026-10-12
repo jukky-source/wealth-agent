@@ -1,0 +1,357 @@
+// Autonomous Mission Engine — the heart of the system.
+//
+// One tick = a bounded amount of work. The loop continues because ticks are
+// driven by (a) Cloudflare Cron Triggers, (b) client polling, (c) manual runs.
+// State, evidence and checkpoints are persisted after EVERY step, so a quota
+// error, a crash or a closed browser tab never loses progress.
+//
+// Anti-loop guarantees:
+//   * no-progress counter → after N stalled steps the strategy is replaced
+//   * strategy-switch counter → after M switches the mission waits for a human
+//   * every retry mutates the task so it is genuinely different
+//   * a hard per-tick step cap prevents runaway execution
+
+import { id as newId, nowIso, j, safeJson, hash, truncate, round } from '../util.js';
+import { setting, setSetting } from '../db.js';
+import { planMission, replanAfterFailure, explainNext } from './planner.js';
+import { selectNextTask, setState, runTaskAttempt, mutateForRetry, deriveTool, TERMINAL_STATES } from './executor.js';
+import { verifyResult, verifyMission } from './verifier.js';
+import { runPeerReview } from './peer.js';
+
+export const ENGINE_DEFAULTS = {
+  maxStepsPerTick: 3,
+  maxStalledSteps: 6,
+  maxStrategySwitches: 3,
+  maxMissionsPerTick: 2,
+  minMsBetweenMissions: 1500,
+};
+
+export function createEngine(deps) {
+  const { store, env, router, memory, research, fx, rewards, sidehustle, ranking, knowledge, dataAnalysis, codeAgent, browser, workflows, tools } = deps;
+
+  const cfg = { ...ENGINE_DEFAULTS, maxStepsPerTick: Number(env.ENGINE_STEPS_PER_TICK || 3) };
+
+  async function getCharacter() {
+    const rows = await store.all('SELECT * FROM characters ORDER BY is_active DESC, updated_at DESC LIMIT 1');
+    const c = rows[0];
+    if (!c) return null;
+    return { ...c, values: safeJson(c.values_json, []), priority_weights: weightsFor(c) };
+  }
+
+  function weightsFor(c) {
+    const byPreset = {
+      ambitious_businessman: { upside: 0.40, speed: 0.25, evidence: 0.15, risk: 0.10, cost: 0.10 },
+      cold_researcher: { upside: 0.20, speed: 0.10, evidence: 0.45, risk: 0.20, cost: 0.05 },
+      autonomous_engineer: { upside: 0.25, speed: 0.20, evidence: 0.30, risk: 0.15, cost: 0.10 },
+      strategist: { upside: 0.35, speed: 0.15, evidence: 0.25, risk: 0.15, cost: 0.10 },
+      custom: { upside: 0.30, speed: 0.20, evidence: 0.25, risk: 0.15, cost: 0.10 },
+    };
+    const base = byPreset[c.preset] || byPreset.strategist;
+    // Personality dials nudge the weights so the character really changes behaviour.
+    const risk = (c.risk_tolerance ?? 30) / 100;
+    const evid = (c.caution ?? 60) / 100;
+    const w = { ...base };
+    w.risk = round(base.risk * (0.5 + risk), 3);
+    w.evidence = round(base.evidence * (0.6 + evid * 0.8), 3);
+    w.upside = round(base.upside * (0.7 + risk * 0.6), 3);
+    const sum = w.upside + w.speed + w.evidence + w.risk + w.cost;
+    for (const k of Object.keys(w)) w[k] = round(w[k] / sum, 3);
+    return w;
+  }
+
+  async function engineState() {
+    return setting(store, 'engine:state', { status: 'stopped', reason: null, since: null, last_tick: null, ticks: 0, universe: {} });
+  }
+
+  async function setEngineState(patch) {
+    const cur = await engineState();
+    const next = { ...cur, ...patch };
+    await setSetting(store, 'engine:state', next);
+    return next;
+  }
+
+  /** Human controls: start / pause / resume / stop. */
+  async function control(action, { note = '' } = {}) {
+    const cur = await engineState();
+    switch (action) {
+      case 'start': case 'resume':
+        await setEngineState({ status: 'running', reason: note || null, since: nowIso() });
+        await memory.write({ kind: 'checkpoint', key: 'engine:control', text: `エンジンを${action === 'start' ? '開始' : '再開'}しました`, evidence: 'measured', importance: 40 });
+        return { ok: true, status: 'running' };
+      case 'pause':
+        await setEngineState({ status: 'paused', reason: note || 'オーナーによる一時停止', since: nowIso() });
+        await memory.write({ kind: 'checkpoint', key: 'engine:control', text: 'エンジンを一時停止しました（進捗は保存済み）', evidence: 'measured', importance: 40 });
+        return { ok: true, status: 'paused' };
+      case 'stop':
+        await setEngineState({ status: 'stopped', reason: note || 'オーナーによる停止', since: nowIso() });
+        await memory.write({ kind: 'checkpoint', key: 'engine:control', text: 'エンジンを停止しました（進捗は保存済み）', evidence: 'measured', importance: 40 });
+        return { ok: true, status: 'stopped' };
+      default:
+        return { ok: false, error: 'unknown_action' };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Mission lifecycle
+  // -------------------------------------------------------------------------
+  async function createMission({ title, goal, constraints = '', successMetric = null, targetValue = null, metricUnit = 'JPY', priority = 50, autonomyLevel = null, planNow = true }) {
+    const character = await getCharacter();
+    const row = {
+      id: newId('msn'), title: title || truncate(goal, 80), goal, constraints,
+      success_metric: successMetric, target_value: targetValue, metric_unit: metricUnit,
+      status: 'active', priority, autonomy_level: autonomyLevel ?? character?.autonomy_level ?? 4,
+      progress: 0, created_at: nowIso(), updated_at: nowIso(),
+    };
+    await store.insert('missions', row);
+    await memory.write({
+      kind: 'goal', scope: `mission:${row.id}`, key: `goal:${row.id}`,
+      text: `長期目標「${row.title}」: ${goal}${constraints ? ` / 制約: ${constraints}` : ''}`,
+      evidence: 'measured', importance: 90, data: { mission_id: row.id },
+    });
+    if (constraints) {
+      await memory.write({ kind: 'constraint', scope: `mission:${row.id}`, text: `制約: ${constraints}`, evidence: 'measured', importance: 80 });
+    }
+    let plan = null;
+    if (planNow) plan = await planMission({ store, router, memory, character, mission: row, existingTasks: [] });
+    return { mission: row, plan };
+  }
+
+  // -------------------------------------------------------------------------
+  // The tick
+  // -------------------------------------------------------------------------
+  async function tick({ maxSteps = cfg.maxStepsPerTick, source = 'manual', agentId = null } = {}) {
+    const started = Date.now();
+    // Fleet scoping: when an agent id is given, this tick only advances that
+    // agent's missions (plus unassigned ones it may claim). Runs created during
+    // the slice are stamped with the agent id so the log can be filtered.
+    const agentStartedAt = nowIso();
+    const state = await engineState();
+    if (state.status !== 'running') {
+      return { ran: false, reason: `engine_${state.status}`, status: state.status, note: state.status === 'stopped' ? 'エンジンは停止中です（開始してください）' : '一時停止中です' };
+    }
+
+    const character = await getCharacter();
+    if (!character) {
+      return { ran: false, reason: 'no_character', note: 'キャラクターが未設定です。Character Studio で作成してください。' };
+    }
+
+    const missions = agentId
+      ? await store.all(`SELECT * FROM missions WHERE status='active' AND (agent_id=? OR agent_id IS NULL) ORDER BY priority DESC LIMIT ?`, agentId, cfg.maxMissionsPerTick)
+      : await store.all(`SELECT * FROM missions WHERE status='active' ORDER BY priority DESC LIMIT ?`, cfg.maxMissionsPerTick);
+    if (!missions.length) {
+      await setEngineState({ last_tick: nowIso(), last_result: 'no_active_mission' });
+      return { ran: false, reason: 'no_active_mission', note: 'アクティブなミッションがありません（作成してください）' };
+    }
+
+    const perTick = Math.max(1, Math.ceil(maxSteps / missions.length));
+    const results = [];
+
+    for (const mission of missions) {
+      const r = await runMissionSlice(mission, { character, steps: perTick, source });
+      results.push(r);
+    }
+
+    await setEngineState({
+      last_tick: nowIso(), ticks: (state.ticks || 0) + 1, last_result: results.map((r) => `${r.mission_id}:${r.status}`).join(','),
+    });
+    await checkpoint('engine', 'tick', { at: nowIso(), results, source, agent_id: agentId || null });
+    if (agentId) {
+      // Runs are written by the executor without fleet knowledge; stamping by
+      // time window keeps executor.js untouched.
+      try { await store.run(`UPDATE runs SET agent_id=? WHERE agent_id IS NULL AND created_at >= ?`, agentId, agentStartedAt); } catch { /* column may not exist yet */ }
+    }
+
+    return {
+      ran: true, durationMs: Date.now() - started, source, agent_id: agentId || null,
+      missions: results,
+      quota: await router.budgetExceeded() ? 'exhausted' : 'ok',
+    };
+  }
+
+  /** Run up to `steps` steps for one mission. */
+  async function runMissionSlice(mission, { character, steps, source }) {
+    let done = 0;
+    const trace = [];
+
+    for (let s = 0; s < steps; s++) {
+      const memos = await memory.digest(`${mission.title} ${mission.goal}`, { scope: `mission:${mission.id}`, limit: 10 });
+      const sel = await selectNextTask(store, { character, mission, memories: memos });
+
+      if (!sel.chosen) {
+        // Nothing runnable → re-plan (bounded).
+        const planKey = `mission:${mission.id}:replans`;
+        const replans = (await setting(store, planKey, 0)) || 0;
+        if (replans >= 5) {
+          await store.update('missions', mission.id, { status: 'paused', updated_at: nowIso() });
+          await setEngineState({ status: 'paused', reason: `ミッション「${mission.title}」で再計画が5回に達したため要人手介入` });
+          await memory.write({
+            kind: 'checkpoint', scope: `mission:${mission.id}`,
+            text: `ミッション「${mission.title}」は再計画を5回行っても進展がないため、オーナーの介入待ちにしました。`,
+            evidence: 'measured', importance: 85,
+          });
+          return { mission_id: mission.id, status: 'needs_human', note: '自動再計画の上限に達しました（オーナーの判断が必要です）', trace };
+        }
+        const planned = await planMission({ store, router, memory, character, mission, existingTasks: await allTasks(mission.id) });
+        await setSetting(store, planKey, replans + 1);
+        trace.push({ action: 'replan', created: planned.created.length, reason: planned.note || null });
+        if (!planned.created.length) {
+          const vm = await verifyMission(store, mission);
+          if (vm.met) {
+            await store.update('missions', mission.id, { status: 'completed', progress: 100, updated_at: nowIso() });
+            return { mission_id: mission.id, status: 'mission_completed', note: vm.statement, trace };
+          }
+          return { mission_id: mission.id, status: 'idle', note: `実行可能タスクなし。${vm.statement}`, trace };
+        }
+        done++;
+        continue;
+      }
+
+      const chosen = sel.chosen;
+      await store.update('tasks', chosen.task.id, {
+        score: chosen.score, score_reasons: chosen.reasons, updated_at: nowIso(),
+      });
+
+      const task = await store.get('tasks', chosen.task.id);
+      if (task.state === 'improving') {
+        const diag = safeJson(task.error_history, [])?.slice(-1)[0] || {};
+        await mutateForRetry(store, task, { kind: guessKind(diag.diagnosis) });
+      }
+
+      const freshTask = await store.get('tasks', task.id);
+      const outcome = await runTaskAttempt(
+        { store, memory, tools, router, research, fx, rewards, sidehustle, ranking, knowledge, dataAnalysis, codeAgent, browser, workflows, env },
+        { task: freshTask, mission, character, verify: verifyResult, remember: (t, o) => memory.write({
+          kind: o.success ? 'success' : 'failure',
+          scope: `mission:${mission.id}`,
+          key: `outcome:${t.id}:${t.attempt}`,
+          text: o.success ? `「${t.title}」成功（${o.method}）: ${truncate(o.detail, 160)}` : `「${t.title}」失敗（${o.method}）: ${truncate(o.detail, 160)} / 診断: ${o.diagnosis}`,
+          evidence: o.success ? 'measured' : 'unverified',
+          importance: o.success ? 60 : 78,
+          data: { task_id: t.id, tool: o.method },
+        }),
+        },
+      );
+
+      trace.push({ task_id: freshTask.id, title: freshTask.title, outcome: outcome.outcome, detail: truncate(outcome.result?.summary || outcome.result?.error || '', 160) });
+      done++;
+
+      // --- stalled-progress guard -----------------------------------------
+      const stallKey = `mission:${mission.id}:stall`;
+      const swKey = `mission:${mission.id}:switches`;
+      if (outcome.outcome === 'completed') {
+        await setSetting(store, stallKey, 0);
+        await memory.write({ kind: 'checkpoint', scope: `mission:${mission.id}`, text: `進捗: 「${freshTask.title}」完了`, evidence: 'measured', importance: 55 });
+      } else if (outcome.outcome === 'failed' || outcome.outcome === 'retry') {
+        const stalled = ((await setting(store, stallKey, 0)) || 0) + 1;
+        await setSetting(store, stallKey, stalled);
+        if (stalled >= cfg.maxStalledSteps) {
+          const switches = ((await setting(store, swKey, 0)) || 0) + 1;
+          await setSetting(store, swKey, switches);
+          await setSetting(store, stallKey, 0);
+          const diagnosis = outcome.diagnosis?.summary || '反復失敗';
+          await replanAfterFailure({ store, router, memory, character, mission, failedTask: freshTask, diagnosis });
+          trace.push({ action: 'strategy_switch', count: switches, diagnosis });
+          if (switches >= cfg.maxStrategySwitches) {
+            await store.update('missions', mission.id, { status: 'paused', updated_at: nowIso() });
+            await setEngineState({ status: 'paused', reason: `ミッション「${mission.title}」で戦略切替が${switches}回に達しました。オーナーの判断が必要です。` });
+            await memory.write({
+              kind: 'checkpoint', scope: `mission:${mission.id}`, importance: 88,
+              text: `ミッション「${mission.title}」: ${switches}回の戦略切替でも進展なし。原因「${diagnosis}」。人手による方針決定が必要です。`,
+              evidence: 'measured',
+            });
+            return { mission_id: mission.id, status: 'needs_human', note: '戦略切替の上限に達しました', trace };
+          }
+        }
+      } else if (outcome.outcome === 'waiting_quota') {
+        trace.push({ action: 'wait', note: 'API枠の回復待ち（進捗は保存済み）' });
+        await checkpoint(`mission:${mission.id}`, 'waiting_quota', { task_id: freshTask.id });
+        return { mission_id: mission.id, status: 'waiting_quota', note: 'API枠が回復したら自動再開します', trace };
+      } else if (outcome.outcome === 'waiting_approval') {
+        trace.push({ action: 'wait_approval', note: 'オーナーの承認待ち' });
+        return { mission_id: mission.id, status: 'waiting_approval', note: '承認待ちです', trace };
+      }
+
+      await checkpoint(`mission:${mission.id}`, 'step', {
+        task_id: freshTask.id, outcome: outcome.outcome, step: s,
+        last_success_step: (await store.get('tasks', freshTask.id))?.last_success_step || null,
+      });
+
+      // Mission-level completion check
+      const vm = await verifyMission(store, mission);
+      await store.update('missions', mission.id, { progress: vm.progress ?? mission.progress, updated_at: nowIso() });
+      if (vm.met) {
+        await store.update('missions', mission.id, { status: 'completed', progress: 100, updated_at: nowIso() });
+        await memory.write({ kind: 'success', scope: `mission:${mission.id}`, text: `ミッション達成: ${vm.statement}`, evidence: 'measured', importance: 95 });
+        return { mission_id: mission.id, status: 'mission_completed', note: vm.statement, trace };
+      }
+    }
+
+    const remaining = await store.first(
+      `SELECT COUNT(*) AS c FROM tasks WHERE mission_id=? AND state NOT IN ('completed','cancelled','failed')`, mission.id);
+    return {
+      mission_id: mission.id, status: 'progressed', steps: done,
+      remaining_tasks: remaining?.c || 0, trace,
+    };
+  }
+
+  async function allTasks(missionId) {
+    return store.all('SELECT * FROM tasks WHERE mission_id=? ORDER BY created_at ASC', missionId);
+  }
+
+  async function checkpoint(scope, state, payload) {
+    await store.insert('checkpoints', { id: newId('ckp'), scope, state, payload: j(payload), created_at: nowIso() });
+    // keep only the most recent 30 per scope
+    const rows = await store.all('SELECT id FROM checkpoints WHERE scope=? ORDER BY created_at DESC LIMIT 200', scope);
+    if (rows.length > 30) {
+      for (const r of rows.slice(30)) await store.run('DELETE FROM checkpoints WHERE id=?', r.id);
+    }
+  }
+
+  /** Resume: wake tasks that were waiting for quota once the budget resets. */
+  async function resumeWaiting() {
+    const waiters = await store.all(`SELECT * FROM tasks WHERE state='waiting_for_quota'`);
+    let woken = 0;
+    for (const t of waiters) {
+      const since = new Date(t.updated_at).getTime();
+      if (Date.now() - since > 10 * 60e3) {
+        await store.run(`UPDATE tasks SET state='improving', next_action='クォータ回復後に再開', updated_at=? WHERE id=?`, nowIso(), t.id);
+        woken++;
+      }
+    }
+    return { woken, waiting: waiters.length - woken };
+  }
+
+  /** Notification digest respecting the character's report frequency. */
+  async function notifications({ limit = 20 } = {}) {
+    const state = await engineState();
+    const [waitApproval, waitQuota, needsHuman, recentFailures] = await Promise.all([
+      store.all(`SELECT COUNT(*) AS c FROM tasks WHERE state='waiting_for_approval'`),
+      store.all(`SELECT COUNT(*) AS c FROM tasks WHERE state='waiting_for_quota'`),
+      store.all(`SELECT * FROM missions WHERE status='paused'`),
+      store.all(`SELECT * FROM runs WHERE state='failed' ORDER BY created_at DESC LIMIT ?`, limit),
+    ]);
+    return {
+      engine: state.status,
+      engine_reason: state.reason,
+      waiting_approval: waitApproval[0]?.c || 0,
+      waiting_quota: waitQuota[0]?.c || 0,
+      paused_missions: needsHuman.map((m) => ({ id: m.id, title: m.title })),
+      recent_failures: recentFailures.map((r) => ({ summary: r.summary, at: r.created_at })),
+    };
+  }
+
+  return {
+    tick, createMission, control, engineState, notifications, resumeWaiting,
+    getCharacter, weightsFor, runMissionSlice, checkpoint,
+  };
+}
+
+function guessKind(diagnosis) {
+  const d = String(diagnosis || '');
+  if (/データ|取得できなかった/.test(d)) return 'data_gap';
+  if (/AI枠|API制限|一時/.test(d)) return 'transient';
+  if (/非リペイント/.test(d)) return 'spec_violation';
+  if (/テスト不合格/.test(d)) return 'bug';
+  if (/証拠/.test(d)) return 'evidence';
+  return 'unknown';
+}
