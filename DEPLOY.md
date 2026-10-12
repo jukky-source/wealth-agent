@@ -21,6 +21,15 @@
 bash scripts/deploy-cloudflare.sh
 ```
 Cloudflareへのログイン（ブラウザー1回）以外は自動です。
+CIや自動化からは、トークンを環境変数で渡せばログイン不要で完走します。
+
+```bash
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... OWNER_TOKEN=... \
+RUNNER_TOKEN=... bash scripts/deploy-cloudflare.sh
+```
+
+トークンには **Workers Scripts:Edit** と **D1:Edit**（および初回のみ **Account Settings:Read**）を付けてください。
+渡したトークンはデプロイ後に失効・再発行するのが安全です。
 
 ### C. Genspark Code（Developer）のホスティング
 Gensparkアカウントの **Developer v2** が有効なら、`gsk hosted deploy` でGenspark側のパーマネントURLへ出せます。

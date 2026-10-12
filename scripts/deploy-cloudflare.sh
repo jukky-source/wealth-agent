@@ -5,8 +5,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DB_NAME="${DB_NAME:-wealth-agent}"
-echo "==> 1/6 Cloudflare にログイン（ブラウザーが開きます）"
-npx --yes wrangler@4 login
+if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+  : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_API_TOKEN を使う場合は CLOUDFLARE_ACCOUNT_ID も設定してください}"
+  echo "==> 1/6 APIトークンで実行します（ブラウザーログイン不要）"
+else
+  echo "==> 1/6 Cloudflare にログイン（ブラウザーが開きます）"
+  npx --yes wrangler@4 login
+fi
 echo "==> 2/6 D1 データベースを用意"
 npx --yes wrangler@4 d1 create "$DB_NAME" || true
 DB_ID=$(npx --yes wrangler@4 d1 list --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s);const r=Array.isArray(a)?a:(a.result||[]);const m=r.find(x=>x.name===process.env.DB_NAME);console.log(m?m.uuid||m.id:'')})")
@@ -24,4 +29,5 @@ echo "==> 5/6 デプロイ"
 npx --yes wrangler@4 deploy
 echo "==> 6/6 完了。表示された https://...workers.dev のURLを iPhone の Safari で開き、"
 echo "    「共有 → ホーム画面に追加」で常設のまま使えます。"
-echo "    クラウドPCを使う場合は、wrangler.toml の [vars] に RUNNER_ENABLED = \"true\" を入れて再デプロイしてください。"
+echo "    クラウドPCを使う場合は、[vars] に RUNNER_ENABLED = \"true\" を入れ、RUNNER_TOKEN を secret 登録して再デプロイしてください。"
+echo "    （トークン運用例: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... OWNER_TOKEN=... bash scripts/deploy-cloudflare.sh）"
