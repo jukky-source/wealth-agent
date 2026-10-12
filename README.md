@@ -1,5 +1,7 @@
 # Wealth Agent — 自律型収益エージェント
 
+[![ci](https://github.com/jukky-source/wealth-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/jukky-source/wealth-agent/actions/workflows/ci.yml) [![deploy](https://github.com/jukky-source/wealth-agent/actions/workflows/deploy-cloudflare.yml/badge.svg)](https://github.com/jukky-source/wealth-agent/actions/workflows/deploy-cloudflare.yml)
+
 **「チャットで相談するAI」ではなく、長期目標を持ち、実際に仕事を進め続けるAIエージェント。**
 
 ユーザーが目標を一度設定すると、エージェントは自分で計画 → 調査 → 実行 → 検証 → 失敗分析 → 改善 → 次のタスク選択 を繰り返します。
