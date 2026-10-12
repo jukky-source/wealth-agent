@@ -22,6 +22,7 @@
   --radius-sm: 10px;
   --tap: 44px;
   --safe-b: env(safe-area-inset-bottom, 0px);
+  --tabbar-h: 60px;
   --safe-t: env(safe-area-inset-top, 0px);
   --font: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", Meiryo, system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -95,7 +96,7 @@ a { color: var(--accent); text-decoration: none; }
 .scrim.open { opacity: 1; pointer-events: auto; }
 
 /* ---------------------------------------------------------------- layout */
-.view { flex: 1; padding: 12px 12px calc(84px + var(--safe-b)); max-width: 760px; width: 100%; margin: 0 auto; }
+.view { flex: 1; padding: 12px 12px calc(var(--tabbar-h) + var(--safe-b) + 24px); max-width: 760px; width: 100%; margin: 0 auto; }
 h1 { font-size: 20px; margin: 6px 0 10px; letter-spacing: -.01em; }
 h2 { font-size: 15px; margin: 18px 0 8px; color: var(--fg-2); font-weight: 650; }
 h3 { font-size: 13.5px; margin: 12px 0 6px; color: var(--fg-2); }
@@ -215,16 +216,19 @@ details.acc summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
 
 /* ---------------------------------------------------------------- tabbar */
 .tabbar {
-  position: fixed; bottom: 0; left: 0; right: 0; z-index: 45;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 60;
+  display: grid; grid-template-columns: repeat(var(--tabbar-cols, 5), minmax(0, 1fr));
+  min-height: var(--tabbar-h);
   padding: 6px 4px calc(6px + var(--safe-b));
   background: color-mix(in srgb, var(--bg) 92%, transparent);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   border-top: 1px solid var(--line-soft);
 }
 .tabbar a {
-  display: flex; flex-direction: column; align-items: center; gap: 2px;
-  padding: 6px 2px; border-radius: 10px; color: var(--fg-3); font-size: 10px; font-weight: 600;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  min-width: 0; padding: 6px 2px; border-radius: 10px;
+  color: var(--fg-3); font-size: 10px; font-weight: 600;
+  white-space: nowrap; overflow: hidden;
 }
 .tabbar a .ic { font-size: 18px; line-height: 1; }
 .tabbar a.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
@@ -234,10 +238,10 @@ details.acc summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
 .msg { max-width: 88%; padding: 10px 12px; border-radius: 14px; font-size: 13.5px; white-space: pre-wrap; word-break: break-word; }
 .msg.me { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 5px; }
 .msg.agent { align-self: flex-start; background: var(--bg-2); border: 1px solid var(--line-soft); border-bottom-left-radius: 5px; }
-.composer { position: sticky; bottom: calc(72px + var(--safe-b)); display: flex; gap: 8px; padding-top: 8px; background: linear-gradient(transparent, var(--bg) 40%); }
+.composer { position: sticky; bottom: calc(var(--tabbar-h) + var(--safe-b) + 12px); display: flex; gap: 8px; padding-top: 8px; background: linear-gradient(transparent, var(--bg) 40%); }
 
 .toast {
-  position: fixed; left: 50%; transform: translate(-50%, 20px); bottom: calc(96px + var(--safe-b));
+  position: fixed; left: 50%; transform: translate(-50%, 20px); bottom: calc(var(--tabbar-h) + var(--safe-b) + 36px);
   background: var(--bg-3); border: 1px solid var(--line); color: var(--fg);
   padding: 10px 16px; border-radius: 12px; font-size: 13px; z-index: 90;
   opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; max-width: 90vw; text-align: center;
@@ -266,14 +270,7 @@ details.acc summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
 /* ---------------------------------------------------------------- fixes */
 /* Bottom tab bar must stay pinned to the viewport (iPhone) and never sit in
    the content flow, and the scroll area must clear it + the home indicator. */
-.tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-  padding-bottom: calc(6px + var(--safe-b));
-  background: color-mix(in srgb, var(--bg) 92%, transparent);
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-  border-top: 1px solid var(--line-soft);
-}
-.app { padding-bottom: calc(74px + var(--safe-b)); }
+.app { padding-bottom: calc(var(--tabbar-h) + var(--safe-b) + 14px); }
 
 /* --------------------------------------------------------- refinements v2 */
 /* Collapsible empty sections keep long screens scannable on a phone. */

@@ -33,3 +33,15 @@
 - **許可リスト** — 先頭コマンドが `RUNNER_ALLOW`（既定: `node,npm,npx,python3,pip3,ls,cat,echo,pwd,git,date,df,uname,head,tail,wc,find,grep,curl`）に一致しないと、投入時点で拒否。ランナー側でも実行直前に再検査します。
 - **資源の上限** — 1ジョブのタイムアウト（既定60秒、最大15分）と出力上限（既定20,000文字）。超過はプロセスグループごとSIGKILLします。
 - **二重取得なし** — 取り出しは `UPDATE … WHERE state='queued'` の条件付き更新なので、2台が同時にポーリングしても同じ仕事を二度実行しません。
+
+## git clone なしのワンライナー（公開URLから直接）
+
+リポジトリをクローンしなくても、デプロイ済みアプリが配信するブートストラップだけで常駐できます。
+
+```bash
+RUNNER_URL=https://wealth-agent.wealthagent-app.workers.dev \
+RUNNER_TOKEN=<あなたのRUNNER_TOKEN> \
+bash -c "$(curl -fsSL https://wealth-agent.wealthagent-app.workers.dev/cloud-pc.sh)"
+```
+
+Google Cloud Shell（週50時間・無料）で実行すると、tmux 上で常駐し、ブラウザータブを閉じても動き続けます。

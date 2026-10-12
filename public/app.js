@@ -89,7 +89,9 @@ function renderNav() {
   $('#drawerNav').innerHTML = NAV.map((n) => `
     <a href="#/${n.id}" class="${state.route === n.id ? 'active' : ''}"><span class="ic">${icon(n.ic)}</span><span>${n.label}</span></a>
   `).join('');
-  $('#tabbar').innerHTML = TABS.map((t) => `
+  const tb = $('#tabbar');
+  tb.style.setProperty('--tabbar-cols', String(TABS.length));
+  tb.innerHTML = TABS.map((t) => `
     <a href="#/${t.id}" class="${state.route === t.id ? 'active' : ''}"><span class="ic">${icon(t.ic)}</span><span>${t.label}</span></a>
   `).join('');
 }
@@ -100,6 +102,15 @@ function renderNav() {
  * typographic monogram otherwise. The mark never collapses into an empty box,
  * and a stored emoji is stripped so the icon system stays intact.
  */
+/** FX統計セルの表示値。取引0件では比率系が無意味なので「—」を返す。 */
+function fxVal(m, key, unit = '') {
+  const v = m?.[key];
+  const missing = v === null || v === undefined || v === '' || (typeof v === 'number' && !Number.isFinite(v));
+  if (missing || (!m?.trades && key !== 'trades')) return '—';
+  const t = esc(String(v));
+  return unit ? `${t}<span class="u">${unit}</span>` : t;
+}
+
 function mark(ch) {
   const url = /^data:image\//i.test(String(ch?.avatar_url || '')) ? String(ch.avatar_url) : null;
   if (url) return `<img class="ava-img" src="${esc(url)}" alt="" decoding="async">`;
@@ -443,11 +454,11 @@ screens.fx = async () => {
         <span class="badge ${b.pass ? 'ok' : 'danger'}">${b.pass ? 'PASS' : 'FAIL'}</span>
       </div>
       <div class="grid3">
-        <div class="stat"><div class="k">PF</div><div class="v">${b.metrics?.profitFactor ?? '—'}</div></div>
-        <div class="stat"><div class="k">勝率</div><div class="v">${b.metrics?.winRate ?? '—'}<span class="u">%</span></div></div>
-        <div class="stat"><div class="k">最大DD</div><div class="v">${b.metrics?.maxDrawdownPct ?? '—'}<span class="u">%</span></div></div>
-        <div class="stat"><div class="k">期待値</div><div class="v">${b.metrics?.expectancy ?? '—'}</div></div>
-        <div class="stat"><div class="k">取引数</div><div class="v">${b.metrics?.trades ?? '—'}</div></div>
+        <div class="stat"><div class="k">PF</div><div class="v">${fxVal(b.metrics, 'profitFactor')}</div></div>
+        <div class="stat"><div class="k">勝率</div><div class="v">${fxVal(b.metrics, 'winRate', '%')}</div></div>
+        <div class="stat"><div class="k">最大DD</div><div class="v">${fxVal(b.metrics, 'maxDrawdownPct', '%')}</div></div>
+        <div class="stat"><div class="k">期待値</div><div class="v">${fxVal(b.metrics, 'expectancy')}</div></div>
+        <div class="stat"><div class="k">取引数</div><div class="v">${fxVal(b.metrics, 'trades')}</div></div>
         <div class="stat"><div class="k">過剰最適化</div><div class="v" style="font-size:12px">${esc(b.overfit?.verdict || '—')}</div></div>
       </div>
     </div>`).join('') || empty('chart', 'バックテスト結果がありません')}
@@ -824,7 +835,7 @@ async function fxStrategyDetail(id) {
     <h3>バックテスト</h3>
     ${(d.backtests || []).map((b) => `<div class="item"><div class="spread"><span class="t">${esc(b.date_from)} → ${esc(b.date_to)}</span>
       <span class="badge ${b.pass ? 'ok' : 'danger'}">${b.pass ? 'PASS' : 'FAIL'}</span></div>
-      <div class="s mono">PF ${b.metrics?.profitFactor ?? '—'} / 勝率 ${b.metrics?.winRate ?? '—'}% / DD ${b.metrics?.maxDrawdownPct ?? '—'}%</div>
+      <div class="s mono">PF ${fxVal(b.metrics, 'profitFactor')} / 勝率 ${fxVal(b.metrics, 'winRate', '%')} / DD ${fxVal(b.metrics, 'maxDrawdownPct', '%')}</div>
       <div class="s">ウォークフォワード: ${b.walkforward?.netPositiveFolds ?? '—'}/${b.walkforward?.totalFolds ?? '—'} フォルダでプラス</div>
       <div class="s">過剰最適化: ${esc(b.overfit?.verdict || '—')}（劣化 ${b.overfit?.degradationPct ?? '—'}%）</div></div>`).join('') || '<div class="muted">未実施</div>'}
   `);
@@ -1060,12 +1071,12 @@ async function handleAction(act, root) {
             <div class="card-head"><div class="card-title">${esc(r.strategy.name)} · ${esc(r.symbol)}</div>
               <span class="badge ${r.pass ? 'ok' : 'danger'}">${r.pass ? 'PASS' : 'FAIL'}</span></div>
             <div class="grid3">
-              <div class="stat"><div class="k">PF</div><div class="v">${r.metrics.profitFactor ?? '—'}</div></div>
-              <div class="stat"><div class="k">勝率</div><div class="v">${r.metrics.winRate}<span class="u">%</span></div></div>
-              <div class="stat"><div class="k">期待値</div><div class="v">${r.metrics.expectancy}</div></div>
+              <div class="stat"><div class="k">PF</div><div class="v">${fxVal(r.metrics, 'profitFactor')}</div></div>
+              <div class="stat"><div class="k">勝率</div><div class="v">${fxVal(r.metrics, 'winRate', '%')}</div></div>
+              <div class="stat"><div class="k">期待値</div><div class="v">${fxVal(r.metrics, 'expectancy')}</div></div>
               <div class="stat"><div class="k">純益</div><div class="v" style="font-size:14px">${fmtNum(r.metrics.netProfitJPY)}</div></div>
-              <div class="stat"><div class="k">最大DD</div><div class="v">${r.metrics.maxDrawdownPct}<span class="u">%</span></div></div>
-              <div class="stat"><div class="k">取引</div><div class="v">${r.metrics.trades}</div></div>
+              <div class="stat"><div class="k">最大DD</div><div class="v">${fxVal(r.metrics, 'maxDrawdownPct', '%')}</div></div>
+              <div class="stat"><div class="k">取引</div><div class="v">${fxVal(r.metrics, 'trades')}</div></div>
             </div>
             ${r.reasons?.length ? `<div class="notice warn">不合格理由: ${esc(r.reasons.join(' / '))}</div>` : ''}
             <div class="muted" style="margin-top:8px">${esc(r.metrics.assumptions)}</div>
