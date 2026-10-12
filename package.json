@@ -10,9 +10,16 @@
     "test:unit": "node tests/unit.test.mjs",
     "deploy:worker": "wrangler deploy",
     "deploy:db": "wrangler d1 execute wealth-agent --file=./schema.sql --remote",
-    "db:local": "wrangler d1 execute wealth-agent --file=./schema.sql --local"
+    "db:local": "wrangler d1 execute wealth-agent --file=./schema.sql --local",
+    "test:fleet": "node tests/fleet.test.mjs",
+    "test:runner": "node tests/runner.test.mjs",
+    "test:all": "node tests/unit.test.mjs && node tests/run.mjs && node tests/avatar.test.mjs && node tests/fleet.test.mjs && node tests/runner.test.mjs",
+    "runner": "node runner/agent-runner.mjs",
+    "deploy": "bash scripts/deploy-cloudflare.sh"
   },
-  "engines": { "node": ">=22.5.0" },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "devDependencies": {
     "wrangler": "^4.0.0"
   }

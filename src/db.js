@@ -128,6 +128,8 @@ export async function ensureSchema(store) {
     `CREATE INDEX IF NOT EXISTS idx_ledger_day ON ledger(occurred_on)`,
     `CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT NOT NULL, preset TEXT, specialty TEXT, instructions TEXT, avatar TEXT, avatar_url TEXT, status TEXT NOT NULL DEFAULT 'idle', autonomy_level INTEGER DEFAULT 4, max_steps_per_tick INTEGER DEFAULT 2, focus_json TEXT DEFAULT '[]', stats_json TEXT DEFAULT '{}', last_run_at TEXT, last_result TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status)`,
+    `CREATE TABLE IF NOT EXISTS runner_jobs (id TEXT PRIMARY KEY, command TEXT NOT NULL, cwd TEXT, timeout_ms INTEGER DEFAULT 60000, state TEXT NOT NULL DEFAULT 'queued', runner_id TEXT, exit_code INTEGER, stdout TEXT, stderr TEXT, duration_ms INTEGER, requested_by TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)`,
+    `CREATE INDEX IF NOT EXISTS idx_runner_state ON runner_jobs(state, created_at)`,
     `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS spend_guard (day TEXT PRIMARY KEY, paid_calls INTEGER DEFAULT 0, est_cost_usd REAL DEFAULT 0, blocked INTEGER DEFAULT 0)`,
     `CREATE TABLE IF NOT EXISTS fetch_cache (url_hash TEXT PRIMARY KEY, url TEXT, status INTEGER, body TEXT, fetched_at TEXT NOT NULL)`,

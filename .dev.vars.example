@@ -18,3 +18,13 @@ OWNER_TOKEN=
 # no AI, no network, labelled as such in the UI.
 # IMAGE_MODEL_WORKERSAI=@cf/black-forest-labs/flux-1-schnell
 # IMAGE_MODEL_GEMINI=gemini-nano-banana-2.1
+
+# --- Cloud PC (remote runner) -------------------------------------------------
+# Heavy work is handed to a machine with a real filesystem. Off by default.
+#   RUNNER_ENABLED=true
+#   RUNNER_TOKEN=<a long random string>       # the machine pairs with this
+#   RUNNER_ALLOW=node,npm,python3,git,ls,cat,curl
+#   RUNNER_MAX_MS=60000
+#   RUNNER_MAX_OUTPUT=20000
+# On the cloud PC:
+#   RUNNER_URL=https://<your-url> RUNNER_TOKEN=<same> bash runner/cloud-pc.sh

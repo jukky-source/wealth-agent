@@ -20,6 +20,7 @@ export function createApi(deps) {
   // stays a thin router.
   const fleetApi = deps.fleet || null;
   const imgApi = deps.imagegen || null;
+  const runnerApi = deps.runner || null;
   const on = (method, pattern, handler) => routes.push({ method, pattern, handler });
 
   // ---------------------------------------------------------------- health
@@ -619,6 +620,20 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || 'ï¼ˆã
     return { config: await imgApi.config(), options: imgApi.options(), availability: imgApi.availability(), defaults: imgApi.DEFAULT_CONFIG };
   });
   on('POST', '/api/image/settings', async (req, body) => imgApi.setConfig(body || {}));
+
+  // ---------------------------------------------------------------- cloud PC (runner)
+  on('GET', '/api/runner', async (req) => (runnerApi ? runnerApi.status({ limit: Number(req?.query?.get?.('limit') || 20) }) : { ok: false, error: 'runner_unavailable' }));
+  on('POST', '/api/runner/jobs', async (req, body) => runnerApi.enqueue({
+    command: body?.command, cwd: body?.cwd, timeoutMs: body?.timeout_ms, requestedBy: 'owner',
+  }));
+  on('POST', '/api/runner/claim', async (req, body) => runnerApi.claim({
+    runnerId: body?.runner_id || 'cloud-pc', limit: body?.limit || 3,
+  }));
+  on('POST', '/api/runner/complete', async (req, body) => runnerApi.complete({
+    jobId: body?.job_id, exitCode: body?.exit_code, stdout: body?.stdout, stderr: body?.stderr,
+    durationMs: body?.duration_ms, runnerId: body?.runner_id,
+  }));
+  on('POST', '/api/runner/jobs/:id/cancel', async (req, body, p) => runnerApi.cancel(p.id));
 
   // ---------------------------------------------------------------- admin
   on('POST', '/api/admin/migrate', async () => {

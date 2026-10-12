@@ -1,5 +1,33 @@
 # デプロイ手順（無料枠のみ / 0円運用）
 
+## まず「常設」させる方法は3つ（おすすめ順）
+
+### A. GitHub Actions → Cloudflare（ブラウザーだけで完結・推奨）
+ローカルに何も入れずに、パーマネントURLまで到達します。
+
+1. このプロジェクトをGitHubリポジトリへpush（`scripts/publish-github.sh` が使えます）
+2. GitHubの **Settings → Secrets and variables → Actions** に登録
+   - `CLOUDFLARE_API_TOKEN`（Workers Scripts:Edit / D1:Edit）
+   - `CLOUDFLARE_ACCOUNT_ID`
+   - `OWNER_TOKEN`（アプリの認証トークン。推奨）
+   - 任意: `GEMINI_API_KEY` / `GROQ_API_KEY` / `OPENROUTER_API_KEY` / `RUNNER_TOKEN`
+3. `main` にpush（またはActionsから手動実行）→ テスト→D1作成→スキーマ適用→シークレット反映→デプロイ が自動で走ります
+4. ログに出る `https://wealth-agent.<サブドメイン>.workers.dev` を iPhone の Safari で開き、**共有 → ホーム画面に追加**
+
+以後は `main` にpushするだけで更新が反映されます（PWAはnetwork-firstなので次回起動で最新になります）。
+
+### B. ローカルから1コマンド
+```bash
+bash scripts/deploy-cloudflare.sh
+```
+Cloudflareへのログイン（ブラウザー1回）以外は自動です。
+
+### C. Genspark Code（Developer）のホスティング
+Gensparkアカウントの **Developer v2** が有効なら、`gsk hosted deploy` でGenspark側のパーマネントURLへ出せます。
+現在このアカウントでは `developer_not_enabled` で拒否されます。有効化するには [Genspark Code](https://www.genspark.ai/code/) でプロジェクトを作成してください（有効化できれば、こちらの手順も自動化して実行します）。
+
+---
+
 所要時間：約20分。すべて無料枠で完結します。
 
 ---

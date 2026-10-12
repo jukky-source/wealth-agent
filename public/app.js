@@ -1519,3 +1519,114 @@ setInterval(() => {
   if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
   render();
 }, 20000);
+
+// ===========================================================================
+// Appended module — Cloud PC (remote runner) screen.
+// ===========================================================================
+(() => {
+  const at = NAV.findIndex((n) => n.id === 'fleet');
+  if (at > -1 && !NAV.some((n) => n.id === 'runner')) NAV.splice(at + 1, 0, { id: 'runner', label: 'クラウドPC', ic: 'cpu' });
+})();
+state.runnerCommand = 'node -v';
+
+const JOB_STATE_LABEL = { queued: '待機', running: '実行中', done: '完了', failed: '失敗', cancelled: '中止' };
+const JOB_STATE_CLASS = { queued: 'warn', running: 'accent', done: 'ok', failed: 'danger', cancelled: 'ghost' };
+
+screens.runner = async () => {
+  const d = await api('/api/runner');
+  const st = d || {};
+  const jobs = st.jobs || [];
+  const runner = (st.runners || []).find((r) => r.online);
+  const base = location.origin;
+  return `
+  ${head('CLOUD PC', 'クラウドPC連携')}
+  <div class="notice">頭脳（このアプリ）は24時間動き続け、重い処理はクラウド上のマシンが実行します。仕事はサーバー側のキューに保存されるので、マシンが落ちても失われません。</div>
+  <div class="card">
+    <div class="card-head">
+      <div><div class="card-title">接続状況</div><div class="card-sub">ランナーは既定で無効です（安全のため）</div></div>
+      <span class="badge ${st.ready ? (st.online ? 'ok' : 'warn') : 'ghost'}">${st.ready ? (st.online ? '接続済み' : '待機中（マシン未接続）') : '未有効'}</span>
+    </div>
+    <div class="kv"><span class="k">機能の有効化</span><span class="v">${st.enabled ? '<span class="badge ok">RUNNER_ENABLED=true</span>' : '<span class="badge ghost">未設定</span>'} ${st.token_configured ? '<span class="badge ok">トークン設定済</span>' : '<span class="badge ghost">RUNNER_TOKEN 未設定</span>'}</span></div>
+    <div class="kv"><span class="k">接続中のマシン</span><span class="v">${runner ? `${esc(runner.id)}（最終通信 ${fmtDate(runner.last_seen)}）` : 'なし'}</span></div>
+    <div class="kv"><span class="k">キューの状態</span><span class="v">待機 ${st.counts?.queued || 0} / 実行中 ${st.counts?.running || 0} / 完了 ${st.counts?.done || 0} / 失敗 ${st.counts?.failed || 0}</span></div>
+    <div class="kv"><span class="k">上限</span><span class="v">1件 ${Math.round((st.max_ms || 60000) / 1000)}秒まで / 出力 ${fmtNum(st.max_output || 20000)} 文字</span></div>
+    ${st.ready ? '' : `<div class="notice warn" style="margin-top:10px">有効化するには、デプロイ先（Cloudflare）または <code>.dev.vars</code> に <code>RUNNER_ENABLED=true</code> と <code>RUNNER_TOKEN=&lt;推測困難な文字列&gt;</code> を設定してください。</div>`}
+  </div>
+
+  <div class="card">
+    <div class="card-title">クラウドPC側で実行するコマンド</div>
+    <div class="code-block mono" style="white-space:pre-wrap;word-break:break-all">RUNNER_URL=${esc(base)} \\
+RUNNER_TOKEN=&lt;RUNNER_TOKEN と同じ値&gt; \\
+bash runner/cloud-pc.sh</div>
+    <div class="hint">Google Cloud Shell（週50時間・5GB永続）、GitHub Codespaces（月120 core時間）、VPS、自宅PC のいずれでも動きます。tmux があれば常駐します。</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">重い処理を投げる</div>
+    <label class="field"><span class="lbl">コマンド（許可リストの先頭コマンドのみ）</span>
+      <input type="text" id="rCmd" value="${esc(state.runnerCommand)}" placeholder="例: node -e &quot;console.log(1+1)&quot;"></label>
+    <div class="grid2">
+      <label class="field"><span class="lbl">作業ディレクトリ（任意）</span><input type="text" id="rCwd" placeholder="既定: ~/agent-workspace"></label>
+      <label class="field"><span class="lbl">タイムアウト（秒）</span><input type="number" id="rTimeout" value="60" min="1" max="900"></label>
+    </div>
+    <div class="btn-row">
+      <button class="btn primary" data-runner="enqueue">この仕事を投入</button>
+      <button class="btn" data-runner="check">接続確認（node -v）</button>
+      <button class="btn" data-runner="refresh">再読み込み</button>
+    </div>
+    <div class="hint">許可コマンド: <span class="mono">${(st.allow || []).map(esc).join(', ')}</span>（<code>RUNNER_ALLOW</code> で変更できます）</div>
+  </div>
+
+  <h2>ジョブ履歴</h2>
+  ${jobs.length ? jobs.map((j) => `
+    <div class="card job-card">
+      <div class="card-head">
+        <div><div class="card-title mono" style="font-size:13px">${esc(j.command)}</div>
+        <div class="card-sub">${fmtDate(j.created_at)}${j.runner_id ? ` · ${esc(j.runner_id)}` : ''}${j.duration_ms ? ` · ${fmtNum(j.duration_ms)}ms` : ''}</div></div>
+        <span class="badge ${JOB_STATE_CLASS[j.state] || 'ghost'}">${esc(JOB_STATE_LABEL[j.state] || j.state)}${j.exit_code !== null && j.exit_code !== undefined ? ` (exit ${j.exit_code})` : ''}</span>
+      </div>
+      ${j.stdout ? `<div class="code-block mono" style="max-height:180px;overflow:auto;white-space:pre-wrap">${esc(j.stdout)}</div>` : ''}
+      ${j.stderr ? `<div class="code-block mono" style="white-space:pre-wrap;color:var(--danger,#e5484d)">${esc(j.stderr)}</div>` : ''}
+      ${['queued', 'running'].includes(j.state) ? `<button class="btn sm" data-runner="cancel|${esc(j.id)}">中止</button>` : ''}
+    </div>`).join('') : empty('cpu', 'ジョブはまだありません', '上のフォームから投入するか、クラウドPC側でランナーを起動してください')}
+  `;
+};
+
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-runner]');
+  if (!el) return;
+  const d = el.dataset;
+  const v = (sel) => (document.querySelector(sel) ? document.querySelector(sel).value.trim() : '');
+  try {
+    if (d.runner === 'refresh') { render(); return; }
+    if (d.runner === 'check') {
+      const r = await api('/api/runner/jobs', { method: 'POST', body: { command: 'node -v', timeout_ms: 30000 } });
+      toast(r.ok ? '接続確認を投入しました（クラウドPC接続後に出力が出ます）' : `投入できません: ${r.hint || r.error || ''}`, 5000);
+      render();
+      return;
+    }
+    if (d.runner && d.runner.startsWith('cancel|')) {
+      const r = await api(`/api/runner/jobs/${d.runner.split('|')[1]}/cancel`, { method: 'POST', body: {} });
+      toast(r.ok ? '中止しました' : '中止できませんでした');
+      render();
+      return;
+    }
+    if (d.runner === 'enqueue') {
+      const command = v('#rCmd');
+      state.runnerCommand = command;
+      const r = await api('/api/runner/jobs', { method: 'POST', body: {
+        command, cwd: v('#rCwd') || null, timeout_ms: (Number(v('#rTimeout')) || 60) * 1000,
+      } });
+      toast(r.ok ? '投入しました。クラウドPCが受け取り次第実行されます' : `投入できません: ${r.hint || r.error || ''}`, 5200);
+      render();
+      return;
+    }
+  } catch (err) { toast(`失敗: ${err.message}`); }
+});
+
+setInterval(() => {
+  if (state.route !== 'runner' || state.busy) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+  render();
+}, 15000);

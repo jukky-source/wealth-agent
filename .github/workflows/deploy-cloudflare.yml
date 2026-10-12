@@ -1,0 +1,47 @@
+name: deploy-cloudflare
+# パーマネントURLへ自動デプロイ（無料枠のみ）。GitHubのブラウザー画面だけで完結します。
+# 事前に Settings → Secrets and variables → Actions に以下を登録:
+#   CLOUDFLARE_API_TOKEN  （Workers Scripts:Edit / D1:Edit 権限）
+#   CLOUDFLARE_ACCOUNT_ID
+#   OWNER_TOKEN           （アプリの認証トークン・推奨）
+#   GEMINI_API_KEY など   （任意。無くても決定的モードで動作します）
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DB_NAME: wealth-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: テスト（失敗したらデプロイしない）
+        run: |
+          node tests/unit.test.mjs
+          node tests/run.mjs
+          node tests/avatar.test.mjs
+          node tests/fleet.test.mjs
+          node tests/runner.test.mjs
+      - name: D1 を用意してIDを書き込む
+        run: |
+          npx --yes wrangler@4 d1 create "$DB_NAME" || true
+          DB_ID=$(npx --yes wrangler@4 d1 list --json | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const a=JSON.parse(s);const r=Array.isArray(a)?a:(a.result||[]);const m=r.find(x=>x.name===process.env.DB_NAME);console.log(m?m.uuid||m.id:'')})")
+          test -n "$DB_ID" || { echo "D1 ID を取得できませんでした"; exit 1; }
+          sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/$DB_ID/" wrangler.toml
+          npx --yes wrangler@4 d1 execute "$DB_NAME" --file=./schema.sql --remote
+      - name: シークレットを反映（未設定はスキップ）
+        run: |
+          push() { name="$1"; value="$2"; if [ -n "$value" ]; then printf '%s' "$value" | npx --yes wrangler@4 secret put "$name"; echo "secret $name を反映"; else echo "secret $name は未設定のためスキップ"; fi; }
+          push OWNER_TOKEN "${{ secrets.OWNER_TOKEN }}"
+          push GEMINI_API_KEY "${{ secrets.GEMINI_API_KEY }}"
+          push GROQ_API_KEY "${{ secrets.GROQ_API_KEY }}"
+          push OPENROUTER_API_KEY "${{ secrets.OPENROUTER_API_KEY }}"
+          push RUNNER_TOKEN "${{ secrets.RUNNER_TOKEN }}"
+      - name: デプロイ
+        run: npx --yes wrangler@4 deploy

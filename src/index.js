@@ -22,6 +22,7 @@ import { createApi } from './api.js';
 import * as fxModule from './income/fx.js';
 import { createImageGen } from './ai/imagegen.js';
 import { createFleet } from './engine/fleet.js';
+import { createRunner } from './runner/queue.js';
 
 const wiredByEnv = new WeakMap();
 const schemaDone = new WeakSet();
@@ -58,15 +59,16 @@ function wire(env) {
   });
 
   const fleet = createFleet({ store, env, engine, memory, router });
+  const runner = createRunner({ store, env });
 
   const scheduler = createScheduler({ store, env, engine, memory, ranking, workflows: workflowEngine, router, research, fleet });
 
   const api = createApi({
     store, env, engine, router, memory, tools, research, deepResearch, knowledge,
-    dataAnalysis, codeAgent, browser, workflows: workflowEngine, fx, rewards, sidehustle, ranking, scheduler, imagegen, fleet,
+    dataAnalysis, codeAgent, browser, workflows: workflowEngine, fx, rewards, sidehustle, ranking, scheduler, imagegen, fleet, runner,
   });
 
-  const w = { store, env, router, memory, research, deepResearch, knowledge, dataAnalysis, codeAgent, browser, workflows: workflowEngine, rewards, sidehustle, ranking, engine, scheduler, api, tools, fx, imagegen, fleet };
+  const w = { store, env, router, memory, research, deepResearch, knowledge, dataAnalysis, codeAgent, browser, workflows: workflowEngine, rewards, sidehustle, ranking, engine, scheduler, api, tools, fx, imagegen, fleet, runner };
   wiredByEnv.set(env, w);
   return w;
 }
@@ -86,10 +88,15 @@ function json(data, status = 200, extraHeaders = {}) {
 }
 
 function authorized(req, env) {
-  if (!env.OWNER_TOKEN) return true; // local/dev mode — no token configured
+  if (!env.OWNER_TOKEN && !env.RUNNER_TOKEN) return true; // local/dev mode — no token configured
   const h = req.headers.get('authorization') || '';
   const token = h.replace(/^Bearer\s+/i, '').trim();
-  if (token && token === env.OWNER_TOKEN) return true;
+  if (token && env.OWNER_TOKEN && token === env.OWNER_TOKEN) return true;
+  // A paired cloud machine authenticates with its own token, and only against
+  // the runner endpoints — never against the rest of the owner API.
+  if (token && env.RUNNER_TOKEN && token === env.RUNNER_TOKEN) {
+    return new URL(req.url).pathname.startsWith('/api/runner');
+  }
   const url = new URL(req.url);
   const q = url.searchParams.get('token');
   return !!q && q === env.OWNER_TOKEN;

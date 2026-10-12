@@ -3,10 +3,10 @@
    dashboard snapshot which is served stale-while-offline so the home screen
    still renders something when the device has no signal. */
 
-const VERSION='wa-v4';
+const VERSION='wa-v5';
 const SHELL = [
   './', './index.html', './styles.css', './app.js',
-  './icons.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png',
+  './icons.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon-180.png',
 ];
 
 self.addEventListener('install', (e) => {

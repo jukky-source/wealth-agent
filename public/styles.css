@@ -460,3 +460,7 @@ img.ava-img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .img-set .kv { align-items: center; }
 .img-set input[type="text"] { width: 100%; }
 .img-set .chips { flex-wrap: wrap; }
+
+/* --- cloud PC job cards (v5) ---------------------------------------------- */
+.job-card .card-title { word-break: break-all; }
+.job-card .code-block { margin-top: 8px; font-size: 12px; }
