@@ -9,6 +9,7 @@
 
 import { nowIso, safeJson, utcDay, truncate } from './util.js';
 import { setting, setSetting } from './db.js';
+import { checkWatches } from './agent/watch.js';
 
 export function createScheduler(deps) {
   const { store, env, engine, memory, ranking, workflows, router, research, fleet = null } = deps;
@@ -57,6 +58,13 @@ export function createScheduler(deps) {
         report.steps.push({ step: 'daily_recalibration', ...r });
       }
     } catch (e) { report.steps.push({ step: 'daily_recalibration', error: e.message }); }
+
+    // 5) watch rules — speak up on its own only when the condition is really met
+    try {
+      const w = await checkWatches({ store, memory });
+      if (w.fired.length) report.steps.push({ step: 'watch', fired: w.fired.length, ids: w.fired.map((f) => f.id) });
+      else report.steps.push({ step: 'watch', checked: w.checked, fired: 0 });
+    } catch (e) { report.steps.push({ step: 'watch', error: e.message }); }
 
     await store.run(`INSERT INTO settings (key,value,updated_at) VALUES ('scheduler:last_run',?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,

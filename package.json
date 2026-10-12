@@ -6,7 +6,7 @@
   "description": "Autonomous Wealth Agent — a self-directed income research & execution agent (PWA + Cloudflare Workers + D1)",
   "scripts": {
     "dev": "node server/local.mjs",
-    "test": "node tests/run.mjs",
+    "test": "node tests/run.mjs && node tests/capabilities.mjs",
     "test:unit": "node tests/unit.test.mjs",
     "deploy:worker": "wrangler deploy",
     "deploy:db": "wrangler d1 execute wealth-agent --file=./schema.sql --remote",

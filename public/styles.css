@@ -285,3 +285,12 @@ details.disclosure[open] summary{margin-bottom:10px}
   .composer{margin-left:10px;margin-right:10px}
   .kpis{grid-template-columns:repeat(auto-fit,minmax(84px,1fr))}
 }
+
+/* ---- new capabilities: card buttons, evidence links, trace, sheet rows ---- */
+.row-t a{color:var(--accent);text-decoration:none;word-break:break-word}
+.row-t a:active{opacity:.7}
+.btn.sm{padding:9px 12px;font-size:13px;min-height:36px;border-radius:12px;line-height:1.2}
+.badge.danger{background:rgba(242,85,90,.14);color:var(--danger)}
+.badge.accent{background:var(--accent-soft);color:var(--accent)}
+.trail-i.next{border-left-color:var(--warn)}
+.card-b .row .btn.sm{flex:0 0 auto}

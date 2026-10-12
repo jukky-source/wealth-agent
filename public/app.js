@@ -34,7 +34,7 @@ function bucketOf(iso) {
 }
 
 const LS_TOKEN = 'wa_token';
-const DEFAULT_SUGGEST = ['今どうなってる？', '次の一手を進めて', '収益はいくら？', '稼げる方法を探して'];
+const DEFAULT_SUGGEST = ['今どうなってる？', '次の一手を進めて', '収益はいくら？', '足あとを見せて'];
 
 {
   const u = new URL(location.href);
@@ -105,11 +105,20 @@ function cardHTML(c) {
       <div class="card-b"><div class="rows">${(c.items || []).map((it) => `
         <div class="row">
           <div class="row-main">
-            <div class="row-t">${esc(it.title || '')}</div>
+            <div class="row-t">${it.href ? `<a href="${esc(it.href)}" target="_blank" rel="noreferrer">${esc(it.title || '')}</a>` : esc(it.title || '')}</div>
             ${it.sub ? `<div class="row-s">${esc(it.sub)}</div>` : ''}
           </div>
-          ${it.badge ? `<span class="badge ${esc(it.tone || 'ghost')}">${esc(it.badge)}</span>` : ''}
+          ${it.act
+            ? `<button class="btn sm" type="button" data-do="${esc(it.act)}">${esc(it.act_label || '実行')}</button>`
+            : (it.badge ? `<span class="badge ${esc(it.tone || 'ghost')}">${esc(it.badge)}</span>` : '')}
         </div>`).join('')}</div></div>
+    </div>`;
+  }
+  if (c.type === 'trace') {
+    return `<div class="card">
+      ${c.title ? `<div class="card-h">${icon(c.icon || 'pulse')}<span>${esc(c.title)}</span></div>` : ''}
+      <div class="card-b"><div class="trail">${(c.items || []).map((x) => `
+        <div class="trail-i ${esc(x.cls || 'ok')}"><div class="trail-t">${esc(x.t || '')}</div><div class="trail-s">${esc(x.s || '')}</div></div>`).join('')}</div></div>
     </div>`;
   }
   if (c.type === 'note') {
@@ -143,6 +152,26 @@ function msgHTML(m, index) {
     </div>`;
 }
 
+/** Buttons that live inside cards: resume a stopped task, drop a watch rule. */
+async function doAction(spec, btn) {
+  const [kind, id] = String(spec || '').split(':');
+  if (!id) return;
+  btn.disabled = true;
+  if (kind === 'resume') {
+    const r = await api(`/api/tasks/${encodeURIComponent(id)}/action`, { method: 'POST', body: { action: 'resume' }, quiet: true });
+    if (r && r.ok !== false) { toast(`続きから再開しました（前回: ${r.from || '開始地点'}）`); send('足あとを見せて'); }
+    else { toast('再開できませんでした'); btn.disabled = false; }
+    return;
+  }
+  if (kind === 'watch_off') {
+    await api(`/api/watches/${encodeURIComponent(id)}`, { method: 'POST', body: { action: 'delete' }, quiet: true });
+    toast('見張りを解除しました');
+    renderFoot();
+    return;
+  }
+  btn.disabled = false;
+}
+
 function threadEl() { return $('#thread'); }
 
 function scrollDown(smooth = true) {
@@ -157,6 +186,7 @@ function bindMsg(root) {
     try { await navigator.clipboard.writeText(m?.text || ''); toast('コピーしました'); } catch { toast('コピーできませんでした'); }
   }));
   $$('[data-remember]', root).forEach((b) => b.addEventListener('click', () => send('この手順を覚えて')));
+  $$('[data-do]', root).forEach((b) => b.addEventListener('click', () => doAction(b.dataset.do, b)));
 }
 
 function renderThread() {
@@ -245,6 +275,7 @@ function renderRail() {
 async function renderFoot() {
   const d = state.dash || {};
   const waiting = d.notifications?.waiting_approval || 0;
+  const watchCount = d.watches_active || 0;
   const fleet = await api('/api/fleet', { quiet: true }).catch(() => null);
   const agents = (fleet?.agents || []).slice(0, 4);
   const teammates = agents.length
@@ -256,6 +287,7 @@ async function renderFoot() {
     <div class="rail-sec">エージェント</div>
     <button class="rail-item" data-open="work">${icon('eye', 'i sm')}作業をのぞく</button>
     <button class="rail-item" data-open="approvals">${icon('shield', 'i sm')}承認${waiting ? `<span class="badge warn">${waiting}</span>` : ''}</button>
+    <button class="rail-item" data-open="watch">${icon('eye', 'i sm')}見張り${watchCount ? `<span class="badge accent">${watchCount}</span>` : ''}</button>
     <button class="rail-item" data-open="settings">${icon('gear', 'i sm')}設定</button>`;
   $$('[data-open]', $('#railFoot')).forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)));
 }
@@ -412,6 +444,7 @@ function kv(k, v) { return `<div class="kv"><span class="k">${esc(k)}</span><spa
 async function openSheet(which = 'info') {
   if (which === 'work') return openWork();
   if (which === 'approvals') return openApprovals();
+  if (which === 'watch') return openWatch();
 
   const d = state.dash || (await refresh({ quiet: false })) || {};
   const ch = d.character || {};
@@ -521,6 +554,21 @@ async function openWork() {
   $('#workOpen').addEventListener('click', () => { closeSheet(); $('#input').focus(); });
 }
 
+/** 見張り（先回り報告）— 条件と現在値、解除ボタン。 */
+async function openWatch() {
+  const w = await api('/api/watches', { quiet: true });
+  const rules = (w?.watches || []);
+  openSheetRaw('見張り', `
+    <div>
+      <div class="sec-t">条件に達したら、私から報告します</div>
+      ${rules.length ? `<div class="rows">${rules.map((r) => `<div class="row"><div class="row-main"><div class="row-t">${esc(r.label)} ${r.op === '<=' ? '≤' : '≥'} ${fmt(r.threshold)}${esc(r.unit || '')}</div><div class="row-s">いま ${fmt(r.current_value)}${esc(r.unit || '')} · ${r.status === 'triggered' ? '報告済み' : r.status === 'paused' ? '停止中' : '見張り中'}</div></div><button class="btn sm" data-do="watch_off:${esc(r.id)}">解除</button></div>`).join('')}</div>`
+        : '<div class="muted" style="font-size:13px">まだ見張りはありません。会話で「実測収益が3万円を超えたら教えて」のように頼むと、ここに並びます。</div>'}
+    </div>
+    <div class="muted" style="font-size:12.5px">条件は登録した瞬間に固定されます。値は毎回、台帳と作業キューから読み直して照合します。</div>
+  `);
+  $$('[data-do]', $('#sheetIn')).forEach((b) => b.addEventListener('click', () => doAction(b.dataset.do, b)));
+}
+
 async function openApprovals() {
   const a = await api('/api/approvals', { quiet: true });
   const pending = (a?.approvals || []);
@@ -537,6 +585,14 @@ async function openApprovals() {
     <div>
       <div class="sec-t">必ずあなたの承認を待つこと</div>
       <div class="rows">${((a?.policy?.approval_required) || []).map((x) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(x)}</div></div><span class="badge warn">承認必須</span></div>`).join('') || '<div class="muted" style="font-size:13px">—</div>'}</div>
+    </div>
+    <div>
+      <div class="sec-t">やらないと決めていること</div>
+      <div class="rows">${((a?.policy?.never) || []).map((x) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(x)}</div></div><span class="badge danger">しない</span></div>`).join('') || '<div class="muted" style="font-size:13px">—</div>'}</div>
+    </div>
+    <div>
+      <div class="sec-t">鍵のあつかい</div>
+      <div class="muted" style="font-size:12.5px">${esc(a?.policy?.keys || 'APIキーはサーバー側にのみ保存し、会話には出しません。')}</div>
     </div>
   `);
 }

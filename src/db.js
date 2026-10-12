@@ -125,7 +125,9 @@ export async function ensureSchema(store) {
     `CREATE TABLE IF NOT EXISTS chat_threads (id TEXT PRIMARY KEY, title TEXT, mode TEXT DEFAULT 'normal', pinned INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)`,
     `CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, thread_id TEXT, role TEXT, text TEXT, cards_json TEXT, events_json TEXT, kind TEXT, created_at TEXT)`,
     `CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at)`,
-    `CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at)`, 
+    `CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at)`,
+    // 見張り（先回り報告）— 条件つきの監視。
+    `CREATE TABLE IF NOT EXISTS watch_rules (id TEXT PRIMARY KEY, thread_id TEXT, metric TEXT NOT NULL, op TEXT, threshold REAL, note TEXT, status TEXT DEFAULT 'active', last_value REAL, last_checked_at TEXT, triggered_count INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)`, 
     `CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT, status TEXT DEFAULT 'queued', cursor INTEGER DEFAULT 0, context TEXT, log_json TEXT DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, task_id TEXT, action TEXT NOT NULL, risk_level TEXT NOT NULL, payload TEXT, status TEXT DEFAULT 'pending', requested_at TEXT NOT NULL, decided_at TEXT, note TEXT)`,
     `CREATE INDEX IF NOT EXISTS idx_appr_status ON approvals(status)`,

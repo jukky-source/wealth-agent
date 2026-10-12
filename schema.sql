@@ -402,3 +402,22 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at);
+
+-- ---------------------------------------------------------------------------
+-- Watch rules (proactive check-ins: "tell me when measured revenue passes X")
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS watch_rules (
+  id            TEXT PRIMARY KEY,
+  thread_id     TEXT,               -- the conversation the report is written into
+  metric        TEXT NOT NULL,      -- measured_revenue|completed_tasks|failed_tasks|pending_approvals
+  op            TEXT DEFAULT '>=',
+  threshold     REAL,
+  note          TEXT,
+  status        TEXT DEFAULT 'active',   -- active|triggered|paused
+  last_value    REAL,
+  last_checked_at TEXT,
+  triggered_count INTEGER DEFAULT 0,
+  created_at    TEXT,
+  updated_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_watch_status ON watch_rules(status);
