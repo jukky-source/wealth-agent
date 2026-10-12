@@ -53,6 +53,10 @@ const env = {
   ALLOW_PAID_AI: process.env.ALLOW_PAID_AI || 'false',
   PAID_DAILY_CAP_USD: process.env.PAID_DAILY_CAP_USD || '',
   OWNER_TOKEN: process.env.OWNER_TOKEN || '',
+  // Cloud-PC runner pairing (off unless explicitly enabled)
+  RUNNER_ENABLED: process.env.RUNNER_ENABLED || 'false',
+  RUNNER_TOKEN: process.env.RUNNER_TOKEN || '',
+  RUNNER_ALLOW: process.env.RUNNER_ALLOW || '',
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   GROQ_API_KEY: process.env.GROQ_API_KEY || '',
   OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || '',
