@@ -449,28 +449,31 @@ await test('H', '実績収益と推定収益が別々に表示される', async 
 });
 
 // ===========================================================================
-await test('I', 'iPhoneの画面幅で主要操作が使用できる（モバイルファースト）', async () => {
+await test('I', 'iPhoneの画面幅で主要操作が使用できる（チャットファースト）', async () => {
   const html = readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
   assert.ok(html.includes('width=device-width'), 'responsive viewport');
   assert.ok(html.includes('viewport-fit=cover'), 'iPhone safe-area support');
   assert.ok(html.includes('apple-mobile-web-app-capable'), 'iOS home-screen support');
   assert.ok(html.includes('manifest.webmanifest'), 'PWA manifest linked');
+  assert.ok(html.includes('id="thread"') && html.includes('id="composer"'), 'one conversation, one input');
 
   const css = readFileSync(path.join(ROOT, 'public/styles.css'), 'utf8');
   assert.ok(/--tap:\s*44px/.test(css), 'minimum 44px touch targets');
-  assert.ok(/position:\s*fixed; bottom: 0/.test(css), 'fixed bottom tab bar for one-handed use');
+  assert.ok(/height:100dvh/.test(css), 'the app fills the viewport for one-handed use');
+  assert.ok(/\.thread\{[^}]*overflow-y:auto/.test(css), 'the conversation scrolls on its own');
+  assert.ok(/\.composer\{[^}]*border-radius/.test(css), 'a thumb-reachable composer sits below the thread');
   assert.ok(/safe-area-inset-bottom/.test(css), 'safe area insets handled');
   assert.ok(/@media \(max-width: 380px\)/.test(css), 'very narrow screens handled');
-  assert.ok(/prefers-color-scheme: light/.test(css), 'light mode supported');
 
   const app = readFileSync(path.join(ROOT, 'public/app.js'), 'utf8');
-  for (const route of ['home', 'missions', 'tasks', 'opportunities', 'fx', 'rewards', 'sidehustle', 'workflows', 'knowledge', 'logs', 'character', 'settings']) {
-    assert.ok(app.includes(`screens.${route}`), `screen ${route} must exist`);
-  }
-  // Home screen must show the required elements
-  for (const kw of ['現在のミッション', '次に実行するタスク', '選定理由', '最後に成功したステップ', '停止', 'API使用状況']) {
-    assert.ok(app.includes(kw), `home screen must display "${kw}"`);
-  }
+  assert.ok(app.includes("'/api/chat/act'"), 'chat messages drive real actions');
+  assert.ok(app.includes('data-open'), 'secondary information stays behind the sheet');
+  assert.ok(!/screens\./.test(app) && !html.includes('tabbar'), 'no tab maze — the thread is the interface');
+
+  // Honesty contract: measured and estimated income stay visibly separated.
+  const cmds = readFileSync(path.join(ROOT, 'src/agent/commands.js'), 'utf8');
+  assert.ok(cmds.includes('実測収益') && cmds.includes('推定収益'), 'measured vs estimated shown apart');
+
   const manifest = JSON.parse(readFileSync(path.join(ROOT, 'public/manifest.webmanifest'), 'utf8'));
   assert.equal(manifest.display, 'standalone');
   assert.ok(manifest.icons.length >= 3, 'PWA icons declared');

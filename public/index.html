@@ -2,52 +2,44 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<meta name="color-scheme" content="dark light" />
+<meta name="color-scheme" content="dark" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
-<meta name="theme-color" content="#0b0f19" />
+<meta name="theme-color" content="#08080a" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Wealth Agent" />
-<meta name="description" content="自律型収益エージェント — 目標を分解し、調査・実行・検証・改善を自分で回し続ける" />
-<title>Wealth Agent — 自律型収益エージェント</title>
+<meta name="description" content="自律型収益エージェント — 話しかけるだけで、調査・実行・検証・改善を自分で回し続ける" />
+<title>Wealth Agent</title>
 <link rel="manifest" href="manifest.webmanifest" />
 <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon-180.png" />
 <link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png" />
-<link rel="mask-icon" href="icons/icon-192.png" color="#0b0f19" />
+<link rel="mask-icon" href="icons/icon-192.png" color="#08080a" />
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-<div id="app" class="app">
-  <header class="topbar" id="topbar">
-    <button class="icon-btn" id="menuBtn" aria-label="メニュー"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
-    <div class="title-block">
-      <div class="agent-name" id="agentName">…</div>
-      <div class="agent-status" id="agentStatus">読み込み中</div>
-    </div>
-    <div class="engine-pill" id="enginePill">—</div>
+<div class="app" id="app">
+  <header class="bar">
+    <button class="ava" id="avaBtn" aria-label="エージェントの情報"></button>
+    <button class="who" id="whoBtn" aria-label="状態の詳細">
+      <span class="nm" id="agentName">Wealth Agent</span>
+      <span class="st"><i class="pulse" id="pulse"></i><span id="agentStatus">接続中</span></span>
+    </button>
+    <button class="icon-btn" id="moreBtn" aria-label="その他">⋯</button>
   </header>
 
-  <aside class="drawer" id="drawer" aria-hidden="true">
-    <div class="drawer-head">
-      <div class="agent-avatar" id="agentAvatar"></div>
-      <div>
-        <div class="dn" id="drawerName">…</div>
-        <div class="dt" id="drawerTone">…</div>
-      </div>
-    </div>
-    <nav class="drawer-nav" id="drawerNav"></nav>
-    <div class="drawer-foot">
-      <button class="ghost" id="chatBtn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8.4 8.4 0 0 1-12.2 7.4L4 21l1.7-4.6A8.4 8.4 0 1 1 21 12z"/></svg> チャット（補助）</button>
-    </div>
-  </aside>
-  <div class="scrim" id="scrim"></div>
+  <main class="thread" id="thread" aria-live="polite"></main>
 
-  <main id="view" class="view" tabindex="-1"></main>
+  <div class="chips" id="chips"></div>
 
-  <nav class="tabbar" id="tabbar"></nav>
+  <form class="composer" id="composer" autocomplete="off">
+    <textarea id="input" rows="1" placeholder="エージェントに指示する" enterkeyhint="send"></textarea>
+    <button class="send" id="sendBtn" type="submit" aria-label="送信">↑</button>
+  </form>
+
+  <div class="sheet-scrim" id="sheetScrim"></div>
+  <aside class="sheet" id="sheet" aria-hidden="true"><div class="sheet-in" id="sheetIn"></div></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </div>
-
 <script type="module" src="app.js"></script>
 </body>
 </html>

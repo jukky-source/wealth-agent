@@ -543,7 +543,7 @@ export function createApi(deps) {
     const kind = body.kind === 'cost' ? 'cost' : 'revenue';
     const basis = ['measured', 'third_party', 'estimated', 'unverified'].includes(body.basis) ? body.basis : 'unverified';
     if (basis === 'measured' && !body.source) return { ok: false, error: 'measured_requires_source', note: '実測として記録するには source（証拠URL/記録）が必要です' };
-    const row = { id: `led_${Date.now().toString(36)}`, kind, amount: Number(body.amount) || 0, currency: body.currency || 'JPY', basis, source: body.source || null, opportunity_id: body.opportunity_id || null, occurred_on: body.occurred_on || utcDay(), note: body.note || null, created_at: nowIso() };
+    const row = { id: `led_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, kind, amount: Number(body.amount) || 0, currency: body.currency || 'JPY', basis, source: body.source || null, opportunity_id: body.opportunity_id || null, occurred_on: body.occurred_on || utcDay(), note: body.note || null, created_at: nowIso() };
     await store.insert('ledger', row);
     return { ok: true, entry: row };
   });
@@ -589,6 +589,15 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
     });
     await memory.write({ kind: 'experience', key: `chat:${Date.now()}`, text: `オーナーとの対話: ${truncate(body.message, 200)}`, evidence: 'measured', importance: 30 });
     return { ok: true, reply: r.text, provider: r.provider, fallback: !!r.fallback, note: r.note || null };
+  });
+
+  // ---------------------------------------------------------------- chat actions (chat-first UI)
+  on('POST', '/api/chat/act', async (req, body) => {
+    const cmds = await import('./agent/commands.js');
+    return cmds.runCommand({
+      message: body && body.message ? String(body.message) : '',
+      deps: { store, env, engine, router, memory, research, deepResearch, knowledge, workflows, ranking, scheduler, browser, tools, fleet: fleetApi, runner: runnerApi },
+    });
   });
 
   // ---------------------------------------------------------------- fleet (multi-agent)
