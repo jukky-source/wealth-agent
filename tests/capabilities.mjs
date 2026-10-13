@@ -437,6 +437,70 @@ test('[C28] 通貨をまたいで足さない（円換算できない入金は�
   assert.match(revenueLine(r), /円換算せず/);
 });
 
+
+import { FREE_PROVIDERS, providerStatus, poolCapacity, routePlan, paidLanes } from '../src/agent/providers.js';
+import { CHANNELS, netOf, rankByNet, channelCard } from '../src/agent/channels.js';
+
+test('[C33] 無料AIはキー0本でも成立する（決定的エンジンが土台・ローカルは無制限）', () => {
+  const st = providerStatus({});
+  assert.equal(st.length, FREE_PROVIDERS.length);
+  assert.equal(st.filter((p) => p.configured).length, 1);           // ローカル推論のみ
+  assert.equal(st.find((p) => p.id === 'local').configured, true);
+  const cap = poolCapacity({});
+  assert.equal(cap.daily_requests, 0);                              // 従量の無料枠は未設定
+  assert.equal(cap.unmetered, true);                                // それでも上限なしのレーンがある
+  assert.equal(st.find((p) => p.id === 'gemini').missing[0], 'GEMINI_API_KEY');
+});
+
+test('[C34] 各社の独立した無料枠が合算され、有料は既定で封じる', () => {
+  const env = { GEMINI_API_KEY: 'a', GROQ_API_KEY: 'b', CEREBRAS_API_KEY: 'c' };
+  const cap = poolCapacity(env);
+  assert.equal(cap.configured, 4);                                  // 3社 + ローカル
+  assert.equal(cap.daily_requests, 1500 + 1000);     // RPD を持つレーンのみ
+  assert.equal(cap.daily_tokens, 1000000);           // Cerebras は TPD で数える
+  assert.equal(paidLanes(env).paid_allowed, false);
+  assert.equal(paidLanes(env).blocked.length > 0, true);
+  assert.equal(paidLanes({ ...env, ALLOW_PAID_AI: 'true' }).paid_allowed, true);
+});
+
+test('[C35] 用途別にレーンを並べ替える（code はコード向きが先頭、ローカルは最後の安全網）', () => {
+  const env = { GROQ_API_KEY: 'b', CLOUDFLARE_API_TOKEN: 't', CLOUDFLARE_ACCOUNT_ID: 'i' };
+  const plan = routePlan('code', env);
+  assert.equal(plan.lanes[0].id === 'groq' || plan.lanes[0].id === 'cloudflare', true);
+  assert.equal(plan.fallback, 'deterministic');
+  const long = routePlan('long', env);
+  assert.equal(long.lanes.length >= 2, true);
+});
+
+test('[C36] 売り先は手残り順に並び、規約で不可のチャネルは候補から外れる', () => {
+  const envato = CHANNELS.find((c) => c.id === 'envato');
+  assert.equal(envato.blocked, true);
+  assert.equal(netOf('envato', 19).blocked, true);
+  assert.equal(netOf('x402', 19).take_pct, 0);                      // 直販は手数料ゼロ
+  assert.equal(netOf('coconala', 19).net, null);                    // 未確認を手数料0扱いしない
+  assert.equal(netOf('x402', 19).net, 19);
+  assert.equal(netOf('gumroad', 19).exact, true);                   // 公式ページで確認済み
+  assert.equal(netOf('gumroad', 19).take_pct > 10, true);
+  const ranked = rankByNet(19);
+  assert.equal(ranked[0].id, 'x402');
+  assert.equal(ranked.some((r) => r.id === 'envato'), false);
+  const card = channelCard(19);
+  assert.equal(card.blocked.includes('Envato (Market/Elements)'), true);
+});
+
+test('[C37] 配線契約: 会話からもAPIからも引ける', () => {
+  const cmd = read('src/agent/commands.js');
+  assert.match(cmd, /id: 'providers'/);
+  assert.match(cmd, /id: 'channels'/);
+  const api = read('src/api.js');
+  assert.match(api, /'\/api\/providers'/);
+  assert.match(api, /'\/api\/channels'/);
+  const prov = read('src/agent/providers.js');
+  assert.match(prov, /ALLOW_PAID_AI/);
+  const ch = read('src/agent/channels.js');
+  assert.match(ch, /autonomy/);
+});
+
 let pass = 0; const failed = [];
 for (const [name, fn] of tests) {
   try { await fn(); pass += 1; console.log(`  ✓ ${name}`); }

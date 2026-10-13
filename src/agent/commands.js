@@ -21,7 +21,10 @@ const first = (re, s) => (s.match(re) || [])[0];
 const has = (s, ...w) => w.some((x) => s.includes(x));
 
 /** 数字を含む返答は必ず検算する（判定を付ける種類）。 */
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue']);
+import { providerCard, providerHelp } from './providers.js';
+import { channelCard, channelHelp } from './channels.js';
+
+const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -164,6 +167,31 @@ const HELP = `話しかけるだけで大丈夫です。たとえば:
 // ---------------------------------------------------------------- rules
 
 const RULES = [
+  {
+    id: 'providers',
+    // 無料のレーンを増やす話。キー0本でも全機能が動くことを先に伝える。
+    test: (s) => re(s, /無料の?(AI|エイアイ)|AIの?枠|プロバイダ|推論レーン|AIをもっと|AIをめっちゃ/) || has(s, '無料AI', 'AIの枠', 'ローカル推論'),
+    run: async () => ({
+      reply: [
+        '無料で使えるAIのレーンを一覧にしました。キーが1本も無くてもエージェントは全機能動きます（推論の品質が上がるだけです）。',
+        providerHelp(),
+      ].join('\n'),
+      cards: [providerCard()],
+    }),
+  },
+  {
+    id: 'channels',
+    // どこで売るか。手数料を引いた手残りと、無人で回せるかで並べる。
+    test: (s) => re(s, /チャネル|販路|売り先|出品先|どこで売/) || has(s, '売り先', '販売先'),
+    run: async () => ({
+      reply: [
+        '売り先ごとに、手数料を引いた手残りと「無人で回せるか」を並べました。',
+        channelHelp(),
+      ].join('\n'),
+      cards: [channelCard(19)],
+    }),
+  },
+
   {
     id: 'help',
     test: (s) => has(s, 'ヘルプ', '使い方', '操作方法', '何を頼め'),

@@ -17,6 +17,9 @@ import { getEnvelope, setEnvelope, envelopeCard, checkEnvelope } from './agent/e
 import { createJob, advanceJob, revenueSummary, jobCard, jobListItems, recordReceipt } from './agent/revenue.js';
 import { catalog as x402Catalog, x402Enabled, receiptFromCallback } from './agent/x402.js';
 
+import { providerCard, providerHelp } from './agent/providers.js';
+import { channelCard, channelHelp } from './agent/channels.js';
+
 export function createApi(deps) {
   const { store, env, engine, router, memory, tools, research, deepResearch, knowledge, dataAnalysis, codeAgent, browser, workflows, fx, rewards, sidehustle, ranking, scheduler, imagegen } = deps;
 
@@ -971,6 +974,22 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || 'ï¼ˆã
       raw: b, signature_verified: true,
     });
     return r.ok ? { ok: true, receipt_id: r.receipt.id, amount: r.receipt.amount } : { ok: false, error: r.error };
+  });
+
+  on('GET', '/api/providers', async () => {
+    const card = providerCard();
+    return { ...card, help: providerHelp() };
+  });
+
+  on('GET', '/api/channels', async (req) => {
+    let gross = 19;
+    try {
+      const u = new URL(req.url, 'http://local');
+      const q = Number(u.searchParams.get('gross'));
+      if (Number.isFinite(q) && q > 0) gross = q;
+    } catch { /* keep default */ }
+    const card = channelCard(gross);
+    return { ...card, help: channelHelp() };
   });
 
   return { routes };
