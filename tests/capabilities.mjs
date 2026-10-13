@@ -616,9 +616,10 @@ test('[C45] 売り場は「俺の手間」の少ない順に並ぶ（手残り�
   for (let i = 1; i < rows.length; i += 1) {
     assert.ok(HANDS_RANK[rows[i - 1].hands] <= HANDS_RANK[rows[i].hands], '手間の順序が崩れている');
   }
-  // 手数料が未確認のチャネルは数字を出さない（空想の手残りを出さない）
-  assert.equal(laneNet('payhip', 19), null);
-  assert.equal(laneNet('github_sponsors', 19), null);
+  // 手数料が未確認／チャネル無しは数字を出さない（空想の手残りを出さない）
+  assert.equal(laneNet('github_sponsors', 19), null);   // チャネル無し = 手数料未確認
+  assert.equal(laneNet('nope', 19), null);
+  assert.equal(AUTO_LANES.find((l) => l.id === 'payhip').verified, false);
   // 確認済みは数字が出る
   assert.ok(laneNet('rapidapi', 19) > 0);
   assert.ok(laneNet('lemonsqueezy', 19) > 0);
@@ -659,7 +660,7 @@ test('[C48] 配線契約: 会話からもAPIからも「手間の少ない売り
   const api = read('src/api.js');
   assert.match(api, /'\/api\/autolanes'/);
   const al = read('src/agent/autolanes.js');
-  assert.match(al, /from '.\.\/channels.js'/);         // 手数料の出所を二重に持たない
+  assert.match(al, /from '\.\/channels\.js'/);
   assert.match(al, /HANDS_RANK/);
 });
 
