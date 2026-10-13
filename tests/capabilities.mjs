@@ -608,6 +608,61 @@ test('[C44] 配線契約: 会話からもAPIからも使用量を引ける', () 
   assert.equal(PRICE_ANCHORS.length >= 3, true);
 });
 
+import { AUTO_LANES, HANDS_RANK, MONITOR_PRODUCTS, autoPlan, laneNet, rankByLeastHands } from '../src/agent/autolanes.js';
+
+test('[C45] 売り場は「俺の手間」の少ない順に並ぶ（手残りは確認済みだけ出す）', () => {
+  const rows = rankByLeastHands(19);
+  assert.equal(rows.length, AUTO_LANES.length);
+  for (let i = 1; i < rows.length; i += 1) {
+    assert.ok(HANDS_RANK[rows[i - 1].hands] <= HANDS_RANK[rows[i].hands], '手間の順序が崩れている');
+  }
+  // 手数料が未確認のチャネルは数字を出さない（空想の手残りを出さない）
+  assert.equal(laneNet('payhip', 19), null);
+  assert.equal(laneNet('github_sponsors', 19), null);
+  // 確認済みは数字が出る
+  assert.ok(laneNet('rapidapi', 19) > 0);
+  assert.ok(laneNet('lemonsqueezy', 19) > 0);
+  // 監視型サブスクは「立ち上げ1回だけ」＝放置で課金が積み上がる形
+  const mon = rows.find((r) => r.id === 'monitor_subscription');
+  assert.equal(mon.hands, 'once');
+  assert.equal(mon.setup_minutes <= 30, true);
+});
+
+test('[C46] 手間最小の構成は、自分で告知しなくても客が来る所だけを選ぶ', () => {
+  const plan = autoPlan();
+  assert.equal(plan.chosen.length, 3);
+  for (const c of plan.chosen) {
+    assert.equal(c.hands === 'often', false);
+    assert.ok(c.discovery === 'marketplace' || c.discovery === 'registry');
+  }
+  assert.ok(plan.excluded.includes('adobe_stock'));      // 差し戻し対応が人手 → 除外
+  assert.ok(plan.recurring.length >= 5);
+  assert.equal(plan.residual_human.length >= 1, true);   // 残る人手は隠さない
+});
+
+test('[C47] 監視型サブスク: 原価0・在庫なし・価格は提案として区別する', () => {
+  assert.ok(MONITOR_PRODUCTS.length >= 5);
+  for (const p of MONITOR_PRODUCTS) {
+    assert.equal(p.cost, 0);
+    assert.equal(p.suggested.proposed, true);            // 相場ではなく提案
+    assert.equal(typeof p.build_minutes, 'number');
+    assert.ok(p.cadence.length > 0);
+  }
+  const ids = MONITOR_PRODUCTS.map((p) => p.id);
+  assert.ok(ids.includes('price_watch'));
+});
+
+test('[C48] 配線契約: 会話からもAPIからも「手間の少ない売り場」を引ける', () => {
+  const cmd = read('src/agent/commands.js');
+  assert.match(cmd, /id: 'autolanes'/);
+  assert.match(cmd, /laneCard/);
+  const api = read('src/api.js');
+  assert.match(api, /'\/api\/autolanes'/);
+  const al = read('src/agent/autolanes.js');
+  assert.match(al, /from '.\.\/channels.js'/);         // 手数料の出所を二重に持たない
+  assert.match(al, /HANDS_RANK/);
+});
+
 let pass = 0; const failed = [];
 for (const [name, fn] of tests) {
   try { await fn(); pass += 1; console.log(`  ✓ ${name}`); }

@@ -24,8 +24,9 @@ const has = (s, ...w) => w.some((x) => s.includes(x));
 import { providerCard, providerHelp, poolCapacity } from './providers.js';
 import { channelCard, channelHelp } from './channels.js';
 import { capacityValue, inferenceCards, inferenceHelp, readUsageBoard } from './inference.js';
+import { autoLaneCards, autoLaneHelp, laneCard, monitorHelp } from './autolanes.js';
 
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference']);
+const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference', 'autolanes']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -163,6 +164,7 @@ const HELP = `話しかけるだけで大丈夫です。たとえば:
 ・「案件: ◯◯ 5000円」— 稼ぐ案件を登録します。「案件を進めて」で提案→納品まで自分で進めます
 ・「自律の範囲を見せて」— 自動で使える金額と、承認が要る操作を確認・変更します
 ・「無料推論いくら使った？」— 実際に使った無料推論の回数と、有料なら何円分になるかを出します
+・「手間が少ない順で稼ぐ方法は？」— 放置で売れる売り場と、監視型サブスクを、あなたの手間が少ない順に出します
 
 むずかしい設定は要りません。判断に迷ったら私が決めて進めます。`;
 
@@ -212,6 +214,24 @@ const RULES = [
     },
   },
 
+  {
+    id: 'autolanes',
+    // 手間の少ない順に売り場を並べる。束縛条件は金ではなく「俺の時間」。
+    test: (s) => re(s, /手間|放置|ほったらかし|無人|自動で稼|サブスク/) || has(s, '手間が少ない', '放置で稼', '自動で稼', '監視型', '監視サブスク'),
+    run: async (s) => {
+      const wantsMonitor = /監視|サブスク/.test(s);
+      return {
+        reply: [
+          'あなたの手間が少ない順に、稼ぐ売り場を並べました。ポイントは「客がどこから来るか」です。売り場の検索（Apify・RapidAPI）とエージェントの自動発見（MCP）は、あなたが告知しなくても売れます。',
+          autoLaneHelp(),
+          '',
+          wantsMonitor ? monitorHelp() : '',
+        ].filter(Boolean).join('\n'),
+        cards: [laneCard(19), ...autoLaneCards(19)],
+        suggest: ['監視型サブスクを1本つくって', 'MCPツールとして出して', '今どうなってる？'],
+      };
+    },
+  },
   {
     id: 'help',
     test: (s) => has(s, 'ヘルプ', '使い方', '操作方法', '何を頼め'),

@@ -18,6 +18,7 @@ import { createJob, advanceJob, revenueSummary, jobCard, jobListItems, recordRec
 import { catalog as x402Catalog, x402Enabled, receiptFromCallback } from './agent/x402.js';
 
 import { providerCard, providerHelp, poolCapacity } from './agent/providers.js';
+import { AUTO_LANES, MONITOR_PRODUCTS, autoLaneHelp, autoPlan, rankByLeastHands } from './agent/autolanes.js';
 import { channelCard, channelHelp } from './agent/channels.js';
 import { capacityValue, inferenceHelp, readUsageBoard } from './agent/inference.js';
 
@@ -994,6 +995,13 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   });
 
   // 無料推論の使用量（実測）と円換算。自己申告は入れない。usd_jpy は上書き可。
+  on('GET', '/api/autolanes', async () => ({
+    lanes: AUTO_LANES,
+    ranked: rankByLeastHands(),
+    plan: autoPlan(),
+    monitor: MONITOR_PRODUCTS,
+    help: autoLaneHelp(),
+  }));
   on('GET', '/api/inference', async (req) => {
     let usd_jpy = null;
     try {
