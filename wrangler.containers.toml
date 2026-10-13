@@ -46,7 +46,7 @@ RUNNER_INSTANCE_TYPE = "basic"
 [[containers]]
 max_instances = 2
 class_name = "RunnerContainer"
-image = "./runner/Dockerfile"
+image = "registry.cloudflare.com/aab5dd9cbdd50399b1c3eada686b424b/wa-runner:1"
 instance_type = "basic"
 
 [[durable_objects.bindings]]

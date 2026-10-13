@@ -26,6 +26,8 @@ import { capacityValue, inferenceHelp, readUsageBoard } from './agent/inference.
 
 export function createApi(deps) {
   const { store, env, engine, router, memory, tools, research, deepResearch, knowledge, dataAnalysis, codeAgent, browser, workflows, fx, rewards, sidehustle, ranking, scheduler, imagegen } = deps;
+  // ハンドラの第2引数は body なので env は渡ってこない。ここで受け取った env を使う。
+  const boundEnv = env || {};
 
   const routes = [];
   // Multi-agent fleet + image studio settings live on deps so the API layer
@@ -1017,10 +1019,10 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
 
   // 実行環境（手足）— 音声と動画の合成だけがWorkersの外に出る
   on('GET', '/api/runner/status', async (req, env) => {
-    const st = runnerState(env || {});
+    const st = runnerState(boundEnv);
     return { ...st, pipeline: runnerPlan(), help: runnerHelp() };
   });
-  on('POST', '/api/runner/dispatch', async (req, body, env) => dispatchJob(env || {}, store, {
+  on('POST', '/api/runner/dispatch', async (req, body) => dispatchJob(boundEnv, store, {
     kind: (body || {}).kind,
     payload: (body || {}).payload || {},
     name: (body || {}).name,
