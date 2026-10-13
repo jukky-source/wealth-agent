@@ -13,6 +13,8 @@ import { nowIso } from '../util.js';
 // 稼ぐモードだけでなく、調べる・書く・暮らしでも意味のある指標をそろえてある。
 export const WATCH_METRICS = {
   measured_revenue: { key: 'measured_revenue', label: '実測収益', unit: '円' },
+  verified_revenue: { key: 'verified_revenue', label: '入金済み', unit: '円' },
+  net_profit: { key: 'net_profit', label: '純益（入金−原価）', unit: '円' },
   completed_tasks: { key: 'completed_tasks', label: '完了した作業', unit: '件' },
   failed_tasks: { key: 'failed_tasks', label: '失敗した作業', unit: '件' },
   pending_approvals: { key: 'pending_approvals', label: '承認待ち', unit: '件' },
@@ -40,6 +42,8 @@ export function parseWatch(text) {
         : /メモ|記憶|覚え/.test(s) ? 'notes'
           : /ステップ|手を打|実行回/.test(s) ? 'total_steps'
             : /(完了|終わ|仕上げ|できあが)/.test(s) ? 'completed_tasks'
+              : /入金|着金|振込/.test(s) ? 'verified_revenue'
+              : /純益|粗利|手残り/.test(s) ? 'net_profit'
               : /収益|売上|稼|利益|儲/.test(s) ? 'measured_revenue'
                 : /作業|タスク|キュー|手続き|用事/.test(s) ? 'open_tasks' : null;
   if (!metric) return null;
@@ -64,6 +68,12 @@ export async function metricValue(store, metric) {
   if (metric === 'measured_revenue') {
     const rows = await store.all(`SELECT kind, amount, basis FROM ledger`);
     return summarizeLedger(rows).revenue.measured;
+  }
+  // 入金済み・純益は receipts（決済通知で確認した分）から数える。自己申告では動かない。
+  if (metric === 'verified_revenue' || metric === 'net_profit') {
+    const { revenueSummary } = await import('./revenue.js');
+    const r = await revenueSummary(store);
+    return metric === 'verified_revenue' ? r.receipts.verified : r.net;
   }
   const st = { completed_tasks: 'completed', failed_tasks: 'failed' }[metric];
   if (st) { const r = await store.first(`SELECT COUNT(*) AS c FROM tasks WHERE state=?`, st); return Number(r?.c || 0); }

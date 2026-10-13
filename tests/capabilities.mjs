@@ -6,6 +6,9 @@ import { readFileSync } from 'node:fs';
 import { judgeOutcome, reworkTask, reworkTargetOf, POLICY } from '../src/agent/judge.js';
 import { parseWatch, goalProgress, WATCH_METRICS } from '../src/agent/watch.js';
 import { BUILTIN_MODES, parseModeRequest, defaultChips, modeCard } from '../src/agent/modes.js';
+import { DEFAULT_ENVELOPE, checkEnvelope, parseEnvelopeRequest } from '../src/agent/envelope.js';
+import { recordReceipt, revenueSummary, revenueLine, createJob, advanceJob } from '../src/agent/revenue.js';
+import { catalog, challenge, x402Enabled } from '../src/agent/x402.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -65,10 +68,11 @@ test('[C7] 件数の条件と「以下」も解釈できる', () => {
   assert.equal(b.op, '<=');
 });
 
-test('[C8] 条件の無い雑談は見張りとして登録しない（指標は8種）', () => {
+test('[C8] 条件の無い雑談は見張りとして登録しない（指標は8種以上）', () => {
   assert.equal(parseWatch('今日はいい天気ですね'), null);
   assert.equal(parseWatch('実測収益がいくらか教えて'), null);
-  assert.equal(Object.keys(WATCH_METRICS).length, 8);
+  assert.ok(Object.keys(WATCH_METRICS).length >= 8)
+  assert.ok(WATCH_METRICS.verified_revenue && WATCH_METRICS.net_profit);
 });
 
 test('[C9] 見張りテーブルが schema.sql と ensureSchema の両方にある', () => {
@@ -90,7 +94,7 @@ test('[C10] 途中再開・見張り・判定のAPIが配線されている', ()
   assert.match(read('public/app.js'), /openWatch/);
   assert.match(read('public/app.js'), /openMode/);
   assert.match(read('src/agent/commands.js'), /judgeOutcome/);
-  assert.match(read('public/sw.js'), /wa-v9/);
+  assert.match(read('public/sw.js'), /wa-v10/);
 });
 
 // ------------------------------------------------- 完了条件としての見張り（hold）
@@ -191,6 +195,158 @@ test('[C20] モードカードは今のモードを示し、他は切り替え�
   assert.equal(card.items[0].badge, 'いま');
   assert.equal(card.items[0].act, null);
   assert.equal(card.items[1].act, 'mode:write');
+});
+
+
+// ------------------------------------------------ 自律の範囲 / 案件 / 入金 / x402
+function memStore() {
+  const t = { ledger: [], receipts: [], jobs: [] };
+  return {
+    t,
+    async all(sql) {
+      if (/FROM\s+ledger/.test(sql)) return t.ledger;
+      if (/FROM\s+jobs/.test(sql)) {
+        const g = {};
+        for (const j of t.jobs) { g[j.state] = g[j.state] || { state: j.state, c: 0, amount: 0 }; g[j.state].c += 1; g[j.state].amount += Number(j.price || 0); }
+        return Object.values(g);
+      }
+      if (/FROM\s+receipts/.test(sql)) return t.receipts;
+      return [];
+    },
+    async first(sql, ...p) {
+      if (/FROM\s+receipts\s+WHERE\s+source/.test(sql)) return t.receipts.find((r) => r.source === p[0] && r.external_id === p[1]) || null;
+      if (/SUM\(amount\)/.test(sql)) {
+        return { n: t.receipts.length, gross: t.receipts.reduce((a, r) => a + r.amount, 0), fee: t.receipts.reduce((a, r) => a + r.fee, 0), net: t.receipts.reduce((a, r) => a + r.net_amount, 0) };
+      }
+      return null;
+    },
+    async insert(table, obj) { t[table] = t[table] || []; t[table].push(obj); return obj; },
+    async get(table, id) { return (t[table] || []).find((r) => r.id === id) || null; },
+    async update(table, id, patch) { const row = (t[table] || []).find((r) => r.id === id); if (row) Object.assign(row, patch); },
+    async run() {}, async batch() {}, async exec() {},
+  };
+}
+
+test('[C21] 署名を確認していない入金は記録できない（自己申告は実測にならない）', async () => {
+  const s = memStore();
+  const bad = await recordReceipt(s, { source: 'stripe', external_id: 'evt_1', amount: 5000 });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error, 'unverified');
+  assert.equal(s.t.receipts.length, 0);
+  const noSrc = await recordReceipt(s, { source: 'somewhere', external_id: 'e2', amount: 100, signature_verified: true });
+  assert.equal(noSrc.error, 'bad_source');
+  const ok = await recordReceipt(s, { source: 'stripe', external_id: 'evt_1', amount: 5000, signature_verified: true });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.receipt.net_amount, 5000);
+});
+
+test('[C22] 同じ決済通知を二重に数えない', async () => {
+  const s = memStore();
+  await recordReceipt(s, { source: 'x402', external_id: 'tx_abc', amount: 1000, signature_verified: true });
+  const dup = await recordReceipt(s, { source: 'x402', external_id: 'tx_abc', amount: 1000, signature_verified: true });
+  assert.equal(dup.ok, false);
+  assert.equal(dup.error, 'duplicate');
+  assert.equal(s.t.receipts.length, 1);
+});
+
+test('[C23] 純益とAMRを出し、推定収益は算入しない', async () => {
+  const s = memStore();
+  await recordReceipt(s, { source: 'stripe', external_id: 'a', amount: 10000, fee: 500, currency: 'JPY', signature_verified: true });
+  await recordReceipt(s, { source: 'x402', external_id: 'b', amount: 5000, fee: 0, currency: 'JPY', signature_verified: true });
+  s.t.ledger.push({ kind: 'cost', amount: 2000, basis: 'measured' }, { kind: 'revenue', amount: 90000, basis: 'estimated' });
+  const r = await revenueSummary(s);
+  assert.equal(r.receipts.verified, 14500);
+  assert.equal(r.receipts.fee, 500);
+  assert.equal(r.cost, 2500);
+  assert.equal(r.net, 12000);
+  assert.equal(r.amr, 82.8);
+  assert.equal(r.estimated_revenue, 90000);
+  assert.ok(r.net < r.estimated_revenue, '推定は純益に混ざらない');
+});
+
+test('[C24] 案件は納品まで自動で進み、入金の確定だけは承認待ちになる', async () => {
+  const s = memStore();
+  const job = await createJob(s, { title: 'データ整理', price: 5000 });
+  assert.equal(job.state, 'candidate');
+  for (const want of ['proposed', 'approved', 'in_progress', 'delivered', 'invoiced']) {
+    const r = await advanceJob(s, job.id);
+    assert.equal(r.ok, true, r.error);
+    assert.equal(r.to, want);
+  }
+  const blocked = await advanceJob(s, job.id, { to: 'settled' });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error, 'approval_required');
+  assert.equal((await s.get('jobs', job.id)).state, 'invoiced');
+});
+
+test('[C25] 自律の範囲は既定で最小、上限を超える支出は承認待ちになる', async () => {
+  const env = { ...DEFAULT_ENVELOPE };
+  assert.equal(env.auto_max_yen_per_action, 0);
+  assert.equal(checkEnvelope(env, { action: 'spend', amount_yen: 100 }).allowed, false);
+  assert.equal(checkEnvelope(env, { action: 'spend', amount_yen: 100 }).requires, 'approval');
+  assert.equal(checkEnvelope(env, { action: 'external_signature' }).requires, 'human_only');
+  assert.equal(checkEnvelope(env, { action: 'account_creation' }).requires, 'human_only');
+  const wide = { ...env, auto_max_yen_per_action: 500, auto_max_yen_per_day: 1000 };
+  assert.equal(checkEnvelope(wide, { action: 'spend', amount_yen: 300 }).allowed, true);
+  assert.equal(checkEnvelope(wide, { action: 'spend', amount_yen: 300, spent_today_yen: 900 }).allowed, false);
+  assert.equal(checkEnvelope(env, { action: 'publish' }).requires, 'approval');
+  const p = parseEnvelopeRequest('自律の範囲で、1回の上限を500円にして');
+  assert.equal(p.auto_max_yen_per_action, 500);
+});
+
+test('[C26] x402 は受け取り先が未設定なら売りに出さず、入金の見張りは入金済みを見る', () => {
+  assert.equal(x402Enabled({}), false);
+  assert.equal(catalog({})[0].pay_to, null);
+  assert.equal(challenge('brief', {}).configured, false);
+  assert.equal(challenge('unknown', { X402_PAY_TO: '0xabc' }), null);
+  const ch = challenge('brief', { X402_PAY_TO: '0xabc' });
+  assert.equal(ch.configured, true);
+  assert.equal(ch.body.accepts[0].payTo, '0xabc');
+  assert.equal(ch.body.accepts[0].scheme, 'exact');
+  assert.ok(ch.body.accepts[0].maxAmountRequired);
+  const w = parseWatch('入金が3万円に達したら教えて');
+  assert.equal(w.metric, 'verified_revenue');
+});
+
+test('[C27] 実行レイヤがデータ層とAPIに実際に配線されている', () => {
+  const db = read('src/db.js');
+  assert.match(db, /CREATE TABLE IF NOT EXISTS jobs/);
+  assert.match(db, /CREATE TABLE IF NOT EXISTS receipts/);
+  assert.match(db, /idx_receipts_ext/);
+  const sql = read('schema.sql');
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS receipts/);
+  const api = read('src/api.js');
+  assert.match(api, /'\/api\/webhooks\/x402'/);
+  assert.match(api, /'\/api\/webhooks\/stripe'/);
+  assert.match(api, /'\/api\/envelope'/);
+  assert.match(api, /'\/api\/jobs'/);
+  assert.match(api, /'\/api\/revenue'/);
+  const idx = read('src/index.js');
+  assert.match(idx, /PAYMENT-REQUIRED/);
+  assert.match(idx, /isWebhook/);
+  const cmd = read('src/agent/commands.js');
+  assert.match(cmd, /id: 'envelope'/);
+  assert.match(cmd, /id: 'jobs'/);
+  assert.match(cmd, /id: 'revenue'/);
+  // receipts を書けるのは revenue.js の recordReceipt だけ（webhook 以外の入口を作らない）
+  const rev = read('src/agent/revenue.js');
+  assert.match(rev, /insert\('receipts'/);
+  const watch = read('src/agent/watch.js');
+  assert.match(watch, /verified_revenue/);
+  assert.match(watch, /net_profit/);
+});
+
+test('[C28] 通貨をまたいで足さない（円換算できない入金は純益に混ぜない）', async () => {
+  const s = memStore();
+  await recordReceipt(s, { source: 'stripe', external_id: 'j1', amount: 10000, currency: 'JPY', signature_verified: true });
+  await recordReceipt(s, { source: 'x402', external_id: 'u1', amount: 1.5, currency: 'USDC', signature_verified: true });
+  const r = await revenueSummary(s);
+  assert.equal(r.receipts.count, 2);
+  assert.equal(r.receipts.verified, 10000);
+  assert.equal(r.net, 10000);
+  assert.equal(r.receipts.unconverted[0].currency, 'USDC');
+  assert.equal(r.receipts.unconverted[0].verified, 1.5);
+  assert.match(revenueLine(r), /円換算せず/);
 });
 
 let pass = 0; const failed = [];

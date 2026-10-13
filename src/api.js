@@ -13,6 +13,9 @@ import { STRATEGIES } from './income/backtest.js';
 import { parseTable, toCsv, statColumns, qualityCheck } from './data/analyze.js';
 import { POLICY, reworkTask } from './agent/judge.js';
 import { activeMode, allModes, builtinModes, defaultChips, setActiveMode, upsertCustomMode } from './agent/modes.js';
+import { getEnvelope, setEnvelope, envelopeCard, checkEnvelope } from './agent/envelope.js';
+import { createJob, advanceJob, revenueSummary, jobCard, jobListItems, recordReceipt } from './agent/revenue.js';
+import { catalog as x402Catalog, x402Enabled, receiptFromCallback } from './agent/x402.js';
 
 export function createApi(deps) {
   const { store, env, engine, router, memory, tools, research, deepResearch, knowledge, dataAnalysis, codeAgent, browser, workflows, fx, rewards, sidehustle, ranking, scheduler, imagegen } = deps;
@@ -74,6 +77,9 @@ export function createApi(deps) {
     const mode = await activeMode(store).catch(() => null);
     const { activeGoal } = await import('./agent/watch.js');
     const goal = await activeGoal(store).catch(() => null);
+    const revenue = await revenueSummary(store).catch(() => null);
+    const envelope = await getEnvelope(store).catch(() => null);
+    const jobsOpen = await store.all(`SELECT * FROM jobs WHERE state NOT IN ('settled','abandoned') ORDER BY updated_at DESC LIMIT 5`).catch(() => []);
 
     return {
       character: character ? {
@@ -107,6 +113,10 @@ export function createApi(deps) {
       } : null,
       goal,
       ledger,
+      revenue,
+      envelope,
+      jobs_open: jobsOpen,
+      x402: { enabled: x402Enabled(env), catalog: x402Catalog(env) },
       opportunities,
       honesty: {
         ladder: MEASUREMENT_LABEL,
@@ -889,6 +899,78 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
       plan = await planMission({ store, router, memory, character: await engine.getCharacter(), mission, existingTasks: [] });
     }
     return { ok: true, workflows: starters, character_created: !character, plan };
+  });
+
+  // ------------------------------------------------ 自律の範囲（autonomy envelope）
+  on('GET', '/api/envelope', async () => {
+    const e = await getEnvelope(store);
+    return { ok: true, envelope: e, card: envelopeCard(e),
+      policy: { gate: checkEnvelope(e, { action: 'spend', amount_yen: 1 }), basis: POLICY.envelope } };
+  });
+  on('POST', '/api/envelope', async (req, body) => {
+    const e = await setEnvelope(store, body || {});
+    return { ok: true, envelope: e, card: envelopeCard(e) };
+  });
+
+  // ------------------------------------------------ 案件（jobs）
+  on('GET', '/api/jobs', async (req) => {
+    const state = new URL(req.url).searchParams.get('state');
+    const rows = state
+      ? await store.all(`SELECT * FROM jobs WHERE state=? ORDER BY updated_at DESC LIMIT 100`, state)
+      : await store.all(`SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 100`);
+    return { ok: true, jobs: rows, items: jobListItems(rows) };
+  });
+  on('POST', '/api/jobs', async (req, body) => {
+    const job = await createJob(store, body || {});
+    if (!job) return { ok: false, error: 'title_required' };
+    return { ok: true, job, card: jobCard(job) };
+  });
+  on('POST', '/api/jobs/:id', async (req, body, p) => {
+    const r = await advanceJob(store, p.id, body || {});
+    return r.ok ? { ok: true, ...r, card: jobCard(r.job) } : { ok: false, ...r };
+  });
+
+  // ------------------------------------------------ 入金・純益（revenue）
+  on('GET', '/api/revenue', async () => {
+    const r = await revenueSummary(store);
+    return { ok: true, revenue: r, basis: POLICY.receipts, margin_rule: POLICY.margin };
+  });
+  on('GET', '/api/receipts', async () => ({
+    ok: true,
+    receipts: await store.all(`SELECT * FROM receipts ORDER BY created_at DESC LIMIT 100`),
+    note: POLICY.receipts,
+  }));
+
+  // ------------------------------------------------ x402（エージェント同士の市場で売る）
+  on('GET', '/api/x402/catalog', async () => ({
+    ok: true, enabled: x402Enabled(env), catalog: x402Catalog(env), note: POLICY.envelope,
+  }));
+
+  // ------------------------------------------------ 決済プロバイダの通知 → 入金
+  // 検証できない通知は記録しない。ここが「実測」の入口を守っている。
+  on('POST', '/api/webhooks/x402', async (req, body) => {
+    const secret = env.WEBHOOK_SECRET || null;
+    const u = new URL(req.url);
+    const provided = req.headers.get('x-webhook-secret') || u.searchParams.get('secret') || '';
+    const verified = !!secret && provided === secret;
+    const r = await recordReceipt(store, { ...receiptFromCallback(body || {}), signature_verified: verified });
+    return r.ok ? { ok: true, receipt_id: r.receipt.id, amount: r.receipt.amount } : { ok: false, error: r.error, note: r.note || POLICY.receipts };
+  });
+  on('POST', '/api/webhooks/stripe', async (req, body) => {
+    const secret = env.STRIPE_WEBHOOK_SECRET || null;
+    const u = new URL(req.url);
+    const provided = u.searchParams.get('secret') || req.headers.get('x-webhook-secret') || '';
+    const verified = !!secret && provided === secret;
+    if (!verified) return { ok: false, error: 'unverified', note: 'STRIPE_WEBHOOK_SECRET が未設定、または一致しません。検証できない入金は記録しません。' };
+    const b = body || {};
+    const obj = b.data?.object || b;
+    const amount = Number(obj.amount_received ?? obj.amount ?? obj.amount_total ?? 0);
+    const r = await recordReceipt(store, {
+      source: 'stripe', external_id: String(obj.id || obj.payment_intent || ''),
+      amount, currency: String(obj.currency || 'jpy').toUpperCase(), fee: Number(obj.fee || 0),
+      raw: b, signature_verified: true,
+    });
+    return r.ok ? { ok: true, receipt_id: r.receipt.id, amount: r.receipt.amount } : { ok: false, error: r.error };
   });
 
   return { routes };

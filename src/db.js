@@ -139,6 +139,12 @@ export async function ensureSchema(store) {
     `CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status)`,
     `CREATE TABLE IF NOT EXISTS runner_jobs (id TEXT PRIMARY KEY, command TEXT NOT NULL, cwd TEXT, timeout_ms INTEGER DEFAULT 60000, state TEXT NOT NULL DEFAULT 'queued', runner_id TEXT, exit_code INTEGER, stdout TEXT, stderr TEXT, duration_ms INTEGER, requested_by TEXT, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT)`,
     `CREATE INDEX IF NOT EXISTS idx_runner_state ON runner_jobs(state, created_at)`,
+    // 稼ぐモードの実行レイヤ: 案件（jobs）と、決済通知からだけ作られる入金（receipts）。
+    `CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, opportunity_id TEXT, title TEXT NOT NULL, platform TEXT, state TEXT DEFAULT 'candidate', price REAL DEFAULT 0, cost_est REAL DEFAULT 0, cost_actual REAL DEFAULT 0, deliverable_ref TEXT, thread_id TEXT, due_on TEXT, note TEXT, created_at TEXT, updated_at TEXT)`,
+    `CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state, updated_at DESC)`,
+    `CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL, amount REAL NOT NULL, currency TEXT DEFAULT 'JPY', fee REAL DEFAULT 0, net_amount REAL DEFAULT 0, job_id TEXT, thread_id TEXT, payer TEXT, occurred_on TEXT NOT NULL, verified INTEGER DEFAULT 1, signature_verified INTEGER DEFAULT 1, raw_json TEXT, created_at TEXT NOT NULL)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_ext ON receipts(source, external_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_receipts_day ON receipts(occurred_on)`,
     `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS spend_guard (day TEXT PRIMARY KEY, paid_calls INTEGER DEFAULT 0, est_cost_usd REAL DEFAULT 0, blocked INTEGER DEFAULT 0)`,
     `CREATE TABLE IF NOT EXISTS fetch_cache (url_hash TEXT PRIMARY KEY, url TEXT, status INTEGER, body TEXT, fetched_at TEXT NOT NULL)`,

@@ -424,3 +424,26 @@ CREATE INDEX IF NOT EXISTS idx_watch_status ON watch_rules(status);
 
 -- モード（用途）: 稼ぐ以外の使い方をオーナーが自分で足せるようにする
 CREATE TABLE IF NOT EXISTS modes (id TEXT PRIMARY KEY, label TEXT NOT NULL, goal TEXT, blurb TEXT, kpi_title TEXT, outcome_label TEXT, unit TEXT DEFAULT '件', chips_json TEXT DEFAULT '[]', placeholder TEXT, extra_approval_json TEXT DEFAULT '[]', extra_never_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT);
+
+-- ---------------------------------------------------------------------------
+-- 稼ぐモードの実行レイヤ（案件と入金）
+--   jobs     : 提案→着手→納品→請求 まで。settled の手前まで自動で進めてよい。
+--   receipts : 決済プロバイダの検証済み通知からのみ作られる。自己申告では作れない。
+--              「実測」は現金が実際に動いたイベントだけを指す、という定義を守る。
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY, opportunity_id TEXT, title TEXT NOT NULL, platform TEXT,
+  state TEXT DEFAULT 'candidate', price REAL DEFAULT 0, cost_est REAL DEFAULT 0,
+  cost_actual REAL DEFAULT 0, deliverable_ref TEXT, thread_id TEXT, due_on TEXT,
+  note TEXT, created_at TEXT, updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state, updated_at DESC);
+CREATE TABLE IF NOT EXISTS receipts (
+  id TEXT PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL,
+  amount REAL NOT NULL, currency TEXT DEFAULT 'JPY', fee REAL DEFAULT 0,
+  net_amount REAL DEFAULT 0, job_id TEXT, thread_id TEXT, payer TEXT,
+  occurred_on TEXT NOT NULL, verified INTEGER DEFAULT 1, signature_verified INTEGER DEFAULT 1,
+  raw_json TEXT, created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_ext ON receipts(source, external_id);
+CREATE INDEX IF NOT EXISTS idx_receipts_day ON receipts(occurred_on);

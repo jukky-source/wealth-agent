@@ -44,6 +44,13 @@ if (existsSync(DEV_VARS)) {
 }
 
 const env = {
+      // 稼ぐモードの実行レイヤ — 決済通知の検証と x402 の受け取り先（本番は vars/secrets）
+      WEBHOOK_SECRET: process.env.WEBHOOK_SECRET ?? undefined,
+      STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET ?? undefined,
+      X402_PAY_TO: process.env.X402_PAY_TO ?? undefined,
+      X402_NETWORK: process.env.X402_NETWORK ?? undefined,
+      X402_FACILITATOR_URL: process.env.X402_FACILITATOR_URL ?? undefined,
+      X402_ASSET: process.env.X402_ASSET ?? undefined,
   DB: new D1Shim(DB_PATH),
   ASSETS: null,
   RUNTIME: 'node-local',

@@ -149,8 +149,51 @@ export default {
       return json({ ok: false, error: 'db_unavailable', detail: String(e.message || e) }, 500);
     }
 
-    if (!authorized(request, env)) {
+    // 決済プロバイダの通知は、こちらのトークンではなく署名で本人性を確認する。
+    // 認証の外に置く代わりに、検証できない通知は入金として記録しない。
+    const isWebhook = url.pathname.startsWith('/api/webhooks/');
+    if (!isWebhook && !authorized(request, env)) {
       return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
+    }
+
+    // x402 — 値札（402）を出し、facilitator が検証・決済した支払いだけを受け取って
+    // 中身を返す。クライアントが付けたヘッダは一切信用しない。
+    if (url.pathname.startsWith('/api/x402/') && !url.pathname.startsWith('/api/x402/catalog')) {
+      const { challenge, requiredHeader, responseHeader, verifyAndSettle } = await import('./agent/x402.js');
+      const { createJob, recordReceipt } = await import('./agent/revenue.js');
+      const resource = url.pathname.replace('/api/x402/', '');
+      const ch = challenge(resource, env, { origin: url.origin });
+      const notFound = () => new Response(JSON.stringify({ ok: false, error: 'not_found', path: url.pathname }), { status: 404, headers: { 'content-type': 'application/json' } });
+      if (!ch) return notFound();
+      if (!ch.configured) return new Response(JSON.stringify({ ok: false, enabled: false, reason: ch.reason }), { status: 503, headers: { 'content-type': 'application/json' } });
+      const header = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
+      if (!header) {
+        return new Response(JSON.stringify(ch.body), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body.accepts[0]), 'cache-control': 'no-store' } });
+      }
+      const settled = await verifyAndSettle({ env, resource, paymentHeader: header });
+      if (!settled.ok) {
+        return new Response(JSON.stringify({ ...ch.body, error: settled.error, detail: settled.detail || null }), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body.accepts[0]), 'cache-control': 'no-store' } });
+      }
+      let body = {};
+      try { const t = await request.text(); body = t ? JSON.parse(t) : {}; } catch { body = {}; }
+      const item = (await import('./agent/x402.js')).X402_CATALOG.find((i) => i.resource === resource);
+      const receipt = await recordReceipt(deps.store, {
+        source: 'x402', external_id: settled.tx || `x402_${Date.now().toString(36)}`,
+        // USDC は最小単位（6桁）で届くので、人が読める単位に直してから記録する。
+        amount: Number(((Number(settled.amount) || 0) / 1e6).toFixed(6)), currency: 'USDC', fee: settled.fee || 0, payer: settled.payer,
+        job_id: body.job_id || null, thread_id: body.thread_id || null,
+        signature_verified: true, raw: settled,
+      }).catch(() => null);
+      const job = await createJob(deps.store, {
+        title: `${item?.description || resource}（x402 受注）`, price: settled.amount,
+        state: 'approved', thread_id: body.thread_id || null,
+        note: `x402 で受注: ${settled.payer || 'unknown payer'}`,
+      }).catch(() => null);
+      return new Response(JSON.stringify({
+        ok: true, resource, status: 'accepted', job_id: job?.id || null,
+        receipt_id: receipt?.receipt?.id || null,
+        note: '支払いを確認しました。納品は案件として実行されます。',
+      }), { status: 200, headers: { 'content-type': 'application/json', 'PAYMENT-RESPONSE': responseHeader(settled.response) } });
     }
 
     const m = matchRoute(deps.api.routes, request.method, url.pathname);

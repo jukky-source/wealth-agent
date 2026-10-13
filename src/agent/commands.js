@@ -7,6 +7,10 @@
 import { summarizeLedger } from '../truth.js';
 import { judgeOutcome, reworkTask, POLICY } from './judge.js';
 import { parseWatch, createWatch, metricValue, goalProgress, WATCH_METRICS } from './watch.js';
+import { ENVELOPE_FIELD_LABEL, checkEnvelope, envelopeCard, envelopeLine, getEnvelope, parseEnvelopeRequest, setEnvelope } from './envelope.js';
+import { JOB_LABEL, advanceJob, createJob, jobCard, jobListItems, parseJobRequest, revenueCard, revenueLine, revenueSummary } from './revenue.js';
+import { catalog as x402Catalog, x402Enabled } from './x402.js';
+import { nowIso } from '../util.js';
 import { BUILTIN_MODES, activeMode, allModes, defaultChips, modeCard, parseModeRequest, setActiveMode, upsertCustomMode } from './modes.js';
 
 const rid = (p) => `${p}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
@@ -17,7 +21,7 @@ const first = (re, s) => (s.match(re) || [])[0];
 const has = (s, ...w) => w.some((x) => s.includes(x));
 
 /** 数字を含む返答は必ず検算する（判定を付ける種類）。 */
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework']);
+const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -151,6 +155,10 @@ const HELP = `話しかけるだけで大丈夫です。たとえば:
 ・「月3万円に届くまで続けて」— 条件を満たすまで止まりません（完了条件としての見張り）
 ・「やり直して」— 判定に落ちた作業を、前回の続きから作り直します
 
+・「入金はいくら？」— 決済通知で確認できた入金・原価・純益・AMR を出します（申告額は実測にしません）
+・「案件: ◯◯ 5000円」— 稼ぐ案件を登録します。「案件を進めて」で提案→納品まで自分で進めます
+・「自律の範囲を見せて」— 自動で使える金額と、承認が要る操作を確認・変更します
+
 むずかしい設定は要りません。判断に迷ったら私が決めて進めます。`;
 
 // ---------------------------------------------------------------- rules
@@ -266,6 +274,95 @@ const RULES = [
         reply: `${done.length} 件を作り直しに回しました。ゼロからではなく前回うまくいった地点から続けます（試行回数は引き継ぎます）。`,
         cards: [{ type: 'list', icon: 'branch', title: '作り直し中の作業', items: done }],
         suggest: ['今どうなってる？', '足あとを見せて'],
+      };
+    },
+  },
+  {
+    id: 'envelope',
+    // 「どこまで自分で決めるか」を金額で決める。既定は最小（1円も承認制）で、
+    // オーナーが広げた範囲だけを自分で使う。稼ぐモードでは安全装置であると同時に、
+    // 取引先に見せられる説明になる。
+    test: (s) => has(s, '自律の範囲', '自動で使える', '承認なしで使える', '勝手に使える', 'どこまで自分で決め')
+      || (/上限/.test(s) && /(円|USDC|投稿|支出|支払)/.test(s)),
+    run: async (s, d) => {
+      const before = await getEnvelope(d.store);
+      const patch = parseEnvelopeRequest(s);
+      const env = patch ? await setEnvelope(d.store, patch) : before;
+      const today = String(nowIso()).slice(0, 10);
+      const spent = await d.store.first(`SELECT COALESCE(SUM(amount),0) AS s FROM ledger WHERE kind='cost' AND occurred_on=?`, today).catch(() => null);
+      const spentToday = Number(spent?.s || 0);
+      const gate = checkEnvelope(env, { action: 'spend', amount_yen: 100, spent_today_yen: spentToday });
+      const changed = patch ? Object.keys(patch).map((k) => `${ENVELOPE_FIELD_LABEL[k] || k}を${typeof patch[k] === 'boolean' ? (patch[k] ? '自動' : '承認制') : Number(patch[k]).toLocaleString('ja-JP')}に`).join('、') : null;
+      return {
+        reply: `${changed ? `自律の範囲を変えました（${changed}）。` : envelopeLine(env)}
+これが「私が自分で決めてよい線」です。ここを超える操作は実行せず、承認待ちに回します。${gate.allowed ? '' : `\nいま本日の支出は ${spentToday.toLocaleString('ja-JP')}円 なので、次の100円の支出も承認待ちになります。`}`,
+        cards: [envelopeCard(env)],
+        suggest: ['案件を進めて', '入金はいくら？', '今どうなってる？'],
+      };
+    },
+  },
+  {
+    id: 'jobs',
+    // 「提案して終わり」をやめて、納品まで進める。状態を実際に前に動かす。
+    test: (s) => /^案件[：:]/.test(s.trim()) || has(s, '案件を進め', '案件一覧', '案件を見せ', '案件を登録', '案件を追加'),
+    run: async (s, d) => {
+      const parsed = parseJobRequest(s);
+      if (parsed) {
+        const job = await createJob(d.store, { ...parsed, thread_id: d.thread_id || null, note: s.slice(0, 220) });
+        return {
+          reply: `案件「${job.title}」を登録しました（${Number(job.price).toLocaleString('ja-JP')}円${job.platform ? ` / ${job.platform}` : ''}）。まだ候補です。「案件を進めて」と言えば、提案→着手→納品→請求まで自分で進めます。入金の確定だけはあなたの承認が要ります。`,
+          cards: [jobCard(job)],
+          job_id: job.id,
+          suggest: ['案件を進めて', '入金はいくら？', '今どうなってる？'],
+        };
+      }
+      const target = /進め/.test(s)
+        ? await d.store.all(`SELECT * FROM jobs WHERE state NOT IN ('settled','abandoned') ORDER BY updated_at DESC LIMIT 3`).catch(() => [])
+        : await d.store.all(`SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 20`).catch(() => []);
+      if (!target.length) {
+        return {
+          reply: `案件はまだ無いです。「案件: データ整理の下請け 5000円」のように登録してもらえれば、そこから自分で進めます。\n探すところから始めるなら「稼げる方法を探して」と言ってください。`,
+          suggest: ['稼げる方法を探して', '今どうなってる？'],
+        };
+      }
+      const moved = [];
+      if (/進め/.test(s)) {
+        for (const j of target) {
+          const r = await advanceJob(d.store, j.id).catch(() => null);
+          if (r?.ok) moved.push({ title: r.job.title, sub: `${JOB_LABEL[r.from] || r.from} → ${JOB_LABEL[r.to] || r.to}`, badge: JOB_LABEL[r.to] || r.to, tone: r.to === 'delivered' ? 'ok' : 'accent' });
+          else if (r?.error === 'approval_required') moved.push({ title: j.title, sub: '入金・確定はあなたの承認待ちに回しました', badge: '承認待ち', tone: 'warn' });
+        }
+      }
+      return {
+        reply: moved.length
+          ? `${moved.length}件を進めました。入金の確定だけはお金が動くので、あなたの承認なしには進めません。`
+          : `いま ${target.length} 件の案件があります。`,
+        cards: moved.length
+          ? [{ type: 'list', icon: 'branch', title: '動かした案件', items: moved }]
+          : [{ type: 'list', icon: 'list', title: '案件', items: jobListItems(target) }],
+        suggest: ['入金はいくら？', '今どうなってる？', '足あとを見せて'],
+      };
+    },
+  },
+  {
+    id: 'revenue',
+    // 「収益だけ見て達成」を封じるため、入金・原価・純益・AMR を必ず一緒に出す。
+    test: (s) => /純益|粗利|AMR|採算|入金|着金/.test(s) && !/(たら教えて|まで|条件|見張)/.test(s),
+    run: async (s, d) => {
+      const r = await revenueSummary(d.store);
+      const env = await getEnvelope(d.store);
+      const sellable = x402Enabled(d.env || {});
+      const lines = [revenueLine(r)];
+      if (r.receipts.count === 0) {
+        lines.push('入金はまだ0件です。入金は決済プロバイダの検証済み通知からだけ記録するので、会話で「入金あった」と言っても実測にはなりません。');
+      }
+      if (r.amr != null && r.amr < 30) lines.push(`AMR が ${r.amr}% と薄い状態です。このまま件数を増やすと赤字が膨らむので、原価の見直しを先にやります。`);
+      lines.push(envelopeLine(env));
+      if (!sellable) lines.push('売り物を外に出す準備（x402 の受け取り先）はまだ設定されていません。');
+      return {
+        reply: lines.join('\n'),
+        cards: [revenueCard(r)],
+        suggest: ['案件を進めて', '今どうなってる？', '足あとを見せて'],
       };
     },
   },
