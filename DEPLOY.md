@@ -46,6 +46,32 @@ RUNNER_TOKEN=... bash scripts/deploy-cloudflare.sh
 トークンには **Workers Scripts:Edit** と **D1:Edit**（および初回のみ **Account Settings:Read**）を付けてください。
 渡したトークンはデプロイ後に失効・再発行するのが安全です。
 
+### D. 実行環境（手足）を Cloudflare Containers で立てる（月$5）
+
+リサーチ・原稿・サムネイル・概要欄までは無料枠のまま動きます。**音声(TTS)と動画の合成(ffmpeg)だけはWorkersの上で動かない**ので、そこだけ実行環境に出します。これが唯一の月額です。
+
+1. Cloudflare の Workers Paid（$5/月）を有効にする
+2. ローカルに Docker を入れる（`wrangler deploy` がイメージのビルドに使います。GitHub Actions のランナーには最初から入っています）
+3. 依存とクライアントを入れる
+   ```bash
+   npm install @cloudflare/containers
+   npx wrangler secret put RUNNER_TOKEN -c wrangler.containers.toml
+   ```
+4. 配備する
+   ```bash
+   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx wrangler deploy -c wrangler.containers.toml
+   ```
+   または GitHub の **Actions → deploy-cloudflare-containers → Run workflow**（手動実行だけにしています。pushでは走りません）。
+5. 状態を確認する：アプリで「実行環境」と聞くか、`GET /api/runner/status`。`mode` が `container` になれば繋がっています。
+
+無料枠の配備（`wrangler.toml` / `scripts/deploy-cloudflare.sh`）は**この設定ファイルを使わないので、そのまま動きます**。入口も別（`src/container-entry.js`）にしてあるので、Containers を入れるまで無料側は一切変わりません。
+
+**いまの状態：コードは用意済み・未配備。** Cloudflare のトークンが無効（`Invalid API Token`）で配備できていません。トークンを1本入れるか、GitHub Secrets に `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` を登録して上のワークフローを回せば、この経路が開きます。
+
+**費用の目安**（Cloudflare の公表値・概算）：$5/月に含まれるのは、メモリ 25 GiB時間・vCPU 375分・ディスク 200 GB時間。`basic`（1/4 vCPU / 1 GiB）で5分の1080p動画を1本作ると、おおよそメモリ 600 GiB秒・vCPU 150秒 → **月100本以上が枠内**。課金は「動いている間だけ」で、5分のアイドルで自動的に眠ります。
+
+---
+
 ### C. Genspark Code（Developer）のホスティング
 Gensparkアカウントの **Developer v2** が有効なら、`gsk hosted deploy` でGenspark側のパーマネントURLへ出せます。
 現在このアカウントでは `developer_not_enabled` で拒否されます。有効化するには [Genspark Code](https://www.genspark.ai/code/) でプロジェクトを作成してください（有効化できれば、こちらの手順も自動化して実行します）。

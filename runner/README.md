@@ -26,6 +26,31 @@
 | Modal | Starterで月$30分の無料クレジット | GPU込みの重い処理向き |
 | 自前のVPS / 自宅PC | — | `cloud-pc.sh` を systemd か tmux で常駐 |
 
+## Cloudflare Containers で動かす（月$5・推奨）
+
+同じジョブ定義（`runner/jobs.mjs`）が、コンテナの中では `runner/jobs-server.mjs` として常駐します。違いは「誰が起こすか」だけ — クラウドPCはWorkerのキューを取りに行き、コンテナはWorkerから直接叩かれます。
+
+```bash
+npm install @cloudflare/containers
+npx wrangler secret put RUNNER_TOKEN -c wrangler.containers.toml
+npx wrangler deploy -c wrangler.containers.toml
+```
+
+手元で中身を確かめる（Docker が無くても、ffmpeg と espeak-ng があれば同じコードが動きます）：
+
+```bash
+RUNNER_TOKEN=test PORT=8123 node runner/jobs-server.mjs
+curl -s localhost:8123/health
+curl -s -X POST localhost:8123/job -H 'x-runner-token: test' -H 'content-type: application/json' -d '{"kind":"probe"}'
+```
+
+実機テスト（ffmpeg と espeak-ng を使います）：
+
+```bash
+node tests/jobs.test.mjs
+```
+
+---
 ## 安全設計（2つの鍵）
 
 - **既定で無効**。`RUNNER_ENABLED=true` と `RUNNER_TOKEN` が揃うまで、ジョブは受け付けません。

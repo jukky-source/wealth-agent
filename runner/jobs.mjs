@@ -77,8 +77,9 @@ export function planVoice(payload = {}) {
 }
 
 /** espeak-ng はオープンソースのTTS。APIキーも従量課金も無しで音声が出ます。 */
-export function buildVoiceArgs(plan) {
-  return ['-v', plan.lang, '-s', String(plan.rate), '-w', plan.name, '--stdin'];
+export function buildVoiceArgs(plan, inputName) {
+  // 入力は引数（ファイル）で渡す。--stdin はパイプが閉じないと止まるので使いません。
+  return ['-v', plan.lang, '-s', String(plan.rate), '-w', plan.name, '-f', inputName];
 }
 
 export function planEncode(payload = {}) {
@@ -148,6 +149,7 @@ function run(cmd, args, { cwd, timeoutMs, log = () => {} } = {}) {
   return new Promise((resolve) => {
     const started = Date.now();
     const child = spawn(cmd, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
+    try { child.stdin.end(); } catch { /* noop */ }   // 入力を待たせない（待つと止まる）
     let out = ''; let err = '';
     const cap = 20000;
     const timer = setTimeout(() => {
@@ -216,8 +218,9 @@ export async function runJob(kind, payload = {}, opts = {}) {
   if (!plan.ok) return { ok: false, kind, ms: Date.now() - started, workdir, error: 'plan_rejected', detail: plan.reason, artifacts: [] };
 
   if (kind === 'voice') {
-    await writeFile(path.join(workdir, `${plan.name}.txt`), plan.text, 'utf-8');
-    const r = await run('espeak-ng', buildVoiceArgs(plan), { cwd: workdir, timeoutMs: 180000, log });
+    const textName = withExt(plan.name, 'txt');
+    await writeFile(path.join(workdir, textName), plan.text, 'utf-8');
+    const r = await run('espeak-ng', buildVoiceArgs(plan, textName), { cwd: workdir, timeoutMs: 180000, log });
     if (r.code !== 0) return { ok: false, kind, ms: Date.now() - started, error: 'tts_failed', detail: r.err || r.out, artifacts: [] };
     const st = await stat(path.join(workdir, plan.name));
     return { ok: true, kind, ms: Date.now() - started, workdir,
