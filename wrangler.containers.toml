@@ -43,8 +43,10 @@ RUNNER_INSTANCE_TYPE = "basic"
 # 無料で付く範囲：mem 25 GiB時間・vCPU 375分・disk 200 GB時間（毎月）。
 # 5分の1080p動画を1本作るのに、おおよそ mem 600 GiB秒・vCPU 150秒 → 月100本以上が枠内。
 # 課金は「動いている間だけ」で、sleepAfter の5分で自動的に止まります。
+#   → $5は最低額で、枠を超えた分は従量課金です（mem $0.0000025/GiB秒・CPU $0.000020/vCPU秒・disk $0.00000007/GB秒）。
+#   → max_instances = 1：このアプリは常に同じ1インスタンスしか使わないため、2にしても使われないまま最悪時の上限だけが倍になります。
 [[containers]]
-max_instances = 2
+max_instances = 1
 class_name = "RunnerContainer"
 image = "registry.cloudflare.com/aab5dd9cbdd50399b1c3eada686b424b/wa-runner:1"
 instance_type = "basic"
