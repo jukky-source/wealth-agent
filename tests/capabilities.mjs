@@ -438,26 +438,30 @@ test('[C28] 通貨をまたいで足さない（円換算できない入金は�
 });
 
 
-import { FREE_PROVIDERS, providerStatus, poolCapacity, routePlan, paidLanes } from '../src/agent/providers.js';
+import { FREE_PROVIDERS, providerStatus, poolCapacity, routePlan, paidLanes, noKeyLanes, humanGateLanes, TRIAL_CREDITS, FREE_HOSTS } from '../src/agent/providers.js';
 import { CHANNELS, netOf, rankByNet, channelCard } from '../src/agent/channels.js';
 
 test('[C33] 無料AIはキー0本でも成立する（決定的エンジンが土台・ローカルは無制限）', () => {
   const st = providerStatus({});
   assert.equal(st.length, FREE_PROVIDERS.length);
-  assert.equal(st.filter((p) => p.configured).length, 1);           // ローカル推論のみ
+  // キーを1本も入れなくても、キー不要のレーンが最初から使える
+  assert.equal(st.filter((p) => p.configured).length, 4);
   assert.equal(st.find((p) => p.id === 'local').configured, true);
+  assert.equal(st.find((p) => p.id === 'kilo').configured, true);
   const cap = poolCapacity({});
   assert.equal(cap.daily_requests, 0);                              // 従量の無料枠は未設定
   assert.equal(cap.unmetered, true);                                // それでも上限なしのレーンがある
+  assert.equal(cap.unkeyed_hourly_requests, 450);                   // キー不要の 200 + 250 回/時
   assert.equal(st.find((p) => p.id === 'gemini').missing[0], 'GEMINI_API_KEY');
 });
 
 test('[C34] 各社の独立した無料枠が合算され、有料は既定で封じる', () => {
   const env = { GEMINI_API_KEY: 'a', GROQ_API_KEY: 'b', CEREBRAS_API_KEY: 'c' };
   const cap = poolCapacity(env);
-  assert.equal(cap.configured, 4);                                  // 3社 + ローカル
-  assert.equal(cap.daily_requests, 1500 + 1000);     // RPD を持つレーンのみ
+  assert.equal(cap.configured, 8);                                  // gemini + gemma(同じ鍵) + groq + cerebras + キー不要4本
+  assert.equal(cap.daily_requests, 14400 + 1500 + 1000);            // RPD を持つレーンのみ（Gemma が最大）
   assert.equal(cap.daily_tokens, 1000000);           // Cerebras は TPD で数える
+  assert.equal(cap.hourly_tokens, 1000000);          // 毎時でも 100 万トークン
   assert.equal(paidLanes(env).paid_allowed, false);
   assert.equal(paidLanes(env).blocked.length > 0, true);
   assert.equal(paidLanes({ ...env, ALLOW_PAID_AI: 'true' }).paid_allowed, true);
@@ -466,7 +470,10 @@ test('[C34] 各社の独立した無料枠が合算され、有料は既定で�
 test('[C35] 用途別にレーンを並べ替える（code はコード向きが先頭、ローカルは最後の安全網）', () => {
   const env = { GROQ_API_KEY: 'b', CLOUDFLARE_API_TOKEN: 't', CLOUDFLARE_ACCOUNT_ID: 'i' };
   const plan = routePlan('code', env);
-  assert.equal(plan.lanes[0].id === 'groq' || plan.lanes[0].id === 'cloudflare', true);
+  assert.equal(plan.lanes[0].id, 'kilo');                           // キー不要のレーンを最優先
+  const local = plan.lanes.find((l) => l.id === 'local');
+  const cf = plan.lanes.find((l) => l.id === 'cloudflare');
+  assert.equal(local.score < cf.score, true);                       // 無制限のローカルは最後の受け皿
   assert.equal(plan.fallback, 'deterministic');
   const long = routePlan('long', env);
   assert.equal(long.lanes.length >= 2, true);
@@ -499,6 +506,106 @@ test('[C37] 配線契約: 会話からもAPIからも引ける', () => {
   assert.match(prov, /ALLOW_PAID_AI/);
   const ch = read('src/agent/channels.js');
   assert.match(ch, /autonomy/);
+});
+
+test('[C38] キーもカードも無しで使えるレーンが最初から複数ある', () => {
+  const lanes = noKeyLanes();
+  assert.equal(lanes.length >= 3, true);
+  const ids = lanes.map((l) => l.id);
+  assert.ok(ids.includes('kilo') && ids.includes('llm7') && ids.includes('ovh') && ids.includes('local'));
+  for (const l of lanes) assert.ok(l.limits);
+  assert.equal(providerStatus({}).find((p) => p.id === 'kilo').no_key, true);
+});
+
+test('[C39] 一度だけ人間が要るレーンを分けて数える（勝手に確認済みにしない）', () => {
+  const gates = humanGateLanes().map((g) => g.id);
+  assert.ok(gates.includes('nvidia') && gates.includes('codestral') && gates.includes('modelscope'));
+  const cap = poolCapacity({});
+  assert.equal(cap.human_gate.length >= 3, true);
+  const nv = FREE_PROVIDERS.find((p) => p.id === 'nvidia');
+  assert.equal(nv.limits.rpd, 10000);
+  assert.equal(cap.lanes.some((l) => l.id === 'nvidia'), false);    // 鍵が無いので容量に入れない
+});
+
+test('[C40] 規約でAI生成物を売れない売り先は外し、条件付きの先は条件を記録する', () => {
+  assert.equal(CHANNELS.find((c) => c.id === 'shutterstock').blocked, true);
+  const adobe = CHANNELS.find((c) => c.id === 'adobe_stock');
+  assert.equal(adobe.blocked, undefined);
+  assert.equal(adobe.verified, true);
+  assert.equal(netOf('adobe_stock', 19).take_pct, 67);              // 受取は 33%
+  assert.equal(netOf('adobe_stock', 19).net, 6.27);
+  assert.match(adobe.ai_policy, /Generative AI/);
+  assert.equal(netOf('depin_bandwidth', 19).net, null);             // 歩率が未確認なので数字を出さない
+});
+
+test('[C41] 一発のクレジットは容量に混ぜず、無料のホスト先も記録する', () => {
+  assert.equal(TRIAL_CREDITS.length >= 10, true);
+  assert.ok(TRIAL_CREDITS.some((t2) => t2.id === 'modal'));
+  assert.equal(poolCapacity({ MODAL_API_KEY: 'x' }).daily_requests, 0);   // 初回クレジットは「枠」ではない
+  assert.equal(FREE_HOSTS.some((h) => h.id === 'oracle_always_free' && h.verified), true);
+  const prov = read('src/agent/providers.js');
+  assert.match(prov, /TRIAL_CREDITS/);
+  assert.match(prov, /FREE_HOSTS/);
+});
+
+import { PRICE_ANCHORS, usageBoard, capacityValue, inferenceCards, CHARS_PER_TOKEN, jpyFromTokens } from '../src/agent/inference.js';
+
+test('[C42] 実測の使用量を数え、有料なら何円かを出す（空想は出さない）', () => {
+  const rows = [
+    { provider: 'kilo', ok: 1, prompt_chars: 4000, output_chars: 800, latency_ms: 900, day: '2026-10-13' },
+    { provider: 'kilo', ok: 1, prompt_chars: 2000, output_chars: 400, latency_ms: 800, day: '2026-10-13' },
+    { provider: 'groq', ok: 0, prompt_chars: 1000, output_chars: 0, latency_ms: 300, day: '2026-10-12' },
+  ];
+  const b = usageBoard(rows);
+  assert.equal(b.calls, 3);
+  assert.equal(b.ok_calls, 2);
+  assert.equal(b.failed, 1);
+  assert.equal(b.active_days, 2);
+  assert.equal(b.measured, true);
+  assert.equal(b.in_tokens, Math.round(7000 / CHARS_PER_TOKEN));
+  assert.equal(b.out_tokens, Math.round(1200 / CHARS_PER_TOKEN));
+  assert.ok(b.value.yen > 0);
+  // 単価の順序（安い方だけで見積もらないため3本併記する）
+  assert.ok(b.alternatives[2].usd > b.alternatives[1].usd);
+  assert.ok(b.alternatives[1].usd > b.alternatives[0].usd);
+  const big = jpyFromTokens({ in_tokens: 1000000, out_tokens: 1000000 });
+  assert.ok(big.yen > 0);
+  for (const a of b.alternatives) assert.ok(a.source.startsWith('https://'));
+  assert.equal(b.lanes[0].provider, 'kilo');
+
+  const empty = usageBoard([]);
+  assert.equal(empty.measured, false);
+  assert.equal(empty.value.yen, 0);
+  assert.equal(empty.calls, 0);
+});
+
+test('[C43] 推定（クォータ）と実測を混ぜない', () => {
+  const cap = capacityValue({ daily_requests: 10000, unkeyed_hourly_requests: 450 });
+  assert.equal(cap.turns, 10000 + 450 * 8);
+  assert.ok(cap.per_month_yen > cap.per_day_yen);
+  assert.ok(cap.source.startsWith('https://'));
+  // 実測0件のときに推定額が実測の欄へ紛れ込まないこと
+  const b = usageBoard([]);
+  assert.equal(b.value.yen, 0);
+  const cards = inferenceCards(b, { capacity: cap });
+  assert.equal(cards[0].type, 'kpi');
+  const head = cards[0].items.find((i) => i.label === '有料なら');
+  assert.equal(head.value, 0);
+  assert.equal(cards[cards.length - 1].type, 'note');
+  assert.match(cards[cards.length - 1].text, /推定/);
+  assert.equal(jpyFromTokens({ in_tokens: 1000000, out_tokens: 0 }, 'gpt5_mini').yen > 0, true);
+});
+
+test('[C44] 配線契約: 会話からもAPIからも使用量を引ける', () => {
+  const cmd = read('src/agent/commands.js');
+  assert.match(cmd, /id: 'inference'/);
+  assert.match(cmd, /readUsageBoard/);
+  const api = read('src/api.js');
+  assert.match(api, /'\/api\/inference'/);
+  const inf = read('src/agent/inference.js');
+  assert.match(inf, /ai_usage/);
+  assert.match(inf, /PRICE_ANCHORS/);
+  assert.equal(PRICE_ANCHORS.length >= 3, true);
 });
 
 let pass = 0; const failed = [];

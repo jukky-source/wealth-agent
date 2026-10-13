@@ -17,8 +17,9 @@ import { getEnvelope, setEnvelope, envelopeCard, checkEnvelope } from './agent/e
 import { createJob, advanceJob, revenueSummary, jobCard, jobListItems, recordReceipt } from './agent/revenue.js';
 import { catalog as x402Catalog, x402Enabled, receiptFromCallback } from './agent/x402.js';
 
-import { providerCard, providerHelp } from './agent/providers.js';
+import { providerCard, providerHelp, poolCapacity } from './agent/providers.js';
 import { channelCard, channelHelp } from './agent/channels.js';
+import { capacityValue, inferenceHelp, readUsageBoard } from './agent/inference.js';
 
 export function createApi(deps) {
   const { store, env, engine, router, memory, tools, research, deepResearch, knowledge, dataAnalysis, codeAgent, browser, workflows, fx, rewards, sidehustle, ranking, scheduler, imagegen } = deps;
@@ -990,6 +991,18 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
     } catch { /* keep default */ }
     const card = channelCard(gross);
     return { ...card, help: channelHelp() };
+  });
+
+  // 無料推論の使用量（実測）と円換算。自己申告は入れない。usd_jpy は上書き可。
+  on('GET', '/api/inference', async (req) => {
+    let usd_jpy = null;
+    try {
+      const u = new URL(req.url, 'http://local');
+      const q = Number(u.searchParams.get('usd_jpy'));
+      if (Number.isFinite(q) && q > 0) usd_jpy = q;
+    } catch { /* default */ }
+    const board = await readUsageBoard(store, usd_jpy ? { usd_jpy } : {});
+    return { ...board, capacity: capacityValue(poolCapacity()), help: inferenceHelp() };
   });
 
   return { routes };

@@ -21,10 +21,11 @@ const first = (re, s) => (s.match(re) || [])[0];
 const has = (s, ...w) => w.some((x) => s.includes(x));
 
 /** 数字を含む返答は必ず検算する（判定を付ける種類）。 */
-import { providerCard, providerHelp } from './providers.js';
+import { providerCard, providerHelp, poolCapacity } from './providers.js';
 import { channelCard, channelHelp } from './channels.js';
+import { capacityValue, inferenceCards, inferenceHelp, readUsageBoard } from './inference.js';
 
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels']);
+const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -161,6 +162,7 @@ const HELP = `話しかけるだけで大丈夫です。たとえば:
 ・「入金はいくら？」— 決済通知で確認できた入金・原価・純益・AMR を出します（申告額は実測にしません）
 ・「案件: ◯◯ 5000円」— 稼ぐ案件を登録します。「案件を進めて」で提案→納品まで自分で進めます
 ・「自律の範囲を見せて」— 自動で使える金額と、承認が要る操作を確認・変更します
+・「無料推論いくら使った？」— 実際に使った無料推論の回数と、有料なら何円分になるかを出します
 
 むずかしい設定は要りません。判断に迷ったら私が決めて進めます。`;
 
@@ -190,6 +192,24 @@ const RULES = [
       ].join('\n'),
       cards: [channelCard(19)],
     }),
+  },
+  {
+    id: 'inference',
+    // 使用量の計測。実測（ai_usage の実際の呼び出し）と、クォータからの推定は混ぜない。
+    test: (s) => re(s, /無料(の)?推論|推論.{0,6}いくら|AI.{0,6}いくら分|いくら分(使|消費)|無料枠.{0,6}使った|使用量/)
+      || has(s, '無料推論', '推論の使用量', 'AIの使用量'),
+    run: async (s, d) => {
+      const board = await readUsageBoard(d.store);
+      const capacity = capacityValue(poolCapacity());
+      const lead = board.measured
+        ? `実際に走った無料推論は ${board.calls} 回（成功 ${board.ok_calls}・失敗 ${board.failed}）です。有料で同じ量を買ったとすると ${yen(board.value.yen)}（${board.value.label}）相当になります。`
+        : '無料推論はまだ 1 回も走っていません。ですからいまは 0 円です。作業を振ってもらえれば、ここに実測が積み上がります。';
+      return {
+        reply: [lead, '', inferenceHelp()].join('\n'),
+        cards: inferenceCards(board, { capacity }),
+        suggest: ['次の一手を進めて', '無料のAIの枠を見せて', '今どうなってる？'],
+      };
+    },
   },
 
   {
