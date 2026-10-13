@@ -421,3 +421,6 @@ CREATE TABLE IF NOT EXISTS watch_rules (
   updated_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_watch_status ON watch_rules(status);
+
+-- モード（用途）: 稼ぐ以外の使い方をオーナーが自分で足せるようにする
+CREATE TABLE IF NOT EXISTS modes (id TEXT PRIMARY KEY, label TEXT NOT NULL, goal TEXT, blurb TEXT, kpi_title TEXT, outcome_label TEXT, unit TEXT DEFAULT '件', chips_json TEXT DEFAULT '[]', placeholder TEXT, extra_approval_json TEXT DEFAULT '[]', extra_never_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT);

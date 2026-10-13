@@ -11,7 +11,8 @@ import { LINT_RULES } from './income/pine.js';
 import { SUPPORTED_SYMBOLS } from './income/fx.js';
 import { STRATEGIES } from './income/backtest.js';
 import { parseTable, toCsv, statColumns, qualityCheck } from './data/analyze.js';
-import { POLICY } from './agent/judge.js';
+import { POLICY, reworkTask } from './agent/judge.js';
+import { activeMode, allModes, builtinModes, defaultChips, setActiveMode, upsertCustomMode } from './agent/modes.js';
 
 export function createApi(deps) {
   const { store, env, engine, router, memory, tools, research, deepResearch, knowledge, dataAnalysis, codeAgent, browser, workflows, fx, rewards, sidehustle, ranking, scheduler, imagegen } = deps;
@@ -69,7 +70,10 @@ export function createApi(deps) {
       `SELECT domain, COUNT(*) AS count, MAX(score) AS best, SUM(CASE WHEN status='candidate' THEN 1 ELSE 0 END) AS candidates FROM opportunities GROUP BY domain`);
 
     const missionVerification = activeMission ? await verifyMission(store, activeMission) : null;
-    const watchesActive = await store.first(`SELECT COUNT(*) AS c FROM watch_rules WHERE status IN ('active','triggered')`).catch(() => null);
+    const watchesActive = await store.first(`SELECT COUNT(*) AS c FROM watch_rules WHERE status IN ('active','triggered','achieved')`).catch(() => null);
+    const mode = await activeMode(store).catch(() => null);
+    const { activeGoal } = await import('./agent/watch.js');
+    const goal = await activeGoal(store).catch(() => null);
 
     return {
       character: character ? {
@@ -96,6 +100,12 @@ export function createApi(deps) {
       memory: memStats,
       pending_approvals: approvals,
       watches_active: Number(watchesActive?.c || 0),
+      mode: mode ? {
+        id: mode.id, label: mode.label, blurb: mode.blurb || '', goal: mode.goal || '',
+        chips: defaultChips(mode), placeholder: mode.placeholder || 'エージェントに指示する',
+        outcome_label: mode.outcome_label || '終わったこと', kpi_title: mode.kpi_title || '', custom: !!mode.custom,
+      } : null,
+      goal,
       ledger,
       opportunities,
       honesty: {
@@ -327,6 +337,11 @@ export function createApi(deps) {
           scope: `task:${p.id}`, state: 'resumed', payload: j({ from, attempt_kept: t.attempt || 0 }), created_at: nowIso(),
         }).catch(() => {});
         return { ok: true, state: 'improving', from, attempt_kept: t.attempt || 0 };
+      }
+      case 'rework': {
+        // 判定に落ちた成果物を、前回の続きから作り直す（お金を動かす操作は承認へ回す）。
+        const r = await reworkTask(store, p.id, { reason: body.reason || 'オーナーの指示による作り直し', force: !!body.force });
+        return r.ok ? { ok: true, state: 'improving', attempt: r.attempt, reason: r.reason } : r;
       }
       default:
         return { ok: false, error: 'unknown_action' };
@@ -659,7 +674,12 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   on('POST', '/api/chat/act', async (req, body) => {
     const message = body && body.message ? String(body.message).slice(0, 4000) : '';
     const cmds = await import('./agent/commands.js');
-    const deps = { store, env, engine, router, memory, research, deepResearch, knowledge, workflows, ranking, scheduler, browser, tools, fleet: fleetApi, runner: runnerApi, thread_id: body?.thread_id || null };
+    const deps = {
+      store, env, engine, router, memory, research, deepResearch, knowledge, workflows, ranking, scheduler,
+      browser, tools, fleet: fleetApi, runner: runnerApi, thread_id: body?.thread_id || null,
+      // 判定に落ちた返答は、その場で本物の作り直しにつなげる。
+      rework: (taskId, opts) => reworkTask(store, taskId, opts || {}),
+    };
 
     // Active memory: bring back anything from earlier conversations that bears
     // on this message BEFORE answering, and show the owner what was recalled.
@@ -702,7 +722,11 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
       }
     } catch { /* keep the reply even if storage is unavailable */ }
 
-    return { ...out, thread_id: threadId, memory: recalled };
+    const modeNow = await activeMode(store).catch(() => null);
+    return {
+      ...out, thread_id: threadId, memory: recalled,
+      mode: modeNow ? { id: modeNow.id, label: modeNow.label, blurb: modeNow.blurb || '', chips: defaultChips(modeNow), placeholder: modeNow.placeholder || 'エージェントに指示する' } : null,
+    };
   });
 
   // ---------------------------------------------------------------- fleet (multi-agent)
@@ -749,27 +773,72 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   }));
   on('POST', '/api/runner/jobs/:id/cancel', async (req, body, p) => runnerApi.cancel(p.id));
 
+  // ---------------------------------------------------------------- modes (用途)
+  // 「たまに金稼ぎ以外にも使いたい」— 用途を切り替えると、提案・成果の数え方・
+  // 承認の範囲が変わる。自分のモードもここから追加できる。
+  on('GET', '/api/mode', async () => {
+    const current = await activeMode(store);
+    return { ok: true, current, modes: await allModes(store), builtin: builtinModes(), chips: defaultChips(current) };
+  });
+  on('POST', '/api/mode', async (req, body) => {
+    const action = body?.action || 'switch';
+    if (action === 'create') {
+      const created = await upsertCustomMode(store, { label: body?.label, goal: body?.goal || '' });
+      if (!created) return { ok: false, error: 'label_required' };
+      await setActiveMode(store, created.id);
+      return { ok: true, mode: created, modes: await allModes(store), chips: defaultChips(created) };
+    }
+    if (action === 'goal') {
+      if (!body?.goal) return { ok: false, error: 'goal_required' };
+      const cur = await activeMode(store);
+      const upd = cur.custom ? await upsertCustomMode(store, { id: cur.id, label: cur.label, goal: body.goal }) : null;
+      return { ok: true, mode: upd || cur, note: upd ? 'updated' : 'builtin_mode_uses_goal_watch' };
+    }
+    const { parseModeRequest } = await import('./agent/modes.js');
+    const wanted = String(body?.id || parseModeRequest(body?.text || '').label || '');
+    const modes = await allModes(store);
+    const target = modes.find((m) => m.id === wanted || m.label === wanted || (wanted && m.label.includes(wanted)));
+    if (!target) return { ok: false, error: 'mode_not_found', modes };
+    await setActiveMode(store, target.id);
+    return { ok: true, mode: target, modes, chips: defaultChips(target) };
+  });
+
   // ---------------------------------------------------------------- watches (先回り報告)
   on('GET', '/api/watches', async () => {
-    const { WATCH_METRICS, metricValue } = await import('./agent/watch.js');
-    const rows = await store.all(`SELECT * FROM watch_rules ORDER BY created_at DESC LIMIT 50`).catch(() => []);
+    const { WATCH_METRICS, metricValue, goalProgress } = await import('./agent/watch.js');
+    const rows = await store.all(`SELECT * FROM watch_rules ORDER BY hold DESC, created_at DESC LIMIT 50`).catch(() => []);
     const watches = [];
     for (const r of rows) {
-      watches.push({ ...r, label: WATCH_METRICS[r.metric]?.label || r.metric, unit: WATCH_METRICS[r.metric]?.unit || '', current_value: await metricValue(store, r.metric).catch(() => null) });
+      const value = await metricValue(store, r.metric).catch(() => null);
+      watches.push({
+        ...r, label: WATCH_METRICS[r.metric]?.label || r.metric, unit: WATCH_METRICS[r.metric]?.unit || '',
+        current_value: value, progress: goalProgress(r, value || 0),
+      });
     }
-    return { ok: true, watches, metrics: Object.values(WATCH_METRICS) };
+    const { activeGoal } = await import('./agent/watch.js');
+    return { ok: true, watches, goal: await activeGoal(store).catch(() => null), metrics: Object.values(WATCH_METRICS) };
   });
   on('POST', '/api/watches', async (req, body) => {
     const { parseWatch, createWatch } = await import('./agent/watch.js');
     const parsed = body?.metric ? { metric: body.metric, op: body.op || '>=', threshold: Number(body.threshold) || 0, note: body.note || '' } : parseWatch(body?.text || '');
     if (!parsed || !parsed.metric) return { ok: false, error: 'metric_required', hint: '実測収益・完了した作業・失敗した作業・承認待ち のいずれかを指定してください' };
-    const w = await createWatch(store, { ...parsed, thread_id: body?.thread_id || null });
+    const w = await createWatch(store, {
+      ...parsed, thread_id: body?.thread_id || null,
+      hold: body?.hold !== undefined ? !!body.hold : !!parsed.hold,
+      stop_on_hit: !!body?.stop_on_hit,
+    });
     return { ok: true, watch: w };
   });
   on('POST', '/api/watches/:id', async (req, body, p) => {
     const w = await store.get('watch_rules', p.id);
     if (!w) return { ok: false, error: 'not_found' };
     if (body?.action === 'delete') { await store.run(`DELETE FROM watch_rules WHERE id=?`, p.id); return { ok: true, deleted: p.id }; }
+    if (body?.action === 'hold' || body?.action === 'unhold') {
+      // 「達成するまで続ける」への切り替え（仕事の完了条件にする）。
+      const on = body.action === 'hold';
+      await store.run(`UPDATE watch_rules SET hold=?, status='active', achieved_value=NULL, updated_at=? WHERE id=?`, on ? 1 : 0, nowIso(), p.id);
+      return { ok: true, hold: on ? 1 : 0 };
+    }
     if (body?.action === 'pause' || body?.action === 'activate') {
       const status = body.action === 'pause' ? 'paused' : 'active';
       await store.run(`UPDATE watch_rules SET status=?, updated_at=? WHERE id=?`, status, nowIso(), p.id);

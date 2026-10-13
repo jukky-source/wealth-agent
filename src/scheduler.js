@@ -60,11 +60,33 @@ export function createScheduler(deps) {
     } catch (e) { report.steps.push({ step: 'daily_recalibration', error: e.message }); }
 
     // 5) watch rules — speak up on its own only when the condition is really met
+    let holds = [];
     try {
       const w = await checkWatches({ store, memory });
+      holds = w.holds || [];
       if (w.fired.length) report.steps.push({ step: 'watch', fired: w.fired.length, ids: w.fired.map((f) => f.id) });
       else report.steps.push({ step: 'watch', checked: w.checked, fired: 0 });
     } catch (e) { report.steps.push({ step: 'watch', error: e.message }); }
+
+    // 6) goal（完了条件としての見張り）— 未達なら止めない。あと何が必要かを数え直し、
+    //    エンジンが止まっていれば起こす。ここも重い処理はしない。
+    try {
+      if (holds.length) {
+        const st = await engine.engineState();
+        if (st.status !== 'running') await engine.control('resume').catch(() => {});
+        const top = holds[0];
+        const { WATCH_METRICS } = await import('./agent/watch.js');
+        const label = WATCH_METRICS[top.metric]?.label || top.metric;
+        await memory.write({
+          kind: 'next_action', key: `goal:${top.id}`, evidence: 'measured', importance: 65,
+          text: `完了条件まであと ${top.remain}${top.unit || ''}（${label} ${top.current}/${top.target}）`,
+          data: { watch_id: top.id, metric: top.metric, remain: top.remain, pct: top.pct },
+        }).catch(() => {});
+        report.steps.push({ step: 'goal', holds: holds.length, remain: top.remain, pct: top.pct, resumed: st.status !== 'running' });
+      } else {
+        report.steps.push({ step: 'goal', holds: 0 });
+      }
+    } catch (e) { report.steps.push({ step: 'goal', error: e.message }); }
 
     await store.run(`INSERT INTO settings (key,value,updated_at) VALUES ('scheduler:last_run',?,?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,

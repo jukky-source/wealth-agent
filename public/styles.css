@@ -294,3 +294,14 @@ details.disclosure[open] summary{margin-bottom:10px}
 .badge.accent{background:var(--accent-soft);color:var(--accent)}
 .trail-i.next{border-left-color:var(--warn)}
 .card-b .row .btn.sm{flex:0 0 auto}
+
+/* ---- modes / goal bar / paint guards ---------------------------------- */
+/* 画面外にあるシートとトーストは描画しない（作曲家の上に薄い要素が漏れるのを防ぐ） */
+.sheet:not(.open){visibility:hidden}
+.toast:not(.show){visibility:hidden}
+.chips:empty{display:none}
+.goal-bar{height:8px;border-radius:99px;background:var(--line);overflow:hidden}
+.goal-fill{height:100%;border-radius:99px;background:var(--accent);transition:width .3s ease}
+.mode-row.active{border-left:2px solid var(--accent);padding-left:8px}
+.rail-item .mut-strong{color:var(--fg);font-size:12.5px;margin-left:auto}
+.rail-item .badge.accent{margin-left:auto}

@@ -5,8 +5,9 @@
 // from what actually happened.
 
 import { summarizeLedger } from '../truth.js';
-import { judgeOutcome, POLICY } from './judge.js';
-import { parseWatch, createWatch, WATCH_METRICS } from './watch.js';
+import { judgeOutcome, reworkTask, POLICY } from './judge.js';
+import { parseWatch, createWatch, metricValue, goalProgress, WATCH_METRICS } from './watch.js';
+import { BUILTIN_MODES, activeMode, allModes, defaultChips, modeCard, parseModeRequest, setActiveMode, upsertCustomMode } from './modes.js';
 
 const rid = (p) => `${p}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 const yen = (n) => `¥${Math.round(Number(n) || 0).toLocaleString('ja-JP')}`;
@@ -16,7 +17,7 @@ const first = (re, s) => (s.match(re) || [])[0];
 const has = (s, ...w) => w.some((x) => s.includes(x));
 
 /** 数字を含む返答は必ず検算する（判定を付ける種類）。 */
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch']);
+const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -43,6 +44,7 @@ function stepsOf(s, fallback = 3) {
 // ---------------------------------------------------------------- read-backs
 
 async function boardMetrics(d) {
+  const mode = await activeMode(d.store).catch(() => null);
   const [rows, ledgerRows, mission, lastSuccess] = await Promise.all([
     d.store.all(`SELECT state, COUNT(*) AS c FROM tasks GROUP BY state`),
     d.store.all(`SELECT kind, amount, basis FROM ledger`),
@@ -60,22 +62,42 @@ async function boardMetrics(d) {
       waiting: count(rows, 'waiting_for_approval') + count(rows, 'waiting_for_quota') + count(rows, 'waiting_for_user'),
     },
     led,
+    mode: mode || BUILTIN_MODES.money,
     mission,
     lastSuccess: lastSuccess && lastSuccess[0] ? lastSuccess[0] : null,
   };
 }
 
-function moneyCard(led) {
-  return {
-    type: 'kpi',
-    title: '収支（実測と推定は分けて数えます）',
-    items: [
-      { label: '実測収益', value: led.revenue.measured, unit: '円', hl: true },
-      { label: '推定収益（不算入）', value: led.revenue.total_estimated, unit: '円' },
-      { label: '実測費用', value: led.cost.measured, unit: '円' },
-      { label: '実測の純益', value: led.net_profit_measured, unit: '円' },
-    ],
-  };
+// 数字のカードはモードで見せ方を変える。稼ぐモードでは実測と推定を分けて出し、
+// それ以外のモードでは「そのモードの成果」を主役にする（収益は0円のときは出さない）。
+function moneyCard(led, mode = null, m = null) {
+  if (!mode || mode.id === 'money') {
+    return {
+      type: 'kpi',
+      title: mode?.kpi_title || '収支（実測と推定は分けて数えます）',
+      items: [
+        { label: '実測収益', value: led.revenue.measured, unit: '円', hl: true },
+        { label: '推定収益（不算入）', value: led.revenue.total_estimated, unit: '円' },
+        { label: '実測費用', value: led.cost.measured, unit: '円' },
+        { label: '実測の純益', value: led.net_profit_measured, unit: '円' },
+      ],
+    };
+  }
+  const c = m?.counts || {};
+  const items = [
+    { label: mode.outcome_label || '終わったこと', value: c.completed || 0, unit: mode.unit || '件', hl: true },
+    { label: '動いている作業', value: c.running || 0, unit: '件' },
+    { label: '待機', value: c.queued || 0, unit: '件' },
+    { label: 'あなたの判断待ち', value: c.waiting || 0, unit: '件' },
+  ];
+  if (Number(led.revenue.measured) > 0) items.push({ label: '実測収益', value: led.revenue.measured, unit: '円' });
+  return { type: 'kpi', title: mode.kpi_title || `${mode.label}の成果`, items };
+}
+
+/** 目的をそのまま完了条件（hold の見張り）として立てる。 */
+async function armGoal(store, { metric = 'completed_tasks', threshold = 10, note = '', thread_id = null } = {}) {
+  if (!note) return null;
+  return createWatch(store, { metric, op: '>=', threshold, hold: true, note: String(note).slice(0, 220), thread_id });
 }
 
 function taskList(items, title) {
@@ -124,6 +146,11 @@ const HELP = `話しかけるだけで大丈夫です。たとえば:
 ・「何ができる？」— 自分でやること・承認が要ること・やらないことを示します
 ・「この手順を覚えて」— 実際に完了した流れを定型として保存します
 
+・「調べるモードにして」— 用途（モード）を切り替えます。稼ぐ・調べる・書く・つくる・暮らし、それ以外も自分で追加できます
+・「◯◯モードを追加して。目的は…」— あなた専用のモードを作り、その目的を完了条件にします
+・「月3万円に届くまで続けて」— 条件を満たすまで止まりません（完了条件としての見張り）
+・「やり直して」— 判定に落ちた作業を、前回の続きから作り直します
+
 むずかしい設定は要りません。判断に迷ったら私が決めて進めます。`;
 
 // ---------------------------------------------------------------- rules
@@ -135,13 +162,121 @@ const RULES = [
     run: async () => ({ reply: HELP, suggest: SUGGESTIONS }),
   },
   {
+    id: 'mode',
+    // 「たまに金稼ぎ以外にも使いたい」に応える部分。用途を切り替えると、チップ・
+    // 成果の数え方・承認の範囲まで変わる。自分のモードも会話から足せる（AI課金なし）。
+    test: (s) => re(s, /モード/) || has(s, '用途を', '使い方を変え'),
+    run: async (s, d) => {
+      const req = parseModeRequest(s);
+      const modes = await allModes(d.store);
+      const current = await activeMode(d.store);
+      if (req.action === 'create') {
+        const created = await upsertCustomMode(d.store, { label: req.label, goal: req.goal || '' });
+        if (!created) return { reply: 'モードの名前をもう一度教えてください（例:「筋トレ日記モードを追加して」）。' };
+        await setActiveMode(d.store, created.id);
+        const held = req.goal ? await armGoal(d.store, { metric: 'completed_tasks', threshold: 10, note: req.goal, thread_id: d.thread_id }).catch(() => null) : null;
+        return {
+          reply: `「${created.label}」モードを追加して、そのまま切り替えました。${created.goal ? `目的は「${created.goal}」ですね。` : ''}${held ? 'この目的は、達成するまで続ける完了条件として見張ります。' : ''}
+次からは「${created.label}モードにして」で切り替えられます。`,
+          cards: [modeCard(await allModes(d.store), created.id)],
+          watch_id: held?.id || null,
+          suggest: defaultChips(created),
+        };
+      }
+      if (req.action === 'goal') {
+        if (!req.goal) return { reply: '新しい目的を教えてください（例:「目的は 週3回の記録を続ける」）。' };
+        const updated = current.custom ? await upsertCustomMode(d.store, { id: current.id, label: current.label, goal: req.goal }) : null;
+        const held = await armGoal(d.store, { metric: 'completed_tasks', threshold: 10, note: req.goal, thread_id: d.thread_id }).catch(() => null);
+        return {
+          reply: `「${current.label}」モードの目的を「${req.goal}」にしました。${held ? 'この目的は、達成するまで続ける完了条件として見張ります。' : ''}`,
+          cards: [modeCard(await allModes(d.store), updated?.id || current.id)],
+          watch_id: held?.id || null,
+          suggest: defaultChips(updated || current),
+        };
+      }
+      if (req.action === 'switch') {
+        const target = modes.find((mo) => mo.label === req.label || mo.id === req.label || (req.label && mo.label.includes(req.label)));
+        if (!target) {
+          return { reply: `「${req.label}」というモードはまだありません。追加するなら「${req.label}モードを追加して」と言ってください。`, cards: [modeCard(modes, current.id)], suggest: defaultChips(current) };
+        }
+        await setActiveMode(d.store, target.id);
+        return {
+          reply: `「${target.label}」モードに切り替えました。${target.blurb}。${target.goal ? `\n目的は「${target.goal}」です。` : ''}
+このモードのあいだは、成果の数え方と提案がこの用途に合わせて変わります。`,
+          cards: [modeCard(await allModes(d.store), target.id)],
+          suggest: defaultChips(target),
+        };
+      }
+      return {
+        reply: `いまは「${current.label}」モードです。${current.blurb}。\n用途は切り替えられます — 「調べるモードにして」「暮らしモードにして」のように言ってください。「◯◯モードを追加して」と言えば、あなた専用のモードも作ります。`,
+        cards: [modeCard(modes, current.id)],
+        suggest: defaultChips(current),
+      };
+    },
+  },
+  {
+    id: 'goal',
+    // 「見張りを仕事の完了条件にする」— 条件を満たすまで止めない、を会話から立てる。
+    test: (s) => has(s, '達成するまで', 'まで続け', 'まで止まらな', '完走', 'あきらめず'),
+    run: async (s, d) => {
+      const missionRow = await d.store.first(`SELECT * FROM missions WHERE status='active' ORDER BY priority DESC LIMIT 1`).catch(() => null);
+      const parsed = parseWatch(s) || {};
+      const metric = parsed.metric || 'measured_revenue';
+      const threshold = parsed.threshold || Number(missionRow?.target_value || 0) || 30000;
+      const w = await createWatch(d.store, {
+        metric, op: parsed.op || '>=', threshold, hold: true,
+        note: s.slice(0, 220), thread_id: d.thread_id || null,
+      });
+      const label = WATCH_METRICS[metric]?.label || metric;
+      const unit = WATCH_METRICS[metric]?.unit || '';
+      const value = await metricValue(d.store, metric).catch(() => 0);
+      const p = goalProgress(w, value);
+      return {
+        reply: `わかりました。これはお願いではなく、完了条件として扱います。${label} が ${Number(threshold).toLocaleString('ja-JP')}${unit} に届くまで止まりません（いま ${Number(value).toLocaleString('ja-JP')}${unit}、あと ${Number(p.remain).toLocaleString('ja-JP')}${unit}）。
+未達のあいだは毎回あと何が必要かを数え直して作業を続け、達成した瞬間にこの会話で報告します。`,
+        cards: [{
+          type: 'kpi', title: '完了条件（達成するまで続けます）',
+          items: [
+            { label, value, unit, hl: true },
+            { label: 'ゴール', value: threshold, unit },
+            { label: 'あと', value: p.remain, unit },
+          ],
+        }],
+        watch_id: w.id,
+        suggest: ['今どうなってる？', '次の一手を進めて', '足あとを見せて'],
+      };
+    },
+  },
+  {
+    id: 'rework',
+    // 判定に落ちた作業を、その場で作り直す。お金を動かす話は作り直さず承認に回す。
+    test: (s) => has(s, '作り直し', '作り直して', 'やり直して', '差し戻', '判定に落ち', 'もう一度作'),
+    run: async (s, d) => {
+      const rows = await d.store.all(
+        `SELECT id,title,state,attempt,next_action FROM tasks WHERE state IN ('improving','failed','waiting_for_approval') ORDER BY updated_at DESC LIMIT 6`).catch(() => []);
+      const done = [];
+      for (const t of rows.slice(0, 3)) {
+        const r = await reworkTask(d.store, t.id, { reason: 'オーナーの指示による作り直し' }).catch(() => null);
+        if (r?.ok) done.push({ title: t.title, sub: `試行 ${r.attempt} 回目 · 前回の続きから`, badge: '作り直し中', tone: 'accent' });
+      }
+      if (!done.length) {
+        return { reply: 'いま作り直せる作業はありません。作ったものを見直したいときは「足あとを見せて」で中身を確認できます。', suggest: ['足あとを見せて', '今どうなってる？'] };
+      }
+      return {
+        reply: `${done.length} 件を作り直しに回しました。ゼロからではなく前回うまくいった地点から続けます（試行回数は引き継ぎます）。`,
+        cards: [{ type: 'list', icon: 'branch', title: '作り直し中の作業', items: done }],
+        suggest: ['今どうなってる？', '足あとを見せて'],
+      };
+    },
+  },
+  {
     id: 'greet',
     test: (s) => re(s, /^(やあ|こんにちは|こんばんは|おはよう|はじめまして|hi|hello|hey)/i) && s.length < 24,
     run: async (s, d) => {
       const m = await boardMetrics(d);
       return {
         reply: `はい、聞こえています。${m.mission ? `いまは「${m.mission.title}」に向けて動いています。` : '目標がまだ無いので、決めてもらえれば計画から始めます。'}`,
-        cards: [moneyCard(m.led)],
+        cards: [moneyCard(m.led, m.mode, m)],
         suggest: SUGGESTIONS,
       };
     },
@@ -206,19 +341,23 @@ const RULES = [
       if (!parsed) {
         return { reply: '何を見張るか教えてください。たとえば「実測収益が3万円を超えたら教えて」「失敗した作業が3件になったら知らせて」のように言ってもらえれば、条件を満たしたときに私から報告します。' };
       }
-      const w = await createWatch(d.store, { ...parsed, thread_id: d.thread_id || null, note: s.slice(0, 220) });
+      const w = await createWatch(d.store, { ...parsed, thread_id: d.thread_id || null, note: s.slice(0, 220), hold: !!parsed.hold });
       const label = WATCH_METRICS[w.metric]?.label || w.metric;
       const unit = WATCH_METRICS[w.metric]?.unit || '';
-      let current = null;
-      try {
-        const { metricValue } = await import('./watch.js');
-        current = await metricValue(d.store, w.metric);
-      } catch { current = null; }
+      const current = await metricValue(d.store, w.metric).catch(() => null);
+      const p = goalProgress(w, current || 0);
       return {
-        reply: `見張りを始めました。「${label} が ${w.op === '<=' ? 'これ以下' : 'これ以上'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}」になったら、私からこの会話で報告します。${current != null ? `
-いまの値は ${Number(current).toLocaleString('ja-JP')}${unit} です。` : ''}
+        reply: `${w.hold ? '完了条件として' : '見張りを'}始めました。「${label} が ${w.op === '<=' ? 'これ以下' : 'これ以上'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}」になったら、私からこの会話で報告します。${current != null ? `
+いまの値は ${Number(current).toLocaleString('ja-JP')}${unit} です。` : ''}${w.hold && p.remain > 0 ? `あと ${Number(p.remain).toLocaleString('ja-JP')}${unit} なので、未達のあいだは作業を続けます。` : ''}
 止めたいときは「見張りをやめて」と言ってください。`,
-        cards: [{ type: 'list', icon: 'eye', title: 'いま見張っていること', items: [{ title: `${label} ${w.op === '<=' ? '≤' : '≥'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}`, sub: current != null ? `いま ${Number(current).toLocaleString('ja-JP')}${unit}` : '未計測', badge: '見張り中', tone: 'accent', act: `watch_off:${w.id}`, act_label: '解除' }] }],
+        cards: [{
+          type: 'list', icon: 'eye', title: w.hold ? '完了条件' : 'いま見張っていること',
+          items: [{
+            title: `${label} ${w.op === '<=' ? '≤' : '≥'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}`,
+            sub: [current != null ? `いま ${Number(current).toLocaleString('ja-JP')}${unit}` : '未計測', w.hold ? `あと ${Number(p.remain).toLocaleString('ja-JP')}${unit}` : null].filter(Boolean).join(' · '),
+            badge: w.hold ? '達成まで続ける' : '見張り中', tone: 'accent', act: `watch_off:${w.id}`, act_label: '解除',
+          }],
+        }],
         watch_id: w.id,
         suggest: ['今どうなってる？', '何ができる？'],
       };
@@ -253,7 +392,7 @@ const RULES = [
     run: async (s, d) => {
       const [st, m, tasks] = await Promise.all([d.engine.engineState(), boardMetrics(d), liveTasks(d)]);
       const events = [];
-      const cards = [moneyCard(m.led)];
+      const cards = [moneyCard(m.led, m.mode, m)];
       if (tasks.length) cards.push(taskList(tasks, 'いま動いている作業'));
       const progress = m.mission?.progress != null ? `（進捗 ${m.mission.progress}%）` : '';
       const lines = [
@@ -297,7 +436,7 @@ const RULES = [
       const r = await d.engine.tick({ maxSteps: want, source: 'chat' });
       const steps = (r?.steps || []);
       const m = await boardMetrics(d);
-      const cards = [moneyCard(m.led)];
+      const cards = [moneyCard(m.led, m.mode, m)];
       const tasks = await liveTasks(d);
       if (tasks.length) cards.push(taskList(tasks, '進行中の作業'));
       const ok = steps.filter((x) => x.result !== 'failed' && x.ok !== false).length;
@@ -401,7 +540,7 @@ const RULES = [
           `${isCost ? '費用' : '収益'} ${yen(amount)} を記録しました（${basis === 'measured' ? '実測' : '推定'}として扱います）。`,
           basis === 'measured' ? '根拠つきなので実績に算入します。' : '根拠URLを添えてもらえれば実測に切り替えます（推定値は実績に数えません）。',
         ].join('\n'),
-        cards: [moneyCard(m.led)],
+        cards: [moneyCard(m.led, m.mode, m)],
       };
     },
   },
@@ -414,7 +553,7 @@ const RULES = [
         reply: m.led.revenue.measured > 0
           ? '実測でこれだけ入っています。内訳はこちらです。'
           : 'まだ実測の収益は0円です。下の見込みは実績には数えません。確度の高い候補から進めます。',
-        cards: [moneyCard(m.led)],
+        cards: [moneyCard(m.led, m.mode, m)],
         suggest: ['稼げる方法を探して', '次の一手を進めて'],
       };
     },
@@ -589,7 +728,21 @@ export async function runCommand({ message, deps }) {
           out.events = [...(out.events || []), { text: verdict.line, tick: verdict.ok }];
         }
       } catch { /* 判定は補助 */ }
-      return { ok: true, kind: rule.id, suggest: SUGGESTIONS, ...out, verdict };
+      // 判定に落ちた返答は、その場で本物の作り直しにつなげる。お金を動かす操作は
+      // 作り直さず、承認待ちに回す（POLICY のとおり）。
+      let reworked = null;
+      try {
+        if (verdict && !verdict.ok && verdict.rework?.task_id && typeof deps.rework === 'function') {
+          reworked = await deps.rework(verdict.rework.task_id, { reason: verdict.rework.reason }).catch(() => null);
+          if (reworked?.ok) {
+            out.events = [...(out.events || []), { text: `判定に落ちたので作り直します（試行 ${reworked.attempt} 回目）`, tick: true }];
+            out.cards = [...(out.cards || []), { type: 'note', icon: 'branch', title: '判定の差し戻し', text: `根拠: ${verdict.rework.reason}。作り直しに回しました（前回うまくいった地点から再開します）。` }];
+          } else if (reworked?.error === 'approval_required') {
+            out.events = [...(out.events || []), { text: 'お金を動かす操作なので作り直さず、承認待ちに回しました', tick: false }];
+          }
+        }
+      } catch { /* 差し戻しは補助 */ }
+      return { ok: true, kind: rule.id, suggest: SUGGESTIONS, ...out, verdict, reworked };
     } catch (e) {
       return { ok: false, kind: rule.id, reply: `「${rule.id}」の処理でつまずきました（${String(e.message || e)}）。もう一度言い方を変えて試してもらえますか。` };
     }
@@ -605,7 +758,7 @@ export async function runCommand({ message, deps }) {
     reply: m
       ? `すみません、それはまだうまく掴めませんでした。いまの状況は、実行中 ${m.counts.running} 件・待機 ${m.counts.queued} 件、実測収益 ${yen(m.led.revenue.measured)} です。\n「次の一手を進めて」「収益はいくら？」のように言ってもらえれば、私が動きます。`
       : 'すみません、うまく掴めませんでした。「今どうなってる？」と聞いてもらえれば状況をまとめます。',
-    cards: m ? [moneyCard(m.led)] : [],
+    cards: m ? [moneyCard(m.led, m.mode, m)] : [],
     suggest: SUGGESTIONS,
   };
 }

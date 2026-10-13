@@ -126,8 +126,10 @@ export async function ensureSchema(store) {
     `CREATE TABLE IF NOT EXISTS chat_messages (id TEXT PRIMARY KEY, thread_id TEXT, role TEXT, text TEXT, cards_json TEXT, events_json TEXT, kind TEXT, created_at TEXT)`,
     `CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at)`,
     `CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at)`,
-    // 見張り（先回り報告）— 条件つきの監視。
-    `CREATE TABLE IF NOT EXISTS watch_rules (id TEXT PRIMARY KEY, thread_id TEXT, metric TEXT NOT NULL, op TEXT, threshold REAL, note TEXT, status TEXT DEFAULT 'active', last_value REAL, last_checked_at TEXT, triggered_count INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)`, 
+    // 見張り（先回り報告）— 条件つきの監視。hold=1 は「達成するまで止めない」完了条件。
+    `CREATE TABLE IF NOT EXISTS watch_rules (id TEXT PRIMARY KEY, thread_id TEXT, metric TEXT NOT NULL, op TEXT, threshold REAL, note TEXT, status TEXT DEFAULT 'active', hold INTEGER DEFAULT 0, stop_on_hit INTEGER DEFAULT 0, achieved_value REAL, last_value REAL, last_checked_at TEXT, triggered_count INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT)`,
+    // モード（用途）— 稼ぐ以外の使い方をオーナーが自分で足せるようにする。
+    `CREATE TABLE IF NOT EXISTS modes (id TEXT PRIMARY KEY, label TEXT NOT NULL, goal TEXT, blurb TEXT, kpi_title TEXT, outcome_label TEXT, unit TEXT DEFAULT '件', chips_json TEXT DEFAULT '[]', placeholder TEXT, extra_approval_json TEXT DEFAULT '[]', extra_never_json TEXT DEFAULT '[]', created_at TEXT, updated_at TEXT)`, 
     `CREATE TABLE IF NOT EXISTS workflow_runs (id TEXT PRIMARY KEY, workflow_id TEXT, status TEXT DEFAULT 'queued', cursor INTEGER DEFAULT 0, context TEXT, log_json TEXT DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, task_id TEXT, action TEXT NOT NULL, risk_level TEXT NOT NULL, payload TEXT, status TEXT DEFAULT 'pending', requested_at TEXT NOT NULL, decided_at TEXT, note TEXT)`,
     `CREATE INDEX IF NOT EXISTS idx_appr_status ON approvals(status)`,
@@ -157,6 +159,10 @@ export async function ensureSchema(store) {
     `ALTER TABLE characters ADD COLUMN avatar_model TEXT`,
     `ALTER TABLE characters ADD COLUMN avatar_updated_at TEXT`,
     `CREATE TABLE IF NOT EXISTS avatars (id TEXT PRIMARY KEY, character_id TEXT, mime TEXT, bytes INTEGER, data_url TEXT NOT NULL, source TEXT, prompt TEXT, model TEXT, created_at TEXT NOT NULL)`,
+    // 見張りの完了条件（hold）まわり。既存DBにも後付けで足す。
+    `ALTER TABLE watch_rules ADD COLUMN hold INTEGER DEFAULT 0`,
+    `ALTER TABLE watch_rules ADD COLUMN stop_on_hit INTEGER DEFAULT 0`,
+    `ALTER TABLE watch_rules ADD COLUMN achieved_value REAL`,
     `ALTER TABLE missions ADD COLUMN agent_id TEXT`,
     `ALTER TABLE tasks ADD COLUMN agent_id TEXT`,
     `ALTER TABLE runs ADD COLUMN agent_id TEXT`,

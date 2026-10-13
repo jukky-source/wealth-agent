@@ -54,6 +54,8 @@ const state = {
   messages: [],
   dash: null,
   suggest: DEFAULT_SUGGEST.slice(),
+  suggestTouched: false,
+  mode: null,
   busy: false,
 };
 
@@ -163,6 +165,30 @@ async function doAction(spec, btn) {
     else { toast('再開できませんでした'); btn.disabled = false; }
     return;
   }
+  if (kind === 'rework') {
+    const r = await api(`/api/tasks/${encodeURIComponent(id)}/action`, { method: 'POST', body: { action: 'rework', reason: 'オーナーの指示による作り直し' }, quiet: true });
+    if (r && r.ok !== false) { toast(`作り直しに回しました（試行 ${r.attempt} 回目）`); send('足あとを見せて'); }
+    else { toast(r?.error === 'approval_required' ? 'お金を動かす操作なので承認に回しました' : '作り直せませんでした'); btn.disabled = false; }
+    return;
+  }
+  if (kind === 'mode') {
+    const r = await api('/api/mode', { method: 'POST', body: { action: 'switch', id }, quiet: true });
+    if (r && r.ok !== false) {
+      state.suggestTouched = false;
+      state.mode = { ...r.mode, chips: r.chips };
+      toast(`「${r.mode.label}」モードに切り替えました`);
+      closeSheet();
+      await refresh({ quiet: true });
+      renderThread();
+    } else { toast('切り替えられませんでした'); btn.disabled = false; }
+    return;
+  }
+  if (kind === 'watch_hold') {
+    const r = await api(`/api/watches/${encodeURIComponent(id)}`, { method: 'POST', body: { action: 'hold' }, quiet: true });
+    if (r && r.ok !== false) { toast('達成するまで続ける完了条件にしました'); closeSheet(); await refresh({ quiet: true }); }
+    else btn.disabled = false;
+    return;
+  }
   if (kind === 'watch_off') {
     await api(`/api/watches/${encodeURIComponent(id)}`, { method: 'POST', body: { action: 'delete' }, quiet: true });
     toast('見張りを解除しました');
@@ -193,8 +219,9 @@ function renderThread() {
   const el = threadEl();
   if (!state.messages.length) {
     const name = state.dash?.character?.name || 'Wealth Agent';
+    const m = state.mode;
     el.innerHTML = `
-      <div class="m agent"><div class="bub">${esc(`はじめまして、${name} です。\n\n目標を教えてもらえれば、計画を立てて調査・実行・検証まで自分で進めます。むずかしい設定は要りません — 話しかけるだけで動きます。`)}</div>
+      <div class="m agent"><div class="bub">${esc(`はじめまして、${name} です。\n\n目標を教えてもらえれば、計画を立てて調査・実行・検証まで自分で進めます。むずかしい設定は要りません — 話しかけるだけで動きます。${m ? `\n\nいまは「${m.label}」モードです（${m.blurb || ''}）。用途は「調べるモードにして」のように言えば切り替わります。` : ''}`)}</div>
       <span class="t">エージェント</span></div>`;
     return;
   }
@@ -285,6 +312,7 @@ async function renderFoot() {
   $('#railFoot').innerHTML = `
     ${teammates}
     <div class="rail-sec">エージェント</div>
+    <button class="rail-item" data-open="mode">${icon('gear', 'i sm')}モード <span class="mut-strong">${esc(d.mode?.label || '稼ぐ')}</span></button>
     <button class="rail-item" data-open="work">${icon('eye', 'i sm')}作業をのぞく</button>
     <button class="rail-item" data-open="approvals">${icon('shield', 'i sm')}承認${waiting ? `<span class="badge warn">${waiting}</span>` : ''}</button>
     <button class="rail-item" data-open="watch">${icon('eye', 'i sm')}見張り${watchCount ? `<span class="badge accent">${watchCount}</span>` : ''}</button>
@@ -317,7 +345,8 @@ async function openThread(id) {
   state.messages = (r.messages || []).map((m) => ({
     role: m.role, text: m.text, cards: m.cards || [], events: m.events || [], created_at: m.created_at,
   }));
-  state.suggest = DEFAULT_SUGGEST.slice();
+  state.suggestTouched = false;
+  state.suggest = (state.mode?.chips || DEFAULT_SUGGEST).slice();
   renderChips();
   renderThread();
   renderRail();
@@ -328,7 +357,8 @@ async function openThread(id) {
 function newThread() {
   state.currentId = null;
   state.messages = [];
-  state.suggest = DEFAULT_SUGGEST.slice();
+  state.suggestTouched = false;
+  state.suggest = (state.mode?.chips || DEFAULT_SUGGEST).slice();
   renderChips();
   renderThread();
   renderRail();
@@ -386,8 +416,26 @@ function renderHeader() {
 
 async function refresh({ quiet = true } = {}) {
   const d = await api('/api/dashboard', { quiet });
-  if (d && d.ok !== false) { state.dash = d; renderHeader(); }
+  if (d && d.ok !== false) {
+    state.dash = d;
+    state.mode = d.mode || state.mode;
+    renderHeader();
+    renderModeChrome();
+  }
   return d;
+}
+
+/** モードに合わせて入力欄の案内とチップを合わせる（稼ぐ以外の用途でも使いやすく）。 */
+function renderModeChrome() {
+  const m = state.mode;
+  if (!m) return;
+  const ta = $('#input');
+  if (ta && m.placeholder) ta.placeholder = m.placeholder;
+  if (!state.suggestTouched && Array.isArray(m.chips) && m.chips.length) {
+    state.suggest = m.chips.slice();
+    renderChips();
+  }
+  renderFoot();
 }
 
 // ------------------------------------------------------------------ send
@@ -411,9 +459,10 @@ async function send(text) {
     push({ role: 'agent', text: '通信できませんでした。電波のある場所でもう一度試してください。' });
   } else {
     push({ role: 'agent', text: r.reply || '処理しました。', cards: r.cards || [], events: r.events || [], memory: r.memory || [] });
-    if (r.thread_id && r.thread_id !== state.currentId) state.currentId = r.thread_id;
+  if (r.thread_id && r.thread_id !== state.currentId) state.currentId = r.thread_id;
   }
-  if (Array.isArray(r?.suggest) && r.suggest.length) { state.suggest = r.suggest; renderChips(); }
+  if (Array.isArray(r?.suggest) && r.suggest.length) { state.suggest = r.suggest; state.suggestTouched = true; renderChips(); }
+  if (r?.mode) { state.mode = { ...(state.mode || {}), ...r.mode }; renderModeChrome(); }
 
   state.busy = false;
   $('#sendBtn').disabled = false;
@@ -445,6 +494,7 @@ async function openSheet(which = 'info') {
   if (which === 'work') return openWork();
   if (which === 'approvals') return openApprovals();
   if (which === 'watch') return openWatch();
+  if (which === 'mode') return openMode();
 
   const d = state.dash || (await refresh({ quiet: false })) || {};
   const ch = d.character || {};
@@ -554,19 +604,70 @@ async function openWork() {
   $('#workOpen').addEventListener('click', () => { closeSheet(); $('#input').focus(); });
 }
 
-/** 見張り（先回り報告）— 条件と現在値、解除ボタン。 */
+/** 見張り（先回り報告）— 条件と現在値、完了条件（達成まで続ける）の進み具合。 */
 async function openWatch() {
   const w = await api('/api/watches', { quiet: true });
   const rules = (w?.watches || []);
+  const goal = w?.goal || state.dash?.goal || null;
   openSheetRaw('見張り', `
+    ${goal ? `<div>
+      <div class="sec-t">${goal.status === 'achieved' ? '達成しました' : '完了条件（達成するまで続けます）'}</div>
+      <div class="goal-bar"><div class="goal-fill" style="width:${Math.max(2, Number(goal.pct) || 0)}%"></div></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">${esc(goal.metric_label || '')} ${fmt(goal.current)} / ${fmt(goal.target)}${esc(goal.unit || '')} · あと ${fmt(goal.remain)}${esc(goal.unit || '')}</div>
+      ${goal.note ? `<div class="muted" style="font-size:12px;margin-top:4px">登録時の指示: ${esc(goal.note)}</div>` : ''}
+    </div>` : ''}
     <div>
       <div class="sec-t">条件に達したら、私から報告します</div>
-      ${rules.length ? `<div class="rows">${rules.map((r) => `<div class="row"><div class="row-main"><div class="row-t">${esc(r.label)} ${r.op === '<=' ? '≤' : '≥'} ${fmt(r.threshold)}${esc(r.unit || '')}</div><div class="row-s">いま ${fmt(r.current_value)}${esc(r.unit || '')} · ${r.status === 'triggered' ? '報告済み' : r.status === 'paused' ? '停止中' : '見張り中'}</div></div><button class="btn sm" data-do="watch_off:${esc(r.id)}">解除</button></div>`).join('')}</div>`
-        : '<div class="muted" style="font-size:13px">まだ見張りはありません。会話で「実測収益が3万円を超えたら教えて」のように頼むと、ここに並びます。</div>'}
+      ${rules.length ? `<div class="rows">${rules.map((r) => `<div class="row"><div class="row-main"><div class="row-t">${esc(r.label)} ${r.op === '<=' ? '≤' : '≥'} ${fmt(r.threshold)}${esc(r.unit || '')}</div><div class="row-s">いま ${fmt(r.current_value)}${esc(r.unit || '')}${r.hold ? ` · あと ${fmt(r.progress && r.progress.remain)}${esc(r.unit || '')}` : ''} · ${r.status === 'achieved' ? '達成' : r.status === 'triggered' ? '報告済み' : r.status === 'paused' ? '停止中' : '見張り中'}</div></div>${r.hold ? '<span class="badge accent">達成まで</span>' : `<button class="btn sm" data-do="watch_hold:${esc(r.id)}">達成まで続ける</button>`}<button class="btn sm" data-do="watch_off:${esc(r.id)}">解除</button></div>`).join('')}</div>`
+        : '<div class="muted" style="font-size:13px">まだ見張りはありません。会話で「実測収益が3万円を超えたら教えて」「目標額に届くまで続けて」のように頼むと、ここに並びます。</div>'}
     </div>
     <div class="muted" style="font-size:12.5px">条件は登録した瞬間に固定されます。値は毎回、台帳と作業キューから読み直して照合します。</div>
   `);
   $$('[data-do]', $('#sheetIn')).forEach((b) => b.addEventListener('click', () => doAction(b.dataset.do, b)));
+}
+
+/** モード（用途）— 稼ぐ以外にも使えるように切り替える。自分のモードもここで足せる。 */
+async function openMode() {
+  const r = await api('/api/mode', { quiet: true });
+  const modes = (r?.modes || []);
+  const cur = r?.current || state.mode || {};
+  const goal = state.dash?.goal || null;
+  openSheetRaw('モード（用途）', `
+    <div>
+      <div class="sec-t">いまは「${esc(cur.label || '稼ぐ')}」モード</div>
+      <div class="muted" style="font-size:13px">${esc(cur.blurb || '')}${cur.goal ? `<br>目的: ${esc(cur.goal)}` : ''}</div>
+      ${goal && goal.status !== 'achieved' ? `<div style="margin-top:12px">
+        <div class="goal-bar"><div class="goal-fill" style="width:${Math.max(2, Number(goal.pct) || 0)}%"></div></div>
+        <div class="muted" style="font-size:12px;margin-top:6px">完了条件: ${esc(goal.metric_label || '')} ${fmt(goal.current)} / ${fmt(goal.target)}${esc(goal.unit || '')} · あと ${fmt(goal.remain)}${esc(goal.unit || '')}</div>
+      </div>` : ''}
+    </div>
+    <div>
+      <div class="sec-t">切り替える</div>
+      <div class="rows">${modes.map((m) => `<div class="row mode-row${m.id === cur.id ? ' active' : ''}"><div class="row-main"><div class="row-t">${esc(m.label)}</div><div class="row-s">${esc(m.blurb || '')}${m.custom ? ' · あなたが追加' : ''}</div></div>${m.id === cur.id ? '<span class="badge accent">いま</span>' : `<button class="btn sm" data-do="mode:${esc(m.id)}">切り替え</button>`}</div>`).join('')}</div>
+    </div>
+    <div>
+      <div class="sec-t">自分のモードを追加する</div>
+      <div class="field"><span>名前</span><input id="modeLabel" placeholder="例: 筋トレ日記 / 引っ越し準備" maxlength="20"></div>
+      <div class="field" style="margin-top:8px"><span>目的（任意。そのまま完了条件になります）</span><textarea id="modeGoal" rows="2" placeholder="例: 週3回の記録を続ける"></textarea></div>
+      <div class="btn-row" style="margin-top:10px"><button class="btn primary" id="modeAdd">追加して切り替える</button></div>
+    </div>
+    <div class="muted" style="font-size:12.5px">会話からも変えられます（「調べるモードにして」「◯◯モードを追加して。目的は…」）。</div>
+  `);
+  $$('[data-do]', $('#sheetIn')).forEach((b) => b.addEventListener('click', () => doAction(b.dataset.do, b)));
+  $('#modeAdd').addEventListener('click', async (e) => {
+    const label = $('#modeLabel').value.trim();
+    if (!label) { toast('名前を入れてください'); return; }
+    e.target.disabled = true;
+    const res = await api('/api/mode', { method: 'POST', body: { action: 'create', label, goal: $('#modeGoal').value.trim() }, quiet: true });
+    if (res && res.ok !== false) {
+      state.suggestTouched = false;
+      state.mode = { ...res.mode, chips: res.chips };
+      toast(`「${res.mode.label}」モードを追加しました`);
+      closeSheet();
+      await refresh({ quiet: true });
+      send('このモードで次にやることを1つ進めて');
+    } else { toast('追加できませんでした'); e.target.disabled = false; }
+  });
 }
 
 async function openApprovals() {
