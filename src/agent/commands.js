@@ -147,6 +147,107 @@ const RULES = [
     },
   },
   {
+    id: 'resume',
+    // Reddit の実運用スレッドが口をそろえて挙げる「信頼できるエージェント」の条件:
+    // 途中で失敗したとき、ゼロからやり直すのか、続きから拾えるのか。
+    test: (s) => has(s, '続きから', '途中から', '再開して', '失敗したもの', '失敗を', 'やり直', 'リトライ', '復帰', '止まってる作業'),
+    run: async (s, d) => {
+      const rows = await d.store.all(
+        `SELECT id,title,state,attempt,last_success_step,next_action FROM tasks
+          WHERE state IN ('failed','cancelled','improving','waiting_for_approval','waiting_for_quota')
+          ORDER BY updated_at DESC LIMIT 6`).catch(() => []);
+      if (!rows.length) {
+        return { reply: '止まっている作業はありません。いまは詰まるところが無い状態です。', suggest: ['今どうなってる？', '次の一手を進めて'] };
+      }
+      return {
+        reply: `${rows.length} 件が途中で止まっています。最初からやり直すのではなく、最後にうまくいった地点から続けます（試行回数は引き継ぎます）。`,
+        cards: [{
+          type: 'list', icon: 'branch', title: '続きから再開できる作業',
+          items: rows.map((t) => ({
+            title: t.title,
+            sub: [STATE_LABEL[t.state] || t.state, t.last_success_step ? `前回成功: ${t.last_success_step}` : (t.next_action || null), t.attempt ? `試行 ${t.attempt} 回` : null].filter(Boolean).join(' · '),
+            badge: '続きから', tone: 'warn', act: `resume:${t.id}`, act_label: '再開',
+          })),
+        }],
+        suggest: ['今どうなってる？', '次の一手を進めて'],
+      };
+    },
+  },
+  {
+    id: 'trace',
+    // Manus のレビューが評価するのは「全ステップを見せて検証できること」。
+    // n8n が愛される理由も可視化。ここでは runs から実際の足あとだけを出す。
+    test: (s) => has(s, '足あと', '何をした', 'なにをした', 'ログ', '履歴', 'やったこと', 'ステップを見'),
+    run: async (s, d) => {
+      const [runs, done] = await Promise.all([
+        d.store.all(`SELECT summary,state,created_at FROM runs ORDER BY created_at DESC LIMIT 12`).catch(() => []),
+        d.store.all(`SELECT title,finished_at FROM tasks WHERE state='completed' ORDER BY finished_at DESC LIMIT 6`).catch(() => []),
+      ]);
+      const items = [
+        ...done.map((t) => ({ t: t.title, s: `完了 · ${String(t.finished_at || '').slice(0, 16).replace('T', ' ')}`, cls: 'ok' })),
+        ...runs.map((r) => ({ t: r.summary || r.state || '実行', s: `${r.state || ''} · ${String(r.created_at || '').slice(0, 16).replace('T', ' ')}`, cls: r.state === 'failed' ? 'next' : 'ok' })),
+      ].slice(0, 14);
+      if (!items.length) {
+        return { reply: 'まだ足あとがありません。「始めて」と言えば、何をしたかをここに全部残します。', suggest: ['始めて', '今どうなってる？'] };
+      }
+      return {
+        reply: `実際にやったこと ${items.length} 件です。ごまかしのないよう、記録に残っている動作だけを出しています。`,
+        cards: [{ type: 'trace', icon: 'pulse', title: 'エージェントの足あと', items }],
+        suggest: ['今どうなってる？', '続きから再開できる？'],
+      };
+    },
+  },
+  {
+    id: 'watch',
+    // Vellum が最も評価された「こちらが頼んだことを見張って、向こうから知らせる」。
+    test: (s) => has(s, '監視', '見張', 'ウォッチ', '超えたら', 'なったら教え', '知らせて'),
+    run: async (s, d) => {
+      const parsed = parseWatch(s);
+      if (!parsed) {
+        return { reply: '何を見張るか教えてください。たとえば「実測収益が3万円を超えたら教えて」「失敗した作業が3件になったら知らせて」のように言ってもらえれば、条件を満たしたときに私から報告します。' };
+      }
+      const w = await createWatch(d.store, { ...parsed, thread_id: d.thread_id || null, note: s.slice(0, 220) });
+      const label = WATCH_METRICS[w.metric]?.label || w.metric;
+      const unit = WATCH_METRICS[w.metric]?.unit || '';
+      let current = null;
+      try {
+        const { metricValue } = await import('./watch.js');
+        current = await metricValue(d.store, w.metric);
+      } catch { current = null; }
+      return {
+        reply: `見張りを始めました。「${label} が ${w.op === '<=' ? 'これ以下' : 'これ以上'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}」になったら、私からこの会話で報告します。${current != null ? `
+いまの値は ${Number(current).toLocaleString('ja-JP')}${unit} です。` : ''}
+止めたいときは「見張りをやめて」と言ってください。`,
+        cards: [{ type: 'list', icon: 'eye', title: 'いま見張っていること', items: [{ title: `${label} ${w.op === '<=' ? '≤' : '≥'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}`, sub: current != null ? `いま ${Number(current).toLocaleString('ja-JP')}${unit}` : '未計測', badge: '見張り中', tone: 'accent', act: `watch_off:${w.id}`, act_label: '解除' }] }],
+        watch_id: w.id,
+        suggest: ['今どうなってる？', '何ができる？'],
+      };
+    },
+  },
+  {
+    id: 'scope',
+    // 評価の高いアシスタントに共通する「範囲の明示」と「鍵の分離」。
+    test: (s) => has(s, '何ができ', 'なにができ', 'できること', 'やらないこと', '権限', '何をしていい', 'どこまで'),
+    run: async (s, d) => {
+      const present = ['GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY', 'CEREBRAS_API_KEY', 'MISTRAL_API_KEY'].filter((k) => d.env && d.env[k]);
+      const paid = String(d.env?.ALLOW_PAID_AI || 'false') === 'true';
+      const items = [
+        ...POLICY.autonomous.map((x) => ({ title: x, badge: '自分でやる', tone: 'ok' })),
+        ...POLICY.approval_required.map((x) => ({ title: x, badge: '承認が必要', tone: 'warn' })),
+        ...POLICY.never.map((x) => ({ title: x, badge: 'やらない', tone: 'danger' })),
+      ];
+      return {
+        reply: `いまの範囲はこうなっています。判断に迷う操作は必ず止めて聞きます。
+無料のAIキーは ${present.length} 件が使える状態、有料AIは${paid ? '有効' : '無効（課金は起きません）'}です。`,
+        cards: [
+          { type: 'list', icon: 'shield', title: 'できること / 承認が要ること / やらないこと', items },
+          { type: 'note', icon: 'key', title: '鍵のあつかい', text: POLICY.keys },
+        ],
+        suggest: ['承認まちを見せて', '今どうなってる？'],
+      };
+    },
+  },
+  {
     id: 'status',
     test: (s) => has(s, '状況', '進捗', 'どうなって', 'うまくいって', '今どう', '報告', 'レポート', 'まとめ', '様子', '調子'),
     run: async (s, d) => {
@@ -376,107 +477,6 @@ const RULES = [
       return {
         reply: tasks.length ? `いま抱えている作業は ${tasks.length} 件です。` : '待っている作業はありません。「始めて」と言えば自分で次の作業を起こします。',
         cards: tasks.length ? [taskList(tasks, '作業キュー')] : [],
-      };
-    },
-  },
-  {
-    id: 'resume',
-    // Reddit の実運用スレッドが口をそろえて挙げる「信頼できるエージェント」の条件:
-    // 途中で失敗したとき、ゼロからやり直すのか、続きから拾えるのか。
-    test: (s) => has(s, '続きから', '途中から', '再開して', '失敗したもの', '失敗を', 'やり直', 'リトライ', '復帰', '止まってる作業'),
-    run: async (s, d) => {
-      const rows = await d.store.all(
-        `SELECT id,title,state,attempt,last_success_step,next_action FROM tasks
-          WHERE state IN ('failed','cancelled','improving','waiting_for_approval','waiting_for_quota')
-          ORDER BY updated_at DESC LIMIT 6`).catch(() => []);
-      if (!rows.length) {
-        return { reply: '止まっている作業はありません。いまは詰まるところが無い状態です。', suggest: ['今どうなってる？', '次の一手を進めて'] };
-      }
-      return {
-        reply: `${rows.length} 件が途中で止まっています。最初からやり直すのではなく、最後にうまくいった地点から続けます（試行回数は引き継ぎます）。`,
-        cards: [{
-          type: 'list', icon: 'branch', title: '続きから再開できる作業',
-          items: rows.map((t) => ({
-            title: t.title,
-            sub: [STATE_LABEL[t.state] || t.state, t.last_success_step ? `前回成功: ${t.last_success_step}` : (t.next_action || null), t.attempt ? `試行 ${t.attempt} 回` : null].filter(Boolean).join(' · '),
-            badge: '続きから', tone: 'warn', act: `resume:${t.id}`, act_label: '再開',
-          })),
-        }],
-        suggest: ['今どうなってる？', '次の一手を進めて'],
-      };
-    },
-  },
-  {
-    id: 'trace',
-    // Manus のレビューが評価するのは「全ステップを見せて検証できること」。
-    // n8n が愛される理由も可視化。ここでは runs から実際の足あとだけを出す。
-    test: (s) => has(s, '足あと', '何をした', 'なにをした', 'ログ', '履歴', 'やったこと', 'ステップを見'),
-    run: async (s, d) => {
-      const [runs, done] = await Promise.all([
-        d.store.all(`SELECT summary,state,created_at FROM runs ORDER BY created_at DESC LIMIT 12`).catch(() => []),
-        d.store.all(`SELECT title,finished_at FROM tasks WHERE state='completed' ORDER BY finished_at DESC LIMIT 6`).catch(() => []),
-      ]);
-      const items = [
-        ...done.map((t) => ({ t: t.title, s: `完了 · ${String(t.finished_at || '').slice(0, 16).replace('T', ' ')}`, cls: 'ok' })),
-        ...runs.map((r) => ({ t: r.summary || r.state || '実行', s: `${r.state || ''} · ${String(r.created_at || '').slice(0, 16).replace('T', ' ')}`, cls: r.state === 'failed' ? 'next' : 'ok' })),
-      ].slice(0, 14);
-      if (!items.length) {
-        return { reply: 'まだ足あとがありません。「始めて」と言えば、何をしたかをここに全部残します。', suggest: ['始めて', '今どうなってる？'] };
-      }
-      return {
-        reply: `実際にやったこと ${items.length} 件です。ごまかしのないよう、記録に残っている動作だけを出しています。`,
-        cards: [{ type: 'trace', icon: 'pulse', title: 'エージェントの足あと', items }],
-        suggest: ['今どうなってる？', '続きから再開できる？'],
-      };
-    },
-  },
-  {
-    id: 'watch',
-    // Vellum が最も評価された「こちらが頼んだことを見張って、向こうから知らせる」。
-    test: (s) => has(s, '監視', '見張', 'ウォッチ', '超えたら', 'なったら教え', '知らせて'),
-    run: async (s, d) => {
-      const parsed = parseWatch(s);
-      if (!parsed) {
-        return { reply: '何を見張るか教えてください。たとえば「実測収益が3万円を超えたら教えて」「失敗した作業が3件になったら知らせて」のように言ってもらえれば、条件を満たしたときに私から報告します。' };
-      }
-      const w = await createWatch(d.store, { ...parsed, thread_id: d.thread_id || null, note: s.slice(0, 220) });
-      const label = WATCH_METRICS[w.metric]?.label || w.metric;
-      const unit = WATCH_METRICS[w.metric]?.unit || '';
-      let current = null;
-      try {
-        const { metricValue } = await import('./watch.js');
-        current = await metricValue(d.store, w.metric);
-      } catch { current = null; }
-      return {
-        reply: `見張りを始めました。「${label} が ${w.op === '<=' ? 'これ以下' : 'これ以上'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}」になったら、私からこの会話で報告します。${current != null ? `
-いまの値は ${Number(current).toLocaleString('ja-JP')}${unit} です。` : ''}
-止めたいときは「見張りをやめて」と言ってください。`,
-        cards: [{ type: 'list', icon: 'eye', title: 'いま見張っていること', items: [{ title: `${label} ${w.op === '<=' ? '≤' : '≥'} ${Number(w.threshold).toLocaleString('ja-JP')}${unit}`, sub: current != null ? `いま ${Number(current).toLocaleString('ja-JP')}${unit}` : '未計測', badge: '見張り中', tone: 'accent', act: `watch_off:${w.id}`, act_label: '解除' }] }],
-        watch_id: w.id,
-        suggest: ['今どうなってる？', '何ができる？'],
-      };
-    },
-  },
-  {
-    id: 'scope',
-    // 評価の高いアシスタントに共通する「範囲の明示」と「鍵の分離」。
-    test: (s) => has(s, '何ができ', 'なにができ', 'できること', 'やらないこと', '権限', '何をしていい', 'どこまで'),
-    run: async (s, d) => {
-      const present = ['GEMINI_API_KEY', 'GROQ_API_KEY', 'OPENROUTER_API_KEY', 'CEREBRAS_API_KEY', 'MISTRAL_API_KEY'].filter((k) => d.env && d.env[k]);
-      const paid = String(d.env?.ALLOW_PAID_AI || 'false') === 'true';
-      const items = [
-        ...POLICY.autonomous.map((x) => ({ title: x, badge: '自分でやる', tone: 'ok' })),
-        ...POLICY.approval_required.map((x) => ({ title: x, badge: '承認が必要', tone: 'warn' })),
-        ...POLICY.never.map((x) => ({ title: x, badge: 'やらない', tone: 'danger' })),
-      ];
-      return {
-        reply: `いまの範囲はこうなっています。判断に迷う操作は必ず止めて聞きます。
-無料のAIキーは ${present.length} 件が使える状態、有料AIは${paid ? '有効' : '無効（課金は起きません）'}です。`,
-        cards: [
-          { type: 'list', icon: 'shield', title: 'できること / 承認が要ること / やらないこと', items },
-          { type: 'note', icon: 'key', title: '鍵のあつかい', text: POLICY.keys },
-        ],
-        suggest: ['承認まちを見せて', '今どうなってる？'],
       };
     },
   },
