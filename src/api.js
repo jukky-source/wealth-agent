@@ -20,6 +20,7 @@ import { catalog as x402Catalog, x402Enabled, receiptFromCallback } from './agen
 import { providerCard, providerHelp, poolCapacity } from './agent/providers.js';
 import { AUTO_LANES, MONITOR_PRODUCTS, autoLaneHelp, autoPlan, rankByLeastHands } from './agent/autolanes.js';
 import { CAPS, PIPELINE, approveDraft, listDrafts, markPosted, publishHelp, publishState, queueDraft } from './agent/publish.js';
+import { dispatchJob, runnerHelp, runnerPlan, runnerState } from './agent/runner.js';
 import { channelCard, channelHelp } from './agent/channels.js';
 import { capacityValue, inferenceHelp, readUsageBoard } from './agent/inference.js';
 
@@ -1013,6 +1014,17 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   on('POST', '/api/publish/drafts', async (req, body) => queueDraft(store, body || {}));
   on('POST', '/api/publish/approve', async (req, body) => approveDraft(store, (body || {}).id));
   on('POST', '/api/publish/posted', async (req, body) => markPosted(store, (body || {}).id, (body || {}).url || null));
+
+  // 実行環境（手足）— 音声と動画の合成だけがWorkersの外に出る
+  on('GET', '/api/runner/status', async (req, env) => {
+    const st = runnerState(env || {});
+    return { ...st, pipeline: runnerPlan(), help: runnerHelp() };
+  });
+  on('POST', '/api/runner/dispatch', async (req, body, env) => dispatchJob(env || {}, store, {
+    kind: (body || {}).kind,
+    payload: (body || {}).payload || {},
+    name: (body || {}).name,
+  }));
   on('GET', '/api/inference', async (req) => {
     let usd_jpy = null;
     try {

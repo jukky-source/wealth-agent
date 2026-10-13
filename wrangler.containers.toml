@@ -1,0 +1,61 @@
+# Cloudflare Containers（月$5）で動かすとき用の設定。
+#
+# 無料枠で動かすときは wrangler.toml のままで構いません（このファイルは使いません）。
+# 使い分ける理由：Containers は Workers Paid（$5/月）が前提で、配備に Docker が要ります。
+# つまり「ffmpeg を動かすための、唯一の月額」です。
+#
+# 配備：
+#   npm i @cloudflare/containers
+#   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx wrangler deploy -c wrangler.containers.toml
+
+name = "wealth-agent"
+main = "src/container-entry.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "wealth-agent"
+database_id = "ceb1ddc7-0351-4d0f-afbd-ac8989814e74"
+
+[observability]
+enabled = true
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+AGENT_NAME = "Wealth Agent"
+ENGINE_STEPS_PER_TICK = "3"
+AI_DAILY_CALL_BUDGET = "300"
+ALLOW_PAID_AI = "false"
+RUNNER_ENABLED = "true"
+RUNNER_MODE = "container"
+RUNNER_INSTANCE_TYPE = "basic"
+
+# --- 実行環境（手足）---------------------------------------------------------
+# basic = 1/4 vCPU / 1 GiB / 4 GB ディスク。
+# 無料で付く範囲：mem 25 GiB時間・vCPU 375分・disk 200 GB時間（毎月）。
+# 5分の1080p動画を1本作るのに、おおよそ mem 600 GiB秒・vCPU 150秒 → 月100本以上が枠内。
+# 課金は「動いている間だけ」で、sleepAfter の5分で自動的に止まります。
+[[containers]]
+max_instances = 2
+class_name = "RunnerContainer"
+image = "./runner/Dockerfile"
+instance_type = "basic"
+
+[[durable_objects.bindings]]
+name = "RUNNER_CONTAINER"
+class_name = "RunnerContainer"
+
+[exports.RunnerContainer]
+type = "durable-object"
+storage = "sqlite"
+
+# 秘密は wrangler secret put で：
+#   RUNNER_TOKEN / OWNER_TOKEN / （無料AIのキー各種）

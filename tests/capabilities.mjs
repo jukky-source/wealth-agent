@@ -735,6 +735,76 @@ test('[C52] 人が触る工程は投稿の承認だけ（下書きまでは全�
   assert.match(pb, /DUPLICATE_THRESHOLD/);
 });
 
+test('[C53] 実行環境が要る工程と、ジョブ種別が1対1で対応している', async () => {
+  const { PIPELINE } = await import('../src/agent/publish.js');
+  const { runnerPlan, STEP_KIND } = await import('../src/agent/runner.js');
+  const plan = runnerPlan(PIPELINE);
+  const needs = plan.filter((p) => p.needs_runner);
+  assert.equal(needs.length, 2);
+  for (const p of needs) {
+    assert.ok(STEP_KIND[p.step], `${p.step} に対応するジョブ種別がありません`);
+    assert.equal(p.runner_kind, STEP_KIND[p.step]);
+  }
+  assert.equal(plan.find((p) => p.step === 'approve').runs_on, 'worker');   // 承認は人の手元
+  assert.equal(plan.find((p) => p.step === 'encode').runs_on, 'ffmpeg');
+  assert.equal(plan.find((p) => p.step === 'voice').runs_on, 'tts');
+  assert.equal(plan.find((p) => p.step === 'research').runs_on, 'worker');
+});
+
+test('[C54] 実行環境は、許可したジョブ以外を実行前に断る', async () => {
+  const { dispatchJob } = await import('../src/agent/runner.js');
+  const r = await dispatchJob({}, null, { kind: 'shell', payload: { cmd: 'rm -rf /' } });
+  assert.equal(r.ok, false);
+  assert.equal(r.error, 'kind_not_allowed');
+  assert.ok(r.allowed.includes('encode'));
+  assert.ok(!r.allowed.includes('shell'));
+  const { planJob } = await import('../runner/jobs.mjs');
+  assert.equal(planJob('shell', {}).ok, false);
+});
+
+test('[C55] 実行環境が無いときは、黙って失敗せず理由を出す', async () => {
+  const { runnerState } = await import('../src/agent/runner.js');
+  const none = runnerState({});
+  assert.equal(none.mode, 'none');
+  assert.match(none.blocked_reason, /Workers上では動きません/);
+  assert.equal(none.containers_bound, false);
+  const q = runnerState({ RUNNER_ENABLED: 'true' });
+  assert.equal(q.mode, 'queue');
+  assert.equal(q.blocked_reason, null);
+  const c = runnerState({ RUNNER_CONTAINER: { getByName() {} } });
+  assert.equal(c.mode, 'container');
+  assert.equal(c.blocked_reason, null);
+});
+
+test('[C56] コンテナの定義が揃っている（ffmpeg・TTS・小さめの実体・認証必須）', () => {
+  const docker = read('runner/Dockerfile');
+  assert.match(docker, /ffmpeg/);
+  assert.match(docker, /espeak-ng/);
+  assert.match(docker, /runner\/jobs|jobs-server\.mjs/);
+  const srv = read('runner/jobs-server.mjs');
+  assert.match(srv, /kind_not_allowed/);          // 任意コマンドは受けない
+  assert.match(srv, /unauthorized/);              // トークン必須
+  assert.match(srv, /artifact\//);               // 成果物はその場で取り出せる
+  const wc = read('wrangler.containers.toml');
+  assert.match(wc, /\[\[containers\]\]/);
+  assert.match(wc, /instance_type = "basic"/);
+  assert.match(wc, /RUNNER_CONTAINER/);
+  assert.match(wc, /class_name = "RunnerContainer"/);
+  assert.match(read('src/container-entry.js'), /extends Container/);
+  // 無料側の入口は触らない（無料配備を壊さない）
+  assert.match(read('wrangler.toml'), /main = "src\/index\.js"/);
+  assert.match(read('.github/workflows/deploy-containers.yml'), /workflow_dispatch/);
+});
+
+test('[C57] 会話とAPIの両方から実行環境を引ける', async () => {
+  const cmd = read('src/agent/commands.js');
+  assert.match(cmd, /id: 'runner'/);
+  assert.match(cmd, /'autolanes', 'publish', 'runner'\]/);
+  const api = read('src/api.js');
+  assert.match(api, /'\/api\/runner\/status'/);
+  assert.match(api, /'\/api\/runner\/dispatch'/);
+});
+
 let pass = 0; const failed = [];
 for (const [name, fn] of tests) {
   try { await fn(); pass += 1; console.log(`  ✓ ${name}`); }

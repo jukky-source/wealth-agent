@@ -26,8 +26,9 @@ import { channelCard, channelHelp } from './channels.js';
 import { capacityValue, inferenceCards, inferenceHelp, readUsageBoard } from './inference.js';
 import { autoLaneCards, autoLaneHelp, laneCard, monitorHelp } from './autolanes.js';
 import { pipelineCards, publishCards, publishHelp, publishState } from './publish.js';
+import { dispatchJob, runnerCards, runnerHelp, runnerPlan, runnerState } from './runner.js';
 
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference', 'autolanes', 'publish']);
+const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference', 'autolanes', 'publish', 'runner']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -167,6 +168,7 @@ const HELP = `話しかけるだけで大丈夫です。たとえば:
 ・「無料推論いくら使った？」— 実際に使った無料推論の回数と、有料なら何円分になるかを出します
 ・「手間が少ない順で稼ぐ方法は？」— 放置で売れる売り場と、監視型サブスクを、あなたの手間が少ない順に出します
 ・「投稿ボタンまで自動でやって」— 下書きまでは全自動で作り、最後の投稿だけ1タップで承認します
+・「動画はどこで作る？」— 音声と動画の合成だけがWorkersの外に出ます。Cloudflare Containers（月$5）か、手元・クラウドのPCで実行します
 
 むずかしい設定は要りません。判断に迷ったら私が決めて進めます。`;
 
@@ -250,6 +252,25 @@ const RULES = [
         ].join('\n'),
         cards,
         suggest: ['下書きを作って', '投稿の上限は？', '監視型サブスクを1本つくって'],
+      };
+    },
+  },
+  {
+    id: 'runner',
+    // 実行環境（手足）。音声と動画の合成だけがWorkersの外に出る、という事実を隠さない。
+    test: (s) => re(s, /実行環境|手足|ffmpeg|音声|TTS|動画はどこ|どこで作る|コンテナ|Containers|クラウドPC|ランナー/),
+    run: async (s, d) => {
+      const env = (d && d.env) || {};
+      const st = runnerState(env);
+      return {
+        reply: [
+          st.mode === 'none'
+            ? 'いまは実行環境（手足）が未接続です。リサーチ・原稿・サムネイル・概要欄までは0円で動きますが、音声(TTS)と動画の合成(ffmpeg)だけが止まります。'
+            : `実行環境は ${st.mode === 'container' ? 'Cloudflare Containers' : 'キュー（クラウドPC／手元PC）'} で繋がっています。`,
+          runnerHelp(),
+        ].join('\n'),
+        cards: runnerCards(env),
+        suggest: ['投稿ボタンまで自動でやって', '無料推論いくら使った？', '動画の上限定めて'],
       };
     },
   },
