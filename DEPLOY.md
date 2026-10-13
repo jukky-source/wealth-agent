@@ -72,6 +72,22 @@ RUNNER_TOKEN=... bash scripts/deploy-cloudflare.sh
 
 ---
 
+### E. リポジトリを Organization に移した場合（任意）
+
+GitHub を個人の Google アカウントで登録していても、**そのままで問題ありません**。このリポジトリはコード置き場で、YouTube の身元や AdSense の入金とは繋がっていないためです（Google ログインは入口の手段にすぎず、Google が GitHub アカウントを所有するわけではありません）。
+
+見た目を事業側に寄せたい場合だけ、無料の Organization を作ってリポジトリを移せます（Organization は無料で、プライベートリポジトリも無制限）。移行しても Issues・PR・Secrets・deploy keys は維持され、Git の履歴と既存リンクは自動で転送されます。移行後はローカルの向き先を変えるだけです。
+
+```bash
+git remote set-url origin git@github.com:<ORG>/wealth-agent.git
+```
+
+**2つ目の無料アカウントを作るのは規約違反**です（「1人または1法人が維持できる無料アカウントは1つまで」）。分けたい場合は Organization を使います。
+
+以降の手順に出てくる `jukky-source` は、自分のオーナー名に読み替えてください。
+
+---
+
 ### C. Genspark Code（Developer）のホスティング
 Gensparkアカウントの **Developer v2** が有効なら、`gsk hosted deploy` でGenspark側のパーマネントURLへ出せます。
 現在このアカウントでは `developer_not_enabled` で拒否されます。有効化するには [Genspark Code](https://www.genspark.ai/code/) でプロジェクトを作成してください（有効化できれば、こちらの手順も自動化して実行します）。
