@@ -152,31 +152,44 @@ export default {
     // 決済プロバイダの通知は、こちらのトークンではなく署名で本人性を確認する。
     // 認証の外に置く代わりに、検証できない通知は入金として記録しない。
     const isWebhook = url.pathname.startsWith('/api/webhooks/');
-    if (!isWebhook && !authorized(request, env)) {
+    // 売り物（/api/x402/<資源>）は、決済そのものが入場資格なのでトークンでは塞がない。
+    // 買い手は不特定のエージェントなので、ここを塞ぐと誰も買えなくなる。カタログは塞ぐ。
+    const isPaywall = url.pathname.startsWith('/api/x402/') && !url.pathname.startsWith('/api/x402/catalog');
+    if (!isWebhook && !isPaywall && !authorized(request, env)) {
       return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
     // x402 — 値札（402）を出し、facilitator が検証・決済した支払いだけを受け取って
     // 中身を返す。クライアントが付けたヘッダは一切信用しない。
     if (url.pathname.startsWith('/api/x402/') && !url.pathname.startsWith('/api/x402/catalog')) {
-      const { challenge, requiredHeader, responseHeader, verifyAndSettle } = await import('./agent/x402.js');
+      const { challenge, preflight, requiredHeader, responseHeader, verifyAndSettle, X402_CATALOG } = await import('./agent/x402.js');
       const { createJob, recordReceipt } = await import('./agent/revenue.js');
       const resource = url.pathname.replace('/api/x402/', '');
-      const ch = challenge(resource, env, { origin: url.origin });
       const notFound = () => new Response(JSON.stringify({ ok: false, error: 'not_found', path: url.pathname }), { status: 404, headers: { 'content-type': 'application/json' } });
-      if (!ch) return notFound();
-      if (!ch.configured) return new Response(JSON.stringify({ ok: false, enabled: false, reason: ch.reason }), { status: 503, headers: { 'content-type': 'application/json' } });
+      if (!X402_CATALOG.some((i) => i.resource === resource)) return notFound();
+      // 売りに出してよいかを先に確認する（受け取り先の形式・ネットワーク・facilitator の対応・
+      // Solana なら feePayer）。確認できないものは値札を出さない。
+      const pf = await preflight(env);
+      if (!pf.ok) {
+        return new Response(JSON.stringify({ ok: false, enabled: false, error: pf.error, reason: pf.reason }), { status: 503, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+      }
+      const ch = challenge(resource, env, { origin: url.origin, feePayer: pf.feePayer });
+      if (!ch || !ch.configured) {
+        return new Response(JSON.stringify({ ok: false, enabled: false, error: 'not_configured', reason: ch?.reason || pf.reason }), { status: 503, headers: { 'content-type': 'application/json' } });
+      }
       const header = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
       if (!header) {
         return new Response(JSON.stringify(ch.body), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body.accepts[0]), 'cache-control': 'no-store' } });
       }
-      const settled = await verifyAndSettle({ env, resource, paymentHeader: header });
+      const settled = await verifyAndSettle({ env, resource, paymentHeader: header, feePayer: pf.feePayer });
       if (!settled.ok) {
-        return new Response(JSON.stringify({ ...ch.body, error: settled.error, detail: settled.detail || null }), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body.accepts[0]), 'cache-control': 'no-store' } });
+        // 保留は決済が確定していない状態。中身は渡さず、入金としても記録しない。
+        const status = settled.error === 'facilitator_unreachable' ? 503 : 402;
+        return new Response(JSON.stringify({ ...ch.body, error: settled.error, detail: settled.detail || null, note: settled.note }), { status, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body.accepts[0]), 'cache-control': 'no-store' } });
       }
       let body = {};
       try { const t = await request.text(); body = t ? JSON.parse(t) : {}; } catch { body = {}; }
-      const item = (await import('./agent/x402.js')).X402_CATALOG.find((i) => i.resource === resource);
+      const item = X402_CATALOG.find((i) => i.resource === resource);
       const receipt = await recordReceipt(deps.store, {
         source: 'x402', external_id: settled.tx || `x402_${Date.now().toString(36)}`,
         // USDC は最小単位（6桁）で届くので、人が読める単位に直してから記録する。

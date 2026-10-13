@@ -51,6 +51,8 @@ const env = {
       X402_NETWORK: process.env.X402_NETWORK ?? undefined,
       X402_FACILITATOR_URL: process.env.X402_FACILITATOR_URL ?? undefined,
       X402_ASSET: process.env.X402_ASSET ?? undefined,
+      X402_FEE_PAYER: process.env.X402_FEE_PAYER ?? undefined,
+      X402_MAX_TIMEOUT: process.env.X402_MAX_TIMEOUT ?? undefined,
   DB: new D1Shim(DB_PATH),
   ASSETS: null,
   RUNTIME: 'node-local',

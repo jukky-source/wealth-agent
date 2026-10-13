@@ -8,7 +8,7 @@ import { parseWatch, goalProgress, WATCH_METRICS } from '../src/agent/watch.js';
 import { BUILTIN_MODES, parseModeRequest, defaultChips, modeCard } from '../src/agent/modes.js';
 import { DEFAULT_ENVELOPE, checkEnvelope, parseEnvelopeRequest } from '../src/agent/envelope.js';
 import { recordReceipt, revenueSummary, revenueLine, createJob, advanceJob } from '../src/agent/revenue.js';
-import { catalog, challenge, x402Enabled } from '../src/agent/x402.js';
+import { catalog, challenge, preflight, isEvmAddress, isSolanaAddress, resolveNetwork, verifyAndSettle, x402Enabled } from '../src/agent/x402.js';
 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
@@ -294,18 +294,106 @@ test('[C25] 自律の範囲は既定で最小、上限を超える支出は承�
   assert.equal(p.auto_max_yen_per_action, 500);
 });
 
+const EVM_TO = '0x1111111111111111111111111111111111111111';
+const SVM_TO = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
 test('[C26] x402 は受け取り先が未設定なら売りに出さず、入金の見張りは入金済みを見る', () => {
   assert.equal(x402Enabled({}), false);
   assert.equal(catalog({})[0].pay_to, null);
   assert.equal(challenge('brief', {}).configured, false);
-  assert.equal(challenge('unknown', { X402_PAY_TO: '0xabc' }), null);
-  const ch = challenge('brief', { X402_PAY_TO: '0xabc' });
+  assert.equal(challenge('unknown', { X402_PAY_TO: EVM_TO }), null);
+  const ch = challenge('brief', { X402_PAY_TO: EVM_TO });
   assert.equal(ch.configured, true);
-  assert.equal(ch.body.accepts[0].payTo, '0xabc');
+  assert.equal(ch.body.accepts[0].payTo, EVM_TO);
   assert.equal(ch.body.accepts[0].scheme, 'exact');
   assert.ok(ch.body.accepts[0].maxAmountRequired);
+  assert.ok(ch.body.accepts[0].amount);
   const w = parseWatch('入金が3万円に達したら教えて');
   assert.equal(w.metric, 'verified_revenue');
+});
+
+test('[C29] ネットワークは CAIP-2 で扱い、形式の違う受け取り先は売りに出さない', () => {
+  assert.equal(resolveNetwork('base').caip2, 'eip155:8453');
+  assert.equal(resolveNetwork('solana').caip2, 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp');
+  assert.equal(resolveNetwork('solana-devnet').asset, '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU');
+  assert.equal(resolveNetwork('nope'), null);
+  assert.equal(isSolanaAddress(SVM_TO), true);
+  assert.equal(isSolanaAddress(EVM_TO), false);
+  assert.equal(isEvmAddress('0xabc'), false);
+  // Solana に EVM のアドレスを渡したら、値札を出さず理由も言う
+  const bad = { X402_PAY_TO: EVM_TO, X402_NETWORK: 'solana' };
+  assert.equal(x402Enabled(bad), false);
+  assert.match(catalog(bad)[0].blocked_reason, /形式/);
+  assert.equal(challenge('brief', bad).configured, false);
+  // Solana で正しい形式なら、feePayer が無い限り値札は出さない（extra.feePayer が必須のため）
+  const svm = { X402_PAY_TO: SVM_TO, X402_NETWORK: 'solana' };
+  assert.equal(x402Enabled(svm), true);
+  assert.equal(challenge('brief', svm).configured, false);
+  const withFee = challenge('brief', svm, { feePayer: 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd' });
+  assert.equal(withFee.configured, true);
+  assert.equal(withFee.body.accepts[0].network, 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp');
+  assert.equal(withFee.body.accepts[0].asset, SVM_TO);
+  assert.equal(withFee.body.accepts[0].amount, '1000000');
+  assert.equal(withFee.body.accepts[0].extra.feePayer, 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd');
+});
+
+test('[C30] facilitator が対応を確認できないネットワークでは売らない', async () => {
+  const env = { X402_PAY_TO: SVM_TO, X402_NETWORK: 'solana' };
+  const svmKind = { scheme: 'exact', network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp', extra: { feePayer: 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd' } };
+  const ok = (kinds) => async () => ({ ok: true, json: async () => ({ kinds }) });
+  const bad = await preflight(env, { fetchImpl: ok([{ scheme: 'exact', network: 'eip155:8453' }]), useCache: false });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.error, 'facilitator_unsupported');
+  const down = await preflight(env, { fetchImpl: async () => { throw new Error('boom'); }, useCache: false });
+  assert.equal(down.error, 'facilitator_unreachable');
+  const good = await preflight(env, { fetchImpl: ok([svmKind]), useCache: false });
+  assert.equal(good.ok, true);
+  assert.equal(good.feePayer, 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd');
+  // Solana なのに facilitator が feePayer を返さないなら売らない
+  const noFee = await preflight(env, { fetchImpl: ok([{ scheme: 'exact', network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' }]), useCache: false });
+  assert.equal(noFee.error, 'fee_payer_unavailable');
+  // 形式が違う受け取り先も facilitator に問い合わせる前に止める
+  const mismatch = await preflight({ X402_PAY_TO: EVM_TO, X402_NETWORK: 'solana' }, { fetchImpl: ok([svmKind]), useCache: false });
+  assert.equal(mismatch.error, 'payto_network_mismatch');
+});
+
+test('[C31] 金額を読めない支払いは自前で判定せず、facilitator に委ねる（保留なら中身を渡さない）', async () => {
+  const env = { X402_PAY_TO: EVM_TO, X402_NETWORK: 'base' };
+  // EVM: 値段を下回る署名は facilitator に投げる前に弾く
+  let called = 0;
+  const under = await verifyAndSettle({
+    env, resource: 'brief', fetchImpl: async () => { called += 1; return { ok: true, json: async () => ({}) }; },
+    paymentHeader: Buffer.from(JSON.stringify({ payload: { authorization: { value: '10' } } })).toString('base64'),
+  });
+  assert.equal(under.error, 'underpaid');
+  assert.equal(called, 0);
+  // Solana: 金額は取引の中にあり読めないので、facilitator の判定に任せる
+  const svmEnv = { X402_PAY_TO: SVM_TO, X402_NETWORK: 'solana' };
+  const seq = [
+    { ok: true, json: async () => ({ isValid: true, payer: 'PayerPubkey111111111111111111111111111111' }) },
+    { ok: true, json: async () => ({ success: false, errorReason: 'settlement_pending', transaction: 'SIG123' }) },
+  ];
+  const pend = await verifyAndSettle({
+    env: svmEnv, resource: 'brief', feePayer: 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd',
+    fetchImpl: async () => seq.shift(),
+    paymentHeader: Buffer.from(JSON.stringify({ accepted: { scheme: 'exact', network: 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp' }, payload: { transaction: 'AAAA' } })).toString('base64'),
+  });
+  assert.equal(pend.ok, false);
+  assert.equal(pend.error, 'settlement_pending');
+  assert.equal(pend.tx, 'SIG123');
+  assert.match(pend.note, /確定/);
+});
+
+test('[C32] x402 の事前確認と Solana の設定が実際に配線されている', () => {
+  const idx = read('src/index.js');
+  assert.match(idx, /await preflight\(env\)/);
+  assert.match(idx, /feePayer: pf\.feePayer/);
+  const loc = read('server/local.mjs');
+  assert.match(loc, /X402_FEE_PAYER/);
+  assert.match(loc, /X402_MAX_TIMEOUT/);
+  const x = read('src/agent/x402.js');
+  assert.match(x, /solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/);
+  assert.match(x, /EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v/);
 });
 
 test('[C27] 実行レイヤがデータ層とAPIに実際に配線されている', () => {
