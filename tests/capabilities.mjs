@@ -664,6 +664,77 @@ test('[C48] 配線契約: 会話からもAPIからも「手間の少ない売り
   assert.match(al, /HANDS_RANK/);
 });
 
+
+import { CAPS, PIPELINE, assessDraft, capsUsage, createDraft, dupCheck, similarity, weekKey } from '../src/agent/publish.js';
+
+test('[C49] 本数の上限はコードで強制する（規約が禁じるのは自動化ではなく量産）', () => {
+  const rows = [1, 2, 3].map((i) => ({
+    id: `d${i}`, channel: 'x', linked: 1, state: 'approved',
+    created_at: `2026-10-13T0${i}:00:00.000Z`, day: '2026-10-13',
+  }));
+  const u = capsUsage(rows, '2026-10-13T09:00:00.000Z');
+  assert.equal(u.x.linked_today, 3);
+  assert.equal(u.x.left, 0);
+  const v = assessDraft(createDraft({ channel: 'x', body: '新しい告知 https://example.com/a です' }), { rows });
+  assert.equal(v.ok, false);
+  assert.ok(v.blocks.some((b) => /上限/.test(b)));
+  // 上限に達していなければ通る
+  const v2 = assessDraft(createDraft({ channel: 'x', body: '別の切り口の告知 https://example.com/b です' }), { rows: rows.slice(0, 1) });
+  assert.equal(v2.ok, true, v2.blocks.join(' / '));
+});
+
+test('[C50] ほぼ同じ文面は、人が見る前に自動で止める', () => {
+  const a = 'AIで作ったレポートを公開しました。詳しくは概要欄のリンクからどうぞ。https://example.com/1';
+  const b = 'AIで作ったレポートを公開しました。詳しくは概要欄のリンクからどうぞ！ https://example.com/2';
+  assert.ok(similarity(a, b) > 0.9, 'URLと句読点の違いを無視できていない');
+  const dup = dupCheck(b, [{ id: 'x1', body: a }]);
+  assert.equal(dup.duplicate, true);
+  assert.equal(dup.against, 'x1');
+  const v = assessDraft(createDraft({ channel: 'x', body: b }), { history: [{ id: 'x1', body: a }] });
+  assert.equal(v.ok, false);
+  assert.ok(v.blocks.some((x) => /重複/.test(x)));
+  // 別内容なら通る
+  const v2 = assessDraft(createDraft({ channel: 'x', body: '在庫の見張りを始めました。再入荷だけ通知します。' }), { history: [{ id: 'x1', body: a }] });
+  assert.equal(v2.ok, true, v2.blocks.join(' / '));
+});
+
+test('[C51] YouTubeはAI開示と独自解説が無いと通さない（外部誘導のみは禁止）', () => {
+  const base = { channel: 'youtube', kind: 'script', body: '今週の為替の動きを独自の解説つきでまとめます。' };
+  const noDisclosure = assessDraft(createDraft({ ...base, unique_commentary: true }), {});
+  assert.equal(noDisclosure.ok, false);
+  assert.ok(noDisclosure.blocks.some((b) => /AI開示/.test(b)));
+  const funnelOnly = assessDraft(createDraft({ ...base, ai_disclosure: true, linked: true, unique_commentary: false }), {});
+  assert.equal(funnelOnly.ok, false);
+  assert.ok(funnelOnly.blocks.some((b) => /独自性/.test(b)));
+  const ok = assessDraft(createDraft({ ...base, ai_disclosure: true, unique_commentary: true }), {});
+  assert.equal(ok.ok, true, ok.blocks.join(' / '));
+  // YouTubeの週上限
+  const rows = [1, 2].map((i) => ({
+    id: `y${i}`, channel: 'youtube', linked: 0, state: 'posted',
+    created_at: `2026-10-1${i + 1}T00:00:00.000Z`, day: `2026-10-1${i + 1}`,
+  }));
+  assert.equal(weekKey('2026-10-12T00:00:00.000Z'), weekKey('2026-10-14T00:00:00.000Z'));
+  const capped = assessDraft(createDraft({ ...base, ai_disclosure: true, unique_commentary: true, created_at: '2026-10-13T00:00:00.000Z' }),
+    { rows, at: '2026-10-13T00:00:00.000Z' });
+  assert.equal(capped.blocks.some((b) => /週/.test(b)), true);
+});
+
+test('[C52] 人が触る工程は投稿の承認だけ（下書きまでは全自動）', () => {
+  const human = PIPELINE.filter((p) => p.human);
+  assert.equal(human.length, 1);
+  assert.equal(human[0].step, 'approve');
+  assert.equal(human[0].auto, false);
+  assert.ok(PIPELINE.filter((p) => p.auto).length >= 6);
+  assert.ok(PIPELINE.filter((p) => p.needs_runner).length >= 2);   // 実行環境が要る工程は隠さない
+  assert.equal(CAPS.x.linked_per_day, 3);
+  const cmd = read('src/agent/commands.js');
+  assert.match(cmd, /id: 'publish'/);
+  const api = read('src/api.js');
+  assert.match(api, /'\/api\/publish'/);
+  const pb = read('src/agent/publish.js');
+  assert.match(pb, /DUPLICATE_THRESHOLD/);
+});
+
 let pass = 0; const failed = [];
 for (const [name, fn] of tests) {
   try { await fn(); pass += 1; console.log(`  ✓ ${name}`); }

@@ -25,8 +25,9 @@ import { providerCard, providerHelp, poolCapacity } from './providers.js';
 import { channelCard, channelHelp } from './channels.js';
 import { capacityValue, inferenceCards, inferenceHelp, readUsageBoard } from './inference.js';
 import { autoLaneCards, autoLaneHelp, laneCard, monitorHelp } from './autolanes.js';
+import { pipelineCards, publishCards, publishHelp, publishState } from './publish.js';
 
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference', 'autolanes']);
+const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference', 'autolanes', 'publish']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -165,6 +166,7 @@ const HELP = `話しかけるだけで大丈夫です。たとえば:
 ・「自律の範囲を見せて」— 自動で使える金額と、承認が要る操作を確認・変更します
 ・「無料推論いくら使った？」— 実際に使った無料推論の回数と、有料なら何円分になるかを出します
 ・「手間が少ない順で稼ぐ方法は？」— 放置で売れる売り場と、監視型サブスクを、あなたの手間が少ない順に出します
+・「投稿ボタンまで自動でやって」— 下書きまでは全自動で作り、最後の投稿だけ1タップで承認します
 
 むずかしい設定は要りません。判断に迷ったら私が決めて進めます。`;
 
@@ -229,6 +231,25 @@ const RULES = [
         ].filter(Boolean).join('\n'),
         cards: [laneCard(19), ...autoLaneCards(19)],
         suggest: ['監視型サブスクを1本つくって', 'MCPツールとして出して', '今どうなってる？'],
+      };
+    },
+  },
+  {
+    id: 'publish',
+    // 投稿キュー。規約が禁じているのは自動化ではなく「量産と重複」なので、
+    // 本数の上限と重複検査を自動で掛けて、人が見る前に止める。
+    test: (s) => re(s, /投稿キュー|投稿ボタン|下書き|原稿|台本|量産|重複投稿|AI開示|どこまで自動|自動投稿|投稿を自動/),
+    run: async (s, d) => {
+      const store = d && d.store;
+      const state = store ? await publishState(store).catch(() => null) : null;
+      const cards = [...pipelineCards(), ...(state ? publishCards(state) : [])];
+      return {
+        reply: [
+          '投稿ボタンを押すまでは自動です。リサーチ・原稿・台本・サムネイル・音声・動画の合成・概要欄まで自動で作り、最後の「投稿する」だけがあなたの1タップです。',
+          publishHelp(),
+        ].join('\n'),
+        cards,
+        suggest: ['下書きを作って', '投稿の上限は？', '監視型サブスクを1本つくって'],
       };
     },
   },

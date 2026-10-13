@@ -19,6 +19,7 @@ import { catalog as x402Catalog, x402Enabled, receiptFromCallback } from './agen
 
 import { providerCard, providerHelp, poolCapacity } from './agent/providers.js';
 import { AUTO_LANES, MONITOR_PRODUCTS, autoLaneHelp, autoPlan, rankByLeastHands } from './agent/autolanes.js';
+import { CAPS, PIPELINE, approveDraft, listDrafts, markPosted, publishHelp, publishState, queueDraft } from './agent/publish.js';
 import { channelCard, channelHelp } from './agent/channels.js';
 import { capacityValue, inferenceHelp, readUsageBoard } from './agent/inference.js';
 
@@ -1002,6 +1003,16 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
     monitor: MONITOR_PRODUCTS,
     help: autoLaneHelp(),
   }));
+
+  // 投稿キュー（下書きまでは全自動、最後の1タップだけ人が持つ）
+  on('GET', '/api/publish', async () => {
+    const st = await publishState(store);
+    return { ...st, drafts: st.rows, pipeline: PIPELINE, caps_meta: CAPS, help: publishHelp() };
+  });
+  on('GET', '/api/publish/drafts', async () => listDrafts(store, { limit: 50 }));
+  on('POST', '/api/publish/drafts', async (req, body) => queueDraft(store, body || {}));
+  on('POST', '/api/publish/approve', async (req, body) => approveDraft(store, (body || {}).id));
+  on('POST', '/api/publish/posted', async (req, body) => markPosted(store, (body || {}).id, (body || {}).url || null));
   on('GET', '/api/inference', async (req) => {
     let usd_jpy = null;
     try {

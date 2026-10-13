@@ -447,3 +447,25 @@ CREATE TABLE IF NOT EXISTS receipts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_receipts_ext ON receipts(source, external_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_day ON receipts(occurred_on);
+
+CREATE TABLE IF NOT EXISTS publish_drafts (
+  id TEXT PRIMARY KEY,
+  thread_id TEXT,
+  kind TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  title TEXT,
+  body TEXT,
+  lang TEXT DEFAULT 'ja',
+  ai_disclosure INTEGER DEFAULT 0,
+  unique_commentary INTEGER DEFAULT 0,
+  linked INTEGER DEFAULT 0,
+  state TEXT DEFAULT 'drafted',
+  blocks_json TEXT DEFAULT '[]',
+  scheduled_for TEXT,
+  posted_url TEXT,
+  approved_at TEXT,
+  posted_at TEXT,
+  day TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
