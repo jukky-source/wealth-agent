@@ -17,6 +17,7 @@
 <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+<div class="splash" id="splash" aria-hidden="true"><div class="splash-mark"><i></i><i></i><i></i></div><b>Wealth Agent</b></div>
 <div class="app" id="app">
 
   <aside class="rail" id="rail" aria-hidden="true">
@@ -45,8 +46,12 @@
     </header>
 
     <main class="thread" id="thread" aria-live="polite"></main>
+    <div class="drop-hint" aria-hidden="true">画像をここに放すと添付します</div>
     <div class="chips" id="chips"></div>
+    <div class="attach" id="attach"></div>
     <form class="composer" id="composer" autocomplete="off">
+      <button class="attach-btn" id="attachBtn" type="button" aria-label="画像を添付">＋</button>
+      <input type="file" id="fileIn" accept="image/*" multiple hidden>
       <textarea id="input" rows="1" placeholder="エージェントに指示する" enterkeyhint="send"></textarea>
       <button class="send" id="sendBtn" type="submit" aria-label="送信">↑</button>
     </form>

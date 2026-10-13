@@ -17,6 +17,22 @@
 
 import { backoffMs, extractJson, sleep, truncate, utcDay, id as newId, nowIso } from '../util.js';
 
+// Workers AI の Neurons 単価（100万トークンあたり。出典: developers.cloudflare.com/workers-ai/platform/pricing）。
+// 無料は1日 10,000 Neurons。Workers Paid では超過分が $0.011/1,000 Neurons で課金されるので、
+// 日次の上限（WORKERS_AI_NEURON_CAP、既定 9,000）で止めて「無料枠の内側」から出ない。
+export const NEURON_RATES = {
+  '@cf/openai/gpt-oss-120b': [31818, 68182],
+  '@cf/zai-org/glm-4.7-flash': [5500, 36400],
+  '@cf/meta/llama-4-scout-17b-16e-instruct': [24545, 77273],
+};
+export const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
+/** 日本語は1文字≒1トークンとして多めに見積もる（安全側）。 */
+export function estimateNeurons(model, inChars = 0, outChars = 0) {
+  const r = NEURON_RATES[model] || [40000, 120000];
+  return Math.ceil((inChars * r[0] + outChars * r[1]) / 1e6);
+}
+export const neuronCap = (env = {}) => Math.max(0, Number(env.WORKERS_AI_NEURON_CAP ?? 9000));
+
 /** Public, key-free metadata for the Setup screen (links + honest free-tier notes). */
 export const PROVIDER_META = {
   workersai: {
@@ -206,6 +222,7 @@ export class AIRouter {
       fallback_available: true,
       fallback_note: 'キー未設定でも決定的フォールバックで計画・検証・ランキングは動作します',
       today: { day, usage },
+      neurons: { today: await this.neuronsToday(), cap: neuronCap(this.env), free_per_day: 10000 },
       budget: {
         daily_call_budget: Number(this.env.AI_DAILY_CALL_BUDGET || 300),
         used: usage.reduce((s, u) => s + (u.ok_calls || 0), 0),
@@ -245,6 +262,67 @@ export class AIRouter {
     });
   }
 
+  /** 今日 Workers AI に使った推定 Neurons。 */
+  async neuronsToday() {
+    const r = await this.store.first(`SELECT COALESCE(SUM(neurons),0) AS n FROM ai_usage WHERE day=? AND provider='workersai'`, utcDay()).catch(() => null);
+    return Number(r?.n || 0);
+  }
+
+  async workersAiOverCap(extra = 0) {
+    return (await this.neuronsToday()) + extra >= neuronCap(this.env);
+  }
+
+  /**
+   * 画像を読む。Workers AI（Llama 4 Scout・無料枠内）→ Gemini（キーがあれば）の順。
+   * 読めないときは ok:false と理由を返す（推測で中身を作らない）。
+   */
+  async vision({ prompt, images = [], maxTokens = 600 }) {
+    const imgs = images.slice(0, 3);
+    if (!imgs.length) return { ok: false, reason: 'no_image' };
+    const t0 = Date.now();
+    // 画像1枚 ≈ 1,600 トークンとして見積もる（安全側）。
+    const inChars = prompt.length + imgs.length * 1600;
+    if (this.env.AI && typeof this.env.AI.run === 'function') {
+      const est = estimateNeurons(VISION_MODEL, inChars, maxTokens);
+      if (await this.workersAiOverCap(est)) {
+        return { ok: false, reason: 'neuron_cap', note: `今日の無料枠（${neuronCap(this.env).toLocaleString('ja-JP')} Neurons）の上限に近いため、画像の読み取りは明日に回します。` };
+      }
+      try {
+        const data = await this.env.AI.run(VISION_MODEL, {
+          messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, ...imgs.map((u) => ({ type: 'image_url', image_url: { url: u } }))] }],
+          max_tokens: maxTokens, temperature: 0.2,
+        });
+        const text = typeof data === 'string' ? data : (data?.response || data?.result?.response || data?.choices?.[0]?.message?.content || '');
+        await this.logged({ provider: 'workersai', model: VISION_MODEL, role: 'vision', ok: text ? 1 : 0, status_code: 200,
+          latency_ms: Date.now() - t0, prompt_chars: inChars, output_chars: String(text).length,
+          neurons: estimateNeurons(VISION_MODEL, inChars, String(text).length) });
+        if (text) return { ok: true, text: String(text).trim(), provider: 'workersai', model: VISION_MODEL };
+      } catch (e) {
+        await this.logged({ provider: 'workersai', model: VISION_MODEL, role: 'vision', ok: 0, status_code: e.status || 0,
+          error: truncate(String(e.message || e), 200), latency_ms: Date.now() - t0, prompt_chars: inChars, output_chars: 0, neurons: 0 });
+      }
+    }
+    const key = this.nextKey('gemini');
+    if (key) {
+      try {
+        const parts = [{ text: prompt }, ...imgs.map((u) => {
+          const m = /^data:(image\/[a-z+]+);base64,(.+)$/i.exec(u) || [];
+          return { inline_data: { mime_type: m[1] || 'image/jpeg', data: m[2] || '' } };
+        })];
+        const res = await fetch(`${PROVIDERS.gemini.base}/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 } }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const text = (data?.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
+        await this.logged({ provider: 'gemini', model: 'gemini-2.5-flash', role: 'vision', ok: text ? 1 : 0, status_code: res.status,
+          latency_ms: Date.now() - t0, prompt_chars: inChars, output_chars: text.length });
+        if (text) return { ok: true, text: text.trim(), provider: 'gemini', model: 'gemini-2.5-flash' };
+      } catch { /* fall through */ }
+    }
+    return { ok: false, reason: 'no_vision_provider', note: '画像を読めるAIにつながっていません（Workers AI の結合か GEMINI_API_KEY が要ります）。' };
+  }
+
   async budgetExceeded() {
     const budget = Number(this.env.AI_DAILY_CALL_BUDGET || 300);
     const r = await this.store.first(
@@ -276,13 +354,19 @@ export class AIRouter {
         errors.push(`${provider}: cooldown until ${st.cooldown_until}`);
         continue;
       }
+      // 無料枠の外に出ない：Workers AI は日次の Neurons 上限で止める。
+      if (provider === 'workersai' && await this.workersAiOverCap(estimateNeurons(PROVIDERS.workersai.models[0].id, (system + user).length, maxTokens))) {
+        errors.push('workersai: neuron_cap');
+        continue;
+      }
       for (const model of PROVIDERS[provider].models.slice(0, 2)) {
         for (let attempt = 1; attempt <= 2; attempt++) {
           const t0 = Date.now();
           try {
             const out = await this.callOne({ provider, model: model.id, system, user, messages, json, maxTokens, temperature });
             await this.logged({ provider, model: model.id, role, ok: 1, status_code: 200,
-              latency_ms: Date.now() - t0, prompt_chars: (system + user).length, output_chars: out.text.length });
+              latency_ms: Date.now() - t0, prompt_chars: (system + user).length, output_chars: out.text.length,
+              ...(provider === 'workersai' ? { neurons: estimateNeurons(model.id, (system + user).length, out.text.length) } : {}) });
             await this.markSuccess(provider);
             let parsed = null;
             if (json) parsed = schema ? coerceSchema(extractJson(out.text), schema) : extractJson(out.text);

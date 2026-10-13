@@ -671,7 +671,7 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
     const rows = await store.all(`SELECT * FROM chat_messages WHERE thread_id=? ORDER BY created_at LIMIT 500`, p.id);
     return {
       ok: true, thread,
-      messages: rows.map((m) => ({ ...m, cards: safeJson(m.cards_json, []), events: safeJson(m.events_json, []) })),
+      messages: rows.map((m) => ({ ...m, cards: safeJson(m.cards_json, []), events: safeJson(m.events_json, []), images: safeJson(m.images_json, []) })),
     };
   });
   on('POST', '/api/threads/:id', async (req, body, p) => {
@@ -690,8 +690,27 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   });
 
   // ---------------------------------------------------------------- chat actions (chat-first UI)
+  // 画像つきの会話。ブラウザーで縮小済みの data URL だけを受け取る（1枚 ≈1.5MB まで・3枚まで）。
+  const CHAT_IMG = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/i;
+  const CHAT_IMG_MAX = 1_500_000;
+  const THUMB_MAX = 60_000;
+  function chatImages(list) {
+    const out = [];
+    for (const it of (Array.isArray(list) ? list : []).slice(0, 3)) {
+      const url = typeof it === 'string' ? it : it?.data_url;
+      const thumb = typeof it === 'object' ? it?.thumb : null;
+      if (!url || !CHAT_IMG.test(url) || url.length > CHAT_IMG_MAX) continue;
+      out.push({ url, thumb: thumb && CHAT_IMG.test(thumb) && thumb.length <= THUMB_MAX ? thumb : null, name: String(it?.name || '').slice(0, 80) });
+    }
+    return out;
+  }
+
   on('POST', '/api/chat/act', async (req, body) => {
-    const message = body && body.message ? String(body.message).slice(0, 4000) : '';
+    const images = chatImages(body?.images);
+    if (Array.isArray(body?.images) && body.images.length && !images.length) {
+      return { ok: false, error: 'image_rejected', reply: '画像を受け取れませんでした（PNG / JPEG / WebP・1枚1.5MBまで・3枚まで）。' };
+    }
+    const message = body && body.message ? String(body.message).slice(0, 4000) : (images.length ? 'この画像を見て' : '');
     const cmds = await import('./agent/commands.js');
     const deps = {
       store, env, engine, router, memory, research, deepResearch, knowledge, workflows, ranking, scheduler,
@@ -708,7 +727,31 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
       recalled = (hits || []).map((h) => ({ kind: h.kind, text: truncate(h.text, 200) }));
     } catch { recalled = []; }
 
-    const out = await cmds.runCommand({ message, deps });
+    let out;
+    if (images.length) {
+      // 画像は「読んだ内容」だけを返す。読めなければ読めなかったと言う（推測で中身を作らない）。
+      const v = await router.vision({
+        prompt: `あなたは収益化を手伝うエージェントです。添付画像を見て、日本語で答えてください。\n` +
+          `- 見えている事実（文字・数字・画面の種類）と、推測を分けて書く\n- 読めない部分は「読めない」と書く\n` +
+          `- 最後に、稼ぐ目的で次にできることを1〜2行\n\nオーナーの依頼: ${message}`,
+        images: images.map((i) => i.url),
+      }).catch((e) => ({ ok: false, note: String(e.message || e) }));
+      out = v.ok
+        ? {
+          ok: true, kind: 'vision', reply: v.text,
+          events: [{ text: `画像 ${images.length} 枚を読み取りました（${v.provider === 'workersai' ? 'Cloudflare Workers AI・無料枠' : 'Gemini 無料枠'}）`, tick: true }],
+          suggest: ['この内容で次の一手を進めて', '数字だけ抜き出して', 'これを投稿の下書きにして'],
+        }
+        : {
+          ok: true, kind: 'vision', reply: `画像は受け取りましたが、中身を読めませんでした。${v.note || ''}\n推測で内容を作ることはしません。文字で状況を教えてもらえれば、そのまま進めます。`,
+          events: [{ text: `画像の読み取りに失敗（${v.reason || 'error'}）`, tick: false }],
+        };
+      try {
+        await memory.write({ kind: 'experience', key: `vision:${Date.now()}`, text: `オーナーが画像を${images.length}枚送った: ${truncate(message, 120)} → ${truncate(out.reply, 240)}`, evidence: v.ok ? 'measured' : 'unverified', importance: 35 });
+      } catch { /* 補助 */ }
+    } else {
+      out = await cmds.runCommand({ message, deps });
+    }
 
     // Store the exchange so the thread survives reloads and devices. Storage is
     // best-effort: a failure here never blocks the reply.
@@ -725,6 +768,7 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
       await store.insert('chat_messages', {
         id: `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
         thread_id: threadId, role: 'me', text: message, cards_json: j([]), events_json: j([]), kind: null, created_at: at,
+        ...(images.length ? { images_json: j(images.map((i) => ({ thumb: i.thumb, name: i.name }))) } : {}),
       });
       await store.insert('chat_messages', {
         id: `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}a`,
@@ -917,7 +961,12 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
       policy: { gate: checkEnvelope(e, { action: 'spend', amount_yen: 1 }), basis: POLICY.envelope } };
   });
   on('POST', '/api/envelope', async (req, body) => {
-    const e = await setEnvelope(store, body || {});
+    // 画面から広げられる上限には天井を置く（1回5,000円・1日20,000円）。それ以上は会話で明示的に。
+    const b = { ...(body || {}) };
+    if (b.auto_max_yen_per_action != null) b.auto_max_yen_per_action = Math.max(0, Math.min(5000, Math.round(Number(b.auto_max_yen_per_action) || 0)));
+    if (b.auto_max_yen_per_day != null) b.auto_max_yen_per_day = Math.max(0, Math.min(20000, Math.round(Number(b.auto_max_yen_per_day) || 0)));
+    for (const k of ['external_signature', 'account_creation', 'identity_verification', 'scrape_and_resell']) delete b[k]; // 人間だけの操作は画面からも変えさせない
+    const e = await setEnvelope(store, b);
     return { ok: true, envelope: e, card: envelopeCard(e) };
   });
 

@@ -26,6 +26,11 @@ database_id = "ceb1ddc7-0351-4d0f-afbd-ac8989814e74"
 [observability]
 enabled = true
 
+# Workers AI（頭脳）。無料は1日 10,000 Neurons。超過は課金されるので
+# WORKERS_AI_NEURON_CAP（既定 9,000）でコード側が止める。
+[ai]
+binding = "AI"
+
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -34,6 +39,7 @@ AGENT_NAME = "Wealth Agent"
 ENGINE_STEPS_PER_TICK = "3"
 AI_DAILY_CALL_BUDGET = "300"
 ALLOW_PAID_AI = "false"
+WORKERS_AI_NEURON_CAP = "9000"
 RUNNER_ENABLED = "true"
 RUNNER_MODE = "container"
 RUNNER_INSTANCE_TYPE = "basic"

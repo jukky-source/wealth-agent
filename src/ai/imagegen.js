@@ -37,6 +37,7 @@ const ENGINE_LABEL = {
   local: 'ローカル生成（AI不使用）',
 };
 const WORKERSAI_MODEL = '@cf/black-forest-labs/flux-1-schnell';
+const IMAGE_NEURONS = 60;
 const GEMINI_MODEL = 'gemini-nano-banana-2.1';
 export const MAX_INSTRUCTION_CHARS = 400;
 
@@ -107,6 +108,8 @@ export function createImageGen({ env = {}, store = null, router = null } = {}) {
         id: newId('aiu'), provider, model, role: 'image', ok: ok ? 1 : 0,
         status_code: ok ? 200 : null, error: error ? truncate(String(error), 200) : null,
         latency_ms: latencyMs, prompt_chars: promptChars, output_chars: 0,
+        // 画像1枚あたりの Neurons は推定値（安全側に 60 で数える）。正確な消費はダッシュボードで確認する。
+        ...(provider === 'workersai' && ok ? { neurons: IMAGE_NEURONS } : {}),
         day: utcDay(), created_at: nowIso(),
       });
     } catch { /* usage logging must never break generation */ }
@@ -149,6 +152,10 @@ export function createImageGen({ env = {}, store = null, router = null } = {}) {
     const errors = [];
     for (const engine of order) {
       if (!avail[engine]) { errors.push(`${engine}: 未設定`); continue; }
+      // 無料枠の外に出ない（Workers AI の日次 Neurons 上限）。
+      if (engine === 'workersai' && router && typeof router.workersAiOverCap === 'function' && await router.workersAiOverCap(IMAGE_NEURONS).catch(() => false)) {
+        errors.push('workersai: 今日の無料枠の上限'); continue;
+      }
       const t0 = Date.now();
       try {
         const out = engine === 'workersai' ? await genWorkersAI(prompt)

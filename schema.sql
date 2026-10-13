@@ -224,6 +224,7 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   latency_ms    INTEGER,
   prompt_chars  INTEGER,
   output_chars  INTEGER,
+  neurons       REAL DEFAULT 0,       -- Workers AI の推定 Neurons（無料枠 10,000/日の見張り）
   day           TEXT NOT NULL,        -- YYYY-MM-DD (UTC)
   created_at    TEXT NOT NULL
 );
@@ -398,7 +399,8 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   cards_json TEXT,
   events_json TEXT,
   kind TEXT,
-  created_at TEXT
+  created_at TEXT,
+  images_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_chat_messages_thread ON chat_messages(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_threads_updated ON chat_threads(updated_at);

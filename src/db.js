@@ -173,6 +173,9 @@ export async function ensureSchema(store) {
     `ALTER TABLE missions ADD COLUMN agent_id TEXT`,
     `ALTER TABLE tasks ADD COLUMN agent_id TEXT`,
     `ALTER TABLE runs ADD COLUMN agent_id TEXT`,
+    // 画像つきの会話と、Workers AI の無料枠（Neurons）の見張り。
+    `ALTER TABLE chat_messages ADD COLUMN images_json TEXT`,
+    `ALTER TABLE ai_usage ADD COLUMN neurons REAL DEFAULT 0`,
     `CREATE INDEX IF NOT EXISTS idx_missions_agent ON missions(agent_id)`,
     `CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id)`,
     `CREATE INDEX IF NOT EXISTS idx_runs_agent ON runs(agent_id, created_at DESC)`,

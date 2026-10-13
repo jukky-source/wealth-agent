@@ -57,7 +57,96 @@ const state = {
   suggestTouched: false,
   mode: null,
   busy: false,
+  attach: [], // 送信前の画像（{data_url, thumb, name}）
 };
+
+const reduceMotion = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ------------------------------------------------------------------ images
+/** 画像を長辺 max px の JPEG に縮小する（iPhone の HEIC も <img> 経由で JPEG になる）。 */
+function shrinkImage(file, max = 1280, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(1, Math.round(img.naturalWidth * scale));
+      const h = Math.max(1, Math.round(img.naturalHeight * scale));
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+      g.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を開けませんでした')); };
+    img.src = url;
+  });
+}
+
+async function addFiles(files) {
+  const list = [...(files || [])].filter((f) => /^image\//.test(f.type) || /\.(heic|heif)$/i.test(f.name || ''));
+  if (!list.length) return;
+  for (const f of list) {
+    if (state.attach.length >= 3) { toast('画像は3枚までです'); break; }
+    try {
+      let data = await shrinkImage(f, 1280, 0.82);
+      if (data.length > 1_400_000) data = await shrinkImage(f, 960, 0.72);
+      const thumb = await shrinkImage(f, 160, 0.7);
+      state.attach.push({ data_url: data, thumb, name: f.name || '画像' });
+    } catch (e) { toast(e.message || '画像を読み込めませんでした'); }
+  }
+  renderAttach();
+}
+
+function renderAttach() {
+  const el = $('#attach');
+  if (!el) return;
+  el.innerHTML = state.attach.map((a, i) => `
+    <div class="att" style="--i:${i}"><img src="${esc(a.thumb)}" alt=""><button type="button" class="att-x" data-att="${i}" aria-label="外す">✕</button></div>`).join('');
+  el.classList.toggle('on', state.attach.length > 0);
+  $$('[data-att]', el).forEach((b) => b.addEventListener('click', () => {
+    state.attach.splice(Number(b.dataset.att), 1); renderAttach();
+  }));
+  syncSend();
+}
+
+function syncSend() {
+  const has = $('#input').value.trim().length > 0 || state.attach.length > 0;
+  $('#sendBtn').classList.toggle('ready', has);
+}
+
+/** 数字を 0 から目標値まで数え上げる（KPI カードが「生きている」感じを出す）。 */
+function countUp(root) {
+  if (reduceMotion()) return;
+  $$('[data-count]', root).forEach((el) => {
+    const to = Number(el.dataset.count);
+    if (!Number.isFinite(to) || to === 0) return;
+    const t0 = performance.now(); const dur = 700;
+    const step = (t) => {
+      const k = Math.min(1, (t - t0) / dur);
+      const e = 1 - Math.pow(1 - k, 3);
+      el.textContent = Math.round(to * e).toLocaleString('ja-JP');
+      if (k < 1) requestAnimationFrame(step);
+    };
+    el.textContent = '0';
+    requestAnimationFrame(step);
+  });
+}
+
+/** 押した場所から広がる波紋。 */
+function ripple(e) {
+  const b = e.currentTarget;
+  if (reduceMotion() || !b.getBoundingClientRect) return;
+  const r = b.getBoundingClientRect();
+  const s = document.createElement('span');
+  s.className = 'rip';
+  const d = Math.max(r.width, r.height) * 1.2;
+  s.style.cssText = `width:${d}px;height:${d}px;left:${(e.clientX || r.left + r.width / 2) - r.left - d / 2}px;top:${(e.clientY || r.top + r.height / 2) - r.top - d / 2}px`;
+  b.appendChild(s);
+  setTimeout(() => s.remove(), 600);
+}
 
 // ------------------------------------------------------------------ helpers
 
@@ -97,7 +186,7 @@ function cardHTML(c) {
     const head = c.title ? `<div class="card-h">${icon('pulse')}<span>${esc(c.title)}</span></div>` : '';
     return `<div class="card">${head}<div class="kpis${head ? ' with-head' : ''}">${(c.items || []).map((k) => `
       <div class="kpi${k.hl ? ' hl' : ''}">
-        <div class="kpi-v">${fmt(k.value)}${k.unit ? `<small>${esc(k.unit)}</small>` : ''}</div>
+        <div class="kpi-v"><span ${Number.isFinite(Number(k.value)) ? `data-count="${Number(k.value)}"` : ''}>${fmt(k.value)}</span>${k.unit ? `<small>${esc(k.unit)}</small>` : ''}</div>
         <div class="kpi-l">${esc(k.label || '')}</div>
       </div>`).join('')}</div></div>`;
   }
@@ -146,9 +235,12 @@ function msgHTML(m, index) {
          <button class="msg-act" data-copy="${index}">${icon('file', 'i sm')}コピー</button>
          <button class="msg-act" data-remember="index">${icon('branch', 'i sm')}手順として覚える</button>
        </div>` : '';
+  const imgs = (m.images || []).filter((x) => x && (x.thumb || x.data_url));
+  const gallery = imgs.length ? `<div class="m-imgs">${imgs.map((x) => `<img src="${esc(x.thumb || x.data_url)}" alt="${esc(x.name || '画像')}" loading="lazy">`).join('')}</div>` : '';
   return `
     <div class="m ${mine ? 'me' : 'agent'}">
-      <div class="bub">${esc(m.text || '')}${events ? `<div class="events">${events}</div>` : ''}</div>
+      ${gallery}
+      ${m.text ? `<div class="bub">${esc(m.text || '')}${events ? `<div class="events">${events}</div>` : ''}</div>` : ''}
       ${cards}${memory}${action}${acts}
       <span class="t">${mine ? 'あなた' : 'エージェント'} · ${fmtTime(at)}</span>
     </div>`;
@@ -213,6 +305,9 @@ function bindMsg(root) {
   }));
   $$('[data-remember]', root).forEach((b) => b.addEventListener('click', () => send('この手順を覚えて')));
   $$('[data-do]', root).forEach((b) => b.addEventListener('click', () => doAction(b.dataset.do, b)));
+  $$('.card', root).forEach((c, i) => c.style.setProperty('--d', `${80 + i * 70}ms`));
+  $$('.btn,.chip,.msg-act', root).forEach((b) => b.addEventListener('pointerdown', ripple));
+  countUp(root);
 }
 
 function renderThread() {
@@ -250,15 +345,31 @@ function thinking(on) {
     el = document.createElement('div');
     el.id = 'thinking';
     el.className = 'm agent typing';
-    el.innerHTML = '<div class="bub"><span class="dots"><i></i><i></i><i></i></span></div>';
+    el.innerHTML = '<div class="bub"><span class="dots"><i></i><i></i><i></i></span><span class="think-l" id="thinkL">考えています</span></div>';
     threadEl().appendChild(el);
+    $('#avaBtn').classList.add('busy');
+    const steps = state.attach.length || on === 'vision'
+      ? ['画像を見ています', '文字と数字を読んでいます', 'まとめています']
+      : ['考えています', '台帳を確認しています', '計画を組み立てています', '結果を検証しています'];
+    let i = 0;
+    clearInterval(thinking._t);
+    thinking._t = setInterval(() => {
+      const l = $('#thinkL'); if (!l) return;
+      i = (i + 1) % steps.length;
+      l.classList.remove('swap'); void l.offsetWidth; l.classList.add('swap');
+      l.textContent = steps[i];
+    }, 1500);
     scrollDown();
-  } else if (el) el.remove();
+  } else {
+    clearInterval(thinking._t);
+    $('#avaBtn').classList.remove('busy');
+    if (el) el.remove();
+  }
 }
 
 function renderChips() {
   const el = $('#chips');
-  el.innerHTML = state.suggest.map((s) => `<button class="chip" type="button">${esc(s)}</button>`).join('');
+  el.innerHTML = state.suggest.map((s, i) => `<button class="chip" type="button" style="--i:${i}">${esc(s)}</button>`).join('');
   $$('.chip', el).forEach((b) => b.addEventListener('click', () => send(b.textContent)));
 }
 
@@ -316,7 +427,8 @@ async function renderFoot() {
     <button class="rail-item" data-open="work">${icon('eye', 'i sm')}作業をのぞく</button>
     <button class="rail-item" data-open="approvals">${icon('shield', 'i sm')}承認${waiting ? `<span class="badge warn">${waiting}</span>` : ''}</button>
     <button class="rail-item" data-open="watch">${icon('eye', 'i sm')}見張り${watchCount ? `<span class="badge accent">${watchCount}</span>` : ''}</button>
-    <button class="rail-item" data-open="settings">${icon('gear', 'i sm')}設定</button>`;
+    <button class="rail-item" data-open="agent">${icon('mask', 'i sm')}エージェント設定</button>
+    <button class="rail-item" data-open="settings">${icon('gear', 'i sm')}端末とつながり</button>`;
   $$('[data-open]', $('#railFoot')).forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)));
 }
 
@@ -343,14 +455,12 @@ async function openThread(id) {
   if (!r || r.ok === false) { toast('会話を開けませんでした'); return; }
   state.currentId = id;
   state.messages = (r.messages || []).map((m) => ({
-    role: m.role, text: m.text, cards: m.cards || [], events: m.events || [], created_at: m.created_at,
+    role: m.role, text: m.text, cards: m.cards || [], events: m.events || [], images: m.images || [], created_at: m.created_at,
   }));
   state.suggestTouched = false;
   state.suggest = (state.mode?.chips || DEFAULT_SUGGEST).slice();
-  renderChips();
-  renderThread();
-  renderRail();
-  scrollDown(false);
+  const swap = () => { renderChips(); renderThread(); renderRail(); scrollDown(false); };
+  if (document.startViewTransition && !reduceMotion()) document.startViewTransition(swap); else swap();
   openRail(false);
 }
 
@@ -442,23 +552,31 @@ function renderModeChrome() {
 
 async function send(text) {
   const msg = String(text || '').trim();
-  if (!msg || state.busy) return;
+  const images = state.attach.slice();
+  if ((!msg && !images.length) || state.busy) return;
   state.busy = true;
   $('#sendBtn').disabled = true;
+  $('#sendBtn').classList.add('fly');
+  setTimeout(() => $('#sendBtn').classList.remove('fly'), 520);
   const ta = $('#input');
   ta.value = '';
   ta.style.height = 'auto';
+  state.attach = [];
+  renderAttach();
 
-  addMessage({ role: 'me', text: msg, at: Date.now() });
-  thinking(true);
+  addMessage({ role: 'me', text: msg, images: images.map((i) => ({ thumb: i.thumb, name: i.name })), at: Date.now() });
+  thinking(images.length ? 'vision' : true);
 
-  const r = await api('/api/chat/act', { method: 'POST', body: { message: msg, thread_id: state.currentId }, quiet: true });
+  const r = await api('/api/chat/act', {
+    method: 'POST', quiet: true,
+    body: { message: msg, thread_id: state.currentId, ...(images.length ? { images } : {}) },
+  });
   thinking(false);
 
   if (!r) {
     push({ role: 'agent', text: '通信できませんでした。電波のある場所でもう一度試してください。' });
   } else {
-    push({ role: 'agent', text: r.reply || '処理しました。', cards: r.cards || [], events: r.events || [], memory: r.memory || [] });
+    push({ role: 'agent', text: r.reply || (r.ok === false ? `うまくいきませんでした（${r.error || 'error'}）` : '処理しました。'), cards: r.cards || [], events: r.events || [], memory: r.memory || [] });
   if (r.thread_id && r.thread_id !== state.currentId) state.currentId = r.thread_id;
   }
   if (Array.isArray(r?.suggest) && r.suggest.length) { state.suggest = r.suggest; state.suggestTouched = true; renderChips(); }
@@ -466,6 +584,7 @@ async function send(text) {
 
   state.busy = false;
   $('#sendBtn').disabled = false;
+  syncSend();
   refresh({ quiet: true });
   loadThreads();
 }
@@ -482,6 +601,8 @@ function openSheetRaw(title, bodyHTML) {
   $('#sheetIn').innerHTML = `
     <div class="sheet-h"><b>${esc(title)}</b><button class="icon-btn" id="sheetX" aria-label="閉じる">✕</button></div>
     <div class="sheet-b">${bodyHTML}</div>`;
+  $$('.sheet-b > *', $('#sheetIn')).forEach((c, i) => c.style.setProperty('--i', String(Math.min(i, 8))));
+  $$('.btn', $('#sheetIn')).forEach((b) => b.addEventListener('pointerdown', ripple));
   $('#sheet').classList.add('open');
   $('#sheet').setAttribute('aria-hidden', 'false');
   $('#sheetScrim').classList.add('open');
@@ -495,6 +616,7 @@ async function openSheet(which = 'info') {
   if (which === 'approvals') return openApprovals();
   if (which === 'watch') return openWatch();
   if (which === 'mode') return openMode();
+  if (which === 'agent') return openAgent();
 
   const d = state.dash || (await refresh({ quiet: false })) || {};
   const ch = d.character || {};
@@ -504,6 +626,7 @@ async function openSheet(which = 'info') {
   const paired = Array.isArray(runner?.runners) ? runner.runners.length > 0 : !!runner?.runner;
 
   openSheetRaw(which === 'settings' ? '設定' : 'エージェント', `
+    <button class="btn primary wide" id="goAgent" type="button">${icon('mask', 'i sm')}エージェント設定を開く（性格・お金の範囲・アイコン）</button>
     <div>
       <div class="sec-t">いまの目標</div>
       ${d.current_mission
@@ -550,6 +673,7 @@ async function openSheet(which = 'info') {
     </div>
   `);
 
+  $('#goAgent').addEventListener('click', () => openAgent());
   $('#saveTok').addEventListener('click', async () => {
     state.token = $('#sToken').value.trim();
     localStorage.setItem(LS_TOKEN, state.token);
@@ -568,6 +692,174 @@ async function openSheet(which = 'info') {
   $('#copyCmd')?.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText($('#runnerCmd').textContent); toast('コピーしました'); }
     catch { toast('コピーできませんでした'); }
+  });
+}
+
+/** エージェント設定 — 名前・性格・自律性・お金の範囲・アイコン・動かす/止める。 */
+async function openAgent() {
+  const [cr, er, pr] = await Promise.all([
+    api('/api/character', { quiet: true }),
+    api('/api/envelope', { quiet: true }),
+    api('/api/providers', { quiet: true }),
+  ]);
+  const ch = cr?.character || {};
+  const presets = cr?.presets || [];
+  const env = er?.envelope || {};
+  const eng = state.dash?.engine || {};
+  const neu = pr?.neurons || null;
+  const ava = ch.avatar_url;
+  const slider = (id, label, v, hint) => `
+    <label class="slide"><span class="slide-h"><b>${esc(label)}</b><output id="${id}O">${esc(v)}</output></span>
+      <input type="range" id="${id}" min="0" max="100" step="5" value="${esc(v)}">
+      <small>${esc(hint)}</small></label>`;
+  openSheetRaw('エージェント設定', `
+    <div class="ag-head">
+      <button class="ag-ava" id="agAva" type="button" aria-label="アイコンを変える">${/^data:image\//i.test(String(ava || '')) ? `<img src="${esc(ava)}" alt="">` : esc(String(ch.avatar || ch.name || 'WA').slice(0, 2))}<i>${icon('image', 'i sm')}</i></button>
+      <div class="ag-id">
+        <div class="field"><span>名前</span><input id="agName" maxlength="40" value="${esc(ch.name || 'Wealth Agent')}"></div>
+        <div class="btn-row" style="margin-top:8px">
+          <button class="btn sm" id="agUp" type="button">${icon('upload', 'i sm')}写真から</button>
+          <button class="btn sm" id="agGen" type="button">${icon('sparkle', 'i sm')}AIで作る</button>
+          ${ava ? '<button class="btn sm danger" id="agClr" type="button">外す</button>' : ''}
+        </div>
+        <input type="file" id="agFile" accept="image/*" hidden>
+      </div>
+    </div>
+
+    <div>
+      <div class="sec-t">動かす / 止める</div>
+      <div class="eng ${esc(eng.status || 'stopped')}">
+        <i class="pulse ${eng.status === 'running' ? 'on' : eng.status === 'paused' ? 'warn' : ''}"></i>
+        <div class="eng-t"><b>${eng.status === 'running' ? '自律運転中（5分ごとに1手）' : eng.status === 'paused' ? '一時停止中' : '停止中'}</b>
+          ${eng.reason ? `<small>${esc(eng.reason)}</small>` : ''}</div>
+        ${eng.status === 'running'
+          ? '<button class="btn sm" id="agPause" type="button">止める</button>'
+          : '<button class="btn sm primary" id="agRun" type="button">動かす</button>'}
+      </div>
+    </div>
+
+    <div>
+      <div class="sec-t">性格</div>
+      <div class="presets">${presets.map((p) => `<button type="button" class="preset${p.key === ch.preset ? ' on' : ''}" data-preset="${esc(p.key)}"><b>${esc(String(p.label || '').replace(/^[A-E]\.\s*/, ''))}</b><small>${esc(p.description || '')}</small></button>`).join('')}</div>
+      <div class="field" style="margin-top:10px"><span>話し方</span><input id="agTone" maxlength="160" value="${esc(ch.tone || '')}" placeholder="例: 結論から短く。数字には出典をつける"></div>
+      <div class="field" style="margin-top:8px"><span>長期の目標（任意）</span><textarea id="agGoal" rows="2" maxlength="300" placeholder="例: 手間を最小にして月3万円の実測入金">${esc(ch.long_term_goals || '')}</textarea></div>
+      <div class="field" style="margin-top:8px"><span>やってほしくないこと</span><textarea id="agNo" rows="2" maxlength="300">${esc(ch.prohibitions || '')}</textarea></div>
+    </div>
+
+    <div>
+      <div class="sec-t">判断のくせ</div>
+      ${slider('agRisk', 'リスク許容', ch.risk_tolerance ?? 30, '高いほど不確かな案も試す。お金の上限はこれとは別に下で固定されます')}
+      ${slider('agCaution', '慎重さ', ch.caution ?? 60, '高いほど検証を厚くし、根拠の薄い報告を出しません')}
+      ${slider('agCreat', '発想の幅', ch.creativity ?? 60, '高いほど新しい売り方を提案します')}
+      <label class="slide"><span class="slide-h"><b>自律性</b><output id="agAutoO">L${esc(ch.autonomy_level ?? 4)}</output></span>
+        <input type="range" id="agAuto" min="1" max="5" step="1" value="${esc(ch.autonomy_level ?? 4)}">
+        <small>L1=毎回確認 … L5=任せる。L5でも下の「承認が要ること」は必ず止まります</small></label>
+      <div class="field" style="margin-top:6px"><span>報告の頻度</span>
+        <select id="agFreq">${[['realtime', 'その都度'], ['daily', '1日1回'], ['weekly', '週1回']].map(([k, l]) => `<option value="${k}"${(ch.report_frequency || 'daily') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+    </div>
+
+    <div>
+      <div class="sec-t">お金の範囲（ここから先はあなたの承認）</div>
+      <div class="money">
+        <div class="field"><span>自動で使える1回の上限（円）</span><input id="agYen1" type="number" inputmode="numeric" min="0" max="5000" step="100" value="${esc(env.auto_max_yen_per_action ?? 0)}"></div>
+        <div class="field"><span>1日の上限（円）</span><input id="agYenD" type="number" inputmode="numeric" min="0" max="20000" step="100" value="${esc(env.auto_max_yen_per_day ?? 0)}"></div>
+      </div>
+      <label class="tog"><input type="checkbox" id="agRework" ${env.auto_rework !== false ? 'checked' : ''}><span></span><b>判定に落ちた作業は自動で作り直す</b></label>
+      <label class="tog"><input type="checkbox" id="agPost" ${env.public_post === 'auto' ? 'checked' : ''}><span></span><b>投稿も承認なしで出す</b><small>おすすめはオフ。凍結されると収益の出口ごと失います</small></label>
+      <div class="locks">${[['本人確認', 'identity'], ['口座・アカウント作成', 'account'], ['契約・署名', 'sign'], ['入金済みの確定', 'paid']].map(([l]) => `<span class="lock">${icon('shield', 'i sm')}${esc(l)}は人間だけ</span>`).join('')}</div>
+    </div>
+
+    ${neu ? `<div>
+      <div class="sec-t">今日のAI無料枠</div>
+      <div class="goal-bar"><div class="goal-fill" style="width:${Math.min(100, Math.max(2, Math.round((neu.today / Math.max(1, neu.free_per_day)) * 100)))}%"></div></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">Cloudflare Workers AI ${fmt(Math.round(neu.today))} / ${fmt(neu.free_per_day)} Neurons（${fmt(neu.cap)} で自動停止 → 無料枠の外には出ません）</div>
+    </div>` : ''}
+
+    <div class="btn-row sticky-save">
+      <button class="btn primary wide" id="agSave" type="button">保存する</button>
+    </div>
+  `);
+
+  let preset = ch.preset || 'custom';
+  $$('[data-preset]', $('#sheetIn')).forEach((b) => b.addEventListener('click', () => {
+    preset = b.dataset.preset;
+    $$('[data-preset]', $('#sheetIn')).forEach((x) => x.classList.toggle('on', x === b));
+    const p = presets.find((x) => x.key === preset);
+    if (p && preset !== 'custom') {
+      if (p.tone) $('#agTone').value = p.tone;
+      [['agRisk', p.risk_tolerance], ['agCaution', p.caution], ['agCreat', p.creativity]].forEach(([id, v]) => {
+        if (v != null) { $(`#${id}`).value = v; $(`#${id}O`).textContent = v; }
+      });
+    }
+  }));
+  ['agRisk', 'agCaution', 'agCreat'].forEach((id) => $(`#${id}`).addEventListener('input', (e) => { $(`#${id}O`).textContent = e.target.value; }));
+  $('#agAuto').addEventListener('input', (e) => { $('#agAutoO').textContent = `L${e.target.value}`; });
+
+  const setAva = async (dataUrl, source, extra = {}) => {
+    const r = await api('/api/character/avatar', { method: 'POST', body: { data_url: dataUrl, source, ...extra }, quiet: true });
+    if (r && r.ok !== false) { toast('アイコンを変えました'); await refresh({ quiet: true }); openAgent(); }
+    else toast(r?.hint || '保存できませんでした');
+  };
+  $('#agUp').addEventListener('click', () => $('#agFile').click());
+  $('#agAva').addEventListener('click', () => $('#agFile').click());
+  $('#agFile').addEventListener('change', async (e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    try { await setAva(await shrinkImage(f, 256, 0.85), 'upload'); } catch { toast('画像を開けませんでした'); }
+  });
+  $('#agGen').addEventListener('click', async (e) => {
+    const ins = prompt('どんなアイコンにしますか？（例: 落ち着いた紺色のアドバイザー、ミニマル）', '');
+    if (!ins) return;
+    e.target.disabled = true; $('#agAva').classList.add('busy');
+    const g = await api('/api/character/avatar/generate', { method: 'POST', body: { instruction: ins }, quiet: true });
+    $('#agAva').classList.remove('busy'); e.target.disabled = false;
+    if (g?.ok && g.data_url) {
+      let url = g.data_url;
+      if (/^data:image\/(png|jpe?g|webp)/i.test(url)) {
+        try { const b = await (await fetch(url)).blob(); url = await shrinkImage(new File([b], 'a.jpg', { type: b.type }), 256, 0.85); } catch { /* そのまま */ }
+      }
+      await setAva(url, 'generated', { prompt: g.prompt_used, model: g.model });
+      if (g.note) toast(g.note, 4000);
+    } else toast(g?.hint || '生成できませんでした');
+  });
+  $('#agClr')?.addEventListener('click', async () => { await api('/api/character/avatar/clear', { method: 'POST', quiet: true }); await refresh({ quiet: true }); openAgent(); });
+
+  $('#agRun')?.addEventListener('click', async () => {
+    const r = await api(`/api/engine/${eng.status === 'paused' ? 'resume' : 'start'}`, { method: 'POST', quiet: true });
+    toast(r && r.ok !== false ? '動かしました。5分ごとに自分で1手ずつ進めます' : '動かせませんでした');
+    await refresh({ quiet: true }); openAgent();
+  });
+  $('#agPause')?.addEventListener('click', async () => {
+    await api('/api/engine/pause', { method: 'POST', body: { reason: 'オーナーが設定画面から停止' }, quiet: true });
+    toast('止めました'); await refresh({ quiet: true }); openAgent();
+  });
+
+  $('#agSave').addEventListener('click', async (e) => {
+    const name = $('#agName').value.trim();
+    if (!name) { toast('名前を入れてください'); return; }
+    const yen1 = Math.max(0, Math.min(5000, Math.round(Number($('#agYen1').value) || 0)));
+    const yenD = Math.max(0, Math.min(20000, Math.round(Number($('#agYenD').value) || 0)));
+    if (yenD < yen1) { toast('1日の上限は1回の上限以上にしてください'); return; }
+    if ($('#agPost').checked && env.public_post !== 'auto' && !confirm('投稿を承認なしで出します。規約違反や重複で凍結されると、そのアカウントの収益がすべて止まります。本当にオンにしますか？')) return;
+    e.target.disabled = true;
+    const [c, v] = await Promise.all([
+      api('/api/character', { method: 'POST', quiet: true, body: { character: {
+        id: ch.id, name, preset, avatar: ch.avatar,
+        tone: $('#agTone').value.trim(), long_term_goals: $('#agGoal').value.trim(), prohibitions: $('#agNo').value.trim(),
+        risk_tolerance: Number($('#agRisk').value), caution: Number($('#agCaution').value), creativity: Number($('#agCreat').value),
+        autonomy_level: Number($('#agAuto').value), report_frequency: $('#agFreq').value,
+        description: ch.description, personality: ch.personality, values: ch.values, strengths: ch.strengths, weaknesses: ch.weaknesses,
+      } } }),
+      api('/api/envelope', { method: 'POST', quiet: true, body: {
+        auto_max_yen_per_action: yen1, auto_max_yen_per_day: yenD,
+        auto_rework: $('#agRework').checked, public_post: $('#agPost').checked ? 'auto' : 'approval',
+      } }),
+    ]);
+    e.target.disabled = false;
+    if (c?.ok !== false && v?.ok !== false) {
+      const b = e.target; b.classList.add('done'); b.textContent = '保存しました';
+      await refresh({ quiet: true });
+      setTimeout(closeSheet, 650);
+    } else toast('保存できませんでした');
   });
 }
 
@@ -703,12 +995,23 @@ async function openApprovals() {
 function bind() {
   $('#composer').addEventListener('submit', (e) => { e.preventDefault(); send($('#input').value); });
   const ta = $('#input');
-  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 132)}px`; });
+  ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 132)}px`; syncSend(); });
+  $('#attachBtn').addEventListener('click', () => $('#fileIn').click());
+  $('#fileIn').addEventListener('change', (e) => { addFiles(e.target.files); e.target.value = ''; });
+  ta.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files || [])];
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  });
+  const main = $('.main-col');
+  ['dragenter', 'dragover'].forEach((t) => main.addEventListener(t, (e) => { if ([...(e.dataTransfer?.types || [])].includes('Files')) { e.preventDefault(); main.classList.add('drop'); } }));
+  ['dragleave', 'drop'].forEach((t) => main.addEventListener(t, (e) => { if (t === 'dragleave' && main.contains(e.relatedTarget)) return; main.classList.remove('drop'); }));
+  main.addEventListener('drop', (e) => { e.preventDefault(); addFiles(e.dataTransfer?.files); });
+  $$('.send,.icon-btn,.newchat').forEach((b) => b.addEventListener('pointerdown', ripple));
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(ta.value); }
   });
   $('#moreBtn').addEventListener('click', () => openSheet('settings'));
-  $('#avaBtn').addEventListener('click', () => openSheet('info'));
+  $('#avaBtn').addEventListener('click', () => openAgent());
   $('#whoBtn').addEventListener('click', () => openSheet('info'));
   $('#sheetScrim').addEventListener('click', closeSheet);
   $('#railBtn').addEventListener('click', () => openRail(true));
@@ -726,11 +1029,20 @@ function bind() {
 // ------------------------------------------------------------------ boot
 
 async function boot() {
+  // 通信が遅くても起動画面で止まらない（最長1.2秒で画面を出す）。
+  setTimeout(() => document.body.classList.add('ready'), 1200);
   bind();
   renderChips();
   await Promise.all([refresh({ quiet: true }), loadThreads()]);
   renderThread();
   scrollDown(false);
+  document.body.classList.add('ready');
+  // 直リンク: #agent でエージェント設定、#settings で端末設定を開く。
+  {
+    const want = (location.hash || '').slice(1) || new URL(location.href).searchParams.get('open') || '';
+    if (/^(agent|settings|work|mode|watch|approvals)$/.test(want)) openSheet(want);
+  }
+  setTimeout(() => $('#splash')?.remove(), 900);
   if (!state.token) {
     setTimeout(() => push({ role: 'agent', text: 'はじめての端末ですね。「⋯」からアクセストークンを貼り付けると、あなた専用のエージェントとして動きます。', action: 'settings' }), 400);
   }

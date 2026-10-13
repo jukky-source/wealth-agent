@@ -94,7 +94,7 @@ test('[C10] 途中再開・見張り・判定のAPIが配線されている', ()
   assert.match(read('public/app.js'), /openWatch/);
   assert.match(read('public/app.js'), /openMode/);
   assert.match(read('src/agent/commands.js'), /judgeOutcome/);
-  assert.match(read('public/sw.js'), /wa-v10/);
+  assert.match(read('public/sw.js'), /wa-v11/);
 });
 
 // ------------------------------------------------- 完了条件としての見張り（hold）
@@ -803,6 +803,47 @@ test('[C57] 会話とAPIの両方から実行環境を引ける', async () => {
   const api = read('src/api.js');
   assert.match(api, /'\/api\/runner\/status'/);
   assert.match(api, /'\/api\/runner\/dispatch'/);
+});
+
+test('[C58] 画像つきの会話：受付・縮小・読み取り・保存が配線されている', async () => {
+  const api = read('src/api.js');
+  assert.match(api, /chatImages\(body\?\.images\)/);
+  assert.match(api, /image_rejected/);
+  assert.match(api, /router\.vision\(/);
+  assert.match(api, /images_json/);
+  assert.match(read('src/db.js'), /ALTER TABLE chat_messages ADD COLUMN images_json/);
+  const app = read('public/app.js');
+  assert.match(app, /function shrinkImage/);
+  assert.match(app, /images \}/);
+  assert.match(read('public/index.html'), /id="fileIn" accept="image\/\*"/);
+});
+
+test('[C59] Workers AI は無料枠（Neurons）の上限で止まる', async () => {
+  const { Router, estimateNeurons, neuronCap } = await import('../src/ai/router.js').then((m) => ({ ...m, Router: m.AIRouter || m.Router || m.default }));
+  assert.equal(neuronCap({}), 9000);
+  assert.equal(neuronCap({ WORKERS_AI_NEURON_CAP: '0' }), 0);
+  assert.ok(estimateNeurons('@cf/meta/llama-4-scout-17b-16e-instruct', 2000, 600) > 0);
+  for (const f of ['wrangler.toml', 'wrangler.containers.toml']) {
+    assert.match(read(f), /\[ai\]\s*\nbinding = "AI"/);
+    assert.match(read(f), /WORKERS_AI_NEURON_CAP = "9000"/);
+  }
+  assert.match(read('src/ai/router.js'), /workersai: neuron_cap/);
+});
+
+test('[C60] エージェント設定：性格・自律性・お金の上限・アイコン・動かす/止める', async () => {
+  const app = read('public/app.js');
+  for (const k of ['async function openAgent', "'/api/envelope'", "'/api/character'", '/api/character/avatar', 'agRisk', 'agAuto', 'agYen1', 'agYenD', 'agPost', 'agRun']) assert.ok(app.includes(k), k);
+  const api = read('src/api.js');
+  assert.match(api, /Math\.min\(5000/);
+  assert.match(api, /Math\.min\(20000/);
+  assert.match(api, /delete b\[k\]/); // 人間だけの操作は画面から変えられない
+});
+
+test('[C61] アニメーションは動きを減らす設定を尊重する', () => {
+  const css = read('public/styles.css');
+  assert.match(css, /prefers-reduced-motion: reduce/);
+  assert.match(css, /@keyframes pop/);
+  assert.match(read('public/app.js'), /function countUp/);
 });
 
 let pass = 0; const failed = [];
