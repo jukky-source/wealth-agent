@@ -1,0 +1,10 @@
+{
+  "name": "wealth-agent",
+  "version": "1.0.0",
+  "description": "Pay-per-call x402 utility tools for AI agents: research brief, CSV/JSON cleanup, code review, URL metadata, regex, diff. No account or API key required.",
+  "mcpServers": {
+    "wealth-agent": {
+      "httpUrl": "https://wealth-agent.wealthagent-app.workers.dev/api/mcp"
+    }
+  }
+}
