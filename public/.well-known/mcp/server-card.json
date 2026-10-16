@@ -1,0 +1,25 @@
+{
+  "serverInfo": {
+    "name": "wealth-agent",
+    "version": "1.0.0"
+  },
+  "authentication": {
+    "required": false
+  },
+  "instructions": "Pay-per-call x402 utility tools plus a free per-IP tier. No account or API key needed.",
+  "tools": [
+    {
+      "name": "free_list",
+      "description": "List the free capabilities",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "resources": [],
+  "prompts": [],
+  "homepage": "https://wealth-agent.wealthagent-app.workers.dev",
+  "documentation": "https://wealth-agent.wealthagent-app.workers.dev/llms.txt",
+  "openapi": "https://wealth-agent.wealthagent-app.workers.dev/openapi.json"
+}
