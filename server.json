@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jukky-source/wealth-agent",
+  "description": "Pay-per-call x402 tools for AI agents: research brief, CSV/JSON cleanup, code review.",
+  "version": "1.0.0",
+  "websiteUrl": "https://wealth-agent.wealthagent-app.workers.dev",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://wealth-agent.wealthagent-app.workers.dev/api/mcp"
+    }
+  ]
+}
