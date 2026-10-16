@@ -6,11 +6,136 @@
   "authentication": {
     "required": false
   },
-  "instructions": "Pay-per-call x402 utility tools plus a free per-IP tier. No account or API key needed.",
+  "instructions": "Pay-per-call x402 utility tools for AI agents, plus a free per-IP tier. Discovery and the free tier need no account and no API key. Paid tools settle an x402 payment header. Start with free_tier; upgrade to the x402_* tools for the AI-backed ones.",
   "tools": [
     {
-      "name": "free_list",
-      "description": "List the free capabilities",
+      "name": "x402_brief",
+      "description": "Answers a question with a one-page brief of cited source URLs, key findings and open gaps. Paid: 0.25 USDC per call over x402 (HTTP 402).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "The question to research"
+          }
+        },
+        "required": [
+          "question"
+        ]
+      }
+    },
+    {
+      "name": "x402_data-clean",
+      "description": "Cleans a CSV/TSV/JSON table: removes duplicate and blank rows, normalises headers, returns tidy JSON. Paid: 0.5 USDC per call over x402 (HTTP 402).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "CSV/TSV/JSON table text"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "name": "x402_code-review",
+      "description": "Reviews a code snippet and returns line-numbered findings (static rules plus AI review). Paid: 0.75 USDC per call over x402 (HTTP 402).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ]
+      }
+    },
+    {
+      "name": "x402_url-meta",
+      "description": "Fetches one public URL and returns machine-readable title, description, headings and links. Paid: 0.03 USDC per call over x402 (HTTP 402).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ]
+      }
+    },
+    {
+      "name": "x402_csv-json",
+      "description": "Converts tabular data between CSV/TSV and a JSON array. Paid: 0.02 USDC per call over x402 (HTTP 402).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "json",
+              "csv"
+            ]
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "name": "x402_regex",
+      "description": "Applies one regular expression to a text blob and returns all matches with positions. Paid: 0.01 USDC per call over x402 (HTTP 402).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern",
+          "text"
+        ]
+      }
+    },
+    {
+      "name": "x402_diff",
+      "description": "Returns the line-level diff between two texts as added/removed lines. Paid: 0.01 USDC per call over x402 (HTTP 402).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ]
+      }
+    },
+    {
+      "name": "free_tier",
+      "description": "Free, rate-limited (25 calls per IP per day) versions of url-meta, csv-json, regex and diff. Start here - no payment, no signup.",
       "inputSchema": {
         "type": "object",
         "properties": {}
