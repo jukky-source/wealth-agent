@@ -18,6 +18,21 @@ export const PAIRS = {
   GBPUSD: { pip: 0.0001, quote: 'USD', units: 10000, label: '英ポンド/米ドル' },
   USDCAD: { pip: 0.0001, quote: 'CAD', units: 10000, label: '米ドル/カナダドル' },
   GOLD: { pip: 0.1, quote: 'USD', units: 1, label: '金（1オンス）' },
+  USDCHF: { pip: 0.0001, quote: 'CHF', units: 10000, label: '米ドル/スイスフラン' },
+  AUDUSD: { pip: 0.0001, quote: 'USD', units: 10000, label: '豪ドル/米ドル' },
+  NZDUSD: { pip: 0.0001, quote: 'USD', units: 10000, label: 'ニュージーランドドル/米ドル' },
+  EURJPY: { pip: 0.01, quote: 'JPY', units: 10000, label: 'ユーロ/円' },
+  GBPJPY: { pip: 0.01, quote: 'JPY', units: 10000, label: '英ポンド/円' },
+  AUDJPY: { pip: 0.01, quote: 'JPY', units: 10000, label: '豪ドル/円' },
+  CADJPY: { pip: 0.01, quote: 'JPY', units: 10000, label: 'カナダドル/円' },
+  CHFJPY: { pip: 0.01, quote: 'JPY', units: 10000, label: 'スイスフラン/円' },
+  NZDJPY: { pip: 0.01, quote: 'JPY', units: 10000, label: 'ニュージーランドドル/円' },
+  EURGBP: { pip: 0.0001, quote: 'GBP', units: 10000, label: 'ユーロ/英ポンド' },
+  EURCHF: { pip: 0.0001, quote: 'CHF', units: 10000, label: 'ユーロ/スイスフラン' },
+  EURAUD: { pip: 0.0001, quote: 'AUD', units: 10000, label: 'ユーロ/豪ドル' },
+  GBPCHF: { pip: 0.0001, quote: 'CHF', units: 10000, label: '英ポンド/スイスフラン' },
+  USDMXN: { pip: 0.0001, quote: 'MXN', units: 10000, label: '米ドル/メキシコペソ' },
+  XAGUSD: { pip: 0.01, quote: 'USD', units: 100, label: '銀（100オンス）' },
 };
 
 export const DEFAULT_COST_MODEL = {
@@ -565,6 +580,12 @@ export function simulateFromIntent(bars, intent, { params = {}, cost = {}, symbo
   let cum = 0;
   const equityStart = C.initialCapitalJPY;
 
+  // 破産判定: 資金が尽きたら（含み損を含めて）取引を止める。
+  // 以前はこれが無く、含み損が資金を超えても建玉を持ち続けたため「DD 100%超」が出ていた。
+  const ruinEnabled = p.noRuinStop !== true;
+  const ruinFloorJPY = (Number(p.ruinFloorPct ?? 0) / 100) * equityStart;
+  let ruined = false; let ruinDate = null; let stoppedEarly = false;
+
   for (let i = 1; i < bars.length; i++) {
     const bar = bars[i];
 
@@ -625,7 +646,27 @@ export function simulateFromIntent(bars, intent, { params = {}, cost = {}, symbo
       }
     }
 
-    equity.push({ date: bar.date, equity: round(equityStart + cum, 1), pnl: round(cum, 1) });
+    // 含み損も資金に反映する（実現損益だけを見ると、含みのDDを見落とす）
+    const cvNow = cvAt(bar.date);
+    const unreal = pos ? (bar.close - pos.entryPrice) * pos.dir * units * cvNow : 0;
+    const mtm = equityStart + cum + unreal;
+    equity.push({ date: bar.date, equity: round(equityStart + cum, 1), equityMtm: round(mtm, 1), openMtm: round(unreal, 1), pnl: round(cum, 1) });
+
+    // 破産: この時点の資金（含み損込み）が床を割ったら、建玉を引けて止める
+    if (ruinEnabled && !ruined && mtm <= ruinFloorJPY) {
+      ruined = true; ruinDate = bar.date; stoppedEarly = true;
+      if (pos) {
+        const cv2 = cvAt(bar.date);
+        const pnlPrice2 = (bar.close - pos.entryPrice) * pos.dir;
+        const pnlJPY2 = (pnlPrice2 - pos.entryCostPrice - costPrice) * units * cv2 - C.commissionJPY;
+        cum += pnlJPY2;
+        trades.push({ entryDate: pos.entryDate, exitDate: bar.date, dir: pos.dir,
+          entryPrice: round(pos.entryPrice, 5), exitPrice: round(bar.close, 5), pnlJPY: round(pnlJPY2, 1),
+          reason: 'ruin_stop', barsHeld: pos.barsHeld, fxRate: round(cv2, 4), signalContext: pos.context });
+        pos = null;
+      }
+      break;   // 以降は新規建てしない
+    }
   }
 
   // close any dangling position at the last close (marked, not hidden)
@@ -641,8 +682,8 @@ export function simulateFromIntent(bars, intent, { params = {}, cost = {}, symbo
     equity.push({ date: last.date, equity: round(equityStart + cum, 1), pnl: round(cum, 1) });
   }
 
-  const metrics = computeMetrics(trades, equity, C.initialCapitalJPY, bars);
-  return { trades, equity, metrics, params: p, cost: C, symbol };
+  const metrics = computeMetrics(trades, equity, C.initialCapitalJPY, bars, { ruined, ruinDate, stoppedEarly });
+  return { trades, equity, metrics, params: p, cost: C, symbol, ruined, ruinDate, stoppedEarly };
 }
 
 export function backtest(bars, { strategyKey, params, cost = {} } = {}) {
@@ -653,7 +694,7 @@ export function backtest(bars, { strategyKey, params, cost = {} } = {}) {
   return { ...simulateFromIntent(bars, intent, { params: p, cost, symbol: p.symbol || 'USDJPY' }), strategyKey };
 }
 
-export function computeMetrics(trades, equity, initialCapital, bars = []) {
+export function computeMetrics(trades, equity, initialCapital, bars = [], meta = {}) {
   const wins = trades.filter((t) => t.pnlJPY > 0);
   const losses = trades.filter((t) => t.pnlJPY <= 0);
   const grossWin = wins.reduce((s, t) => s + t.pnlJPY, 0);
@@ -665,6 +706,15 @@ export function computeMetrics(trades, equity, initialCapital, bars = []) {
     peak = Math.max(peak, e.equity);
     const dd = peak - e.equity;
     if (dd > maxDD) { maxDD = dd; maxDDPct = (dd / peak) * 100; }
+  }
+  // 含み損を含めた最大DD（実現損益だけのDDはリスクを過小に見せる）。
+  // 検証のゲートはこちらを使う（厳しい方を採用する）。
+  let peakM = initialCapital; let maxDDM = 0; let maxDDPctM = 0;
+  for (const e of equity) {
+    const v = (e.equityMtm == null) ? e.equity : e.equityMtm;
+    peakM = Math.max(peakM, v);
+    const dd = peakM - v;
+    if (dd > maxDDM) { maxDDM = dd; maxDDPctM = peakM > 0 ? (dd / peakM) * 100 : 100; }
   }
 
   const dailyReturns = [];
@@ -694,13 +744,18 @@ export function computeMetrics(trades, equity, initialCapital, bars = []) {
     avgLossJPY: losses.length ? round(-grossLoss / losses.length, 1) : 0,
     maxDrawdownJPY: round(maxDD, 1),
     maxDrawdownPct: round(maxDDPct, 2),
+    maxDrawdownJPYMtm: round(maxDDM, 1),
+    maxDrawdownPctMtm: round(maxDDPctM, 2),
+    ruined: !!meta.ruined,
+    ruinDate: meta.ruinDate || null,
+    stoppedEarly: !!meta.stoppedEarly,
     sharpe: round(sharpe, 2),
     cagrPct: years > 0.2 ? round(((initialCapital + net) / initialCapital) ** (1 / years) * 100 - 100, 2) : null,
     barsTested: bars.length,
     yearsCovered: round(years, 2),
     finalEquityJPY: round(initialCapital + net, 1),
     returnPerYearJPY: years > 0.2 ? round(net / years, 0) : null,
-    assumptions: 'シグナルは当該バーの終値時点のみ使用、約定は翌バー始値。スプレッド・スリッページ・手数料を毎取引で控除。同時に複数条件が成立する場合は不利側（ストップ優先）で約定。',
+    assumptions: 'シグナルは当該バーの終値時点のみ使用、約定は翌バー始値。スプレッド・スリッページ・手数料を毎取引で控除。同時に複数条件が成立する場合は不利側（ストップ優先）で約定。資金（含み損込み）が0以下になったら取引を止める（破産判定）。maxDrawdownPct は実現損益ベース、maxDrawdownPctMtm は含み損込みで、ゲートは厳しい方（Mtm）を使う。',
   };
 }
 

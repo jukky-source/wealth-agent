@@ -146,7 +146,9 @@ export function gates(metrics = {}, wf = null, robust = null) {
   if (Number(metrics.trades || 0) < 30) { pass = false; reasons.push(`取引回数が少なすぎる (${metrics.trades ?? 0} < 30)`); }
   if (metrics.profitFactor !== null && Number(metrics.profitFactor) < 1.15) { pass = false; reasons.push(`プロフィットファクター不足 (${metrics.profitFactor} < 1.15)`); }
   if (Number(metrics.expectancy || 0) <= 0) { pass = false; reasons.push('期待値がプラスでない'); }
-  if (Number(metrics.maxDrawdownPct || 0) > 35) { pass = false; reasons.push(`最大DDが大きすぎる (${metrics.maxDrawdownPct}% > 35%)`); }
+  const ddGate = Number(metrics.maxDrawdownPctMtm ?? metrics.maxDrawdownPct ?? 0);
+  if (ddGate > 35) { pass = false; reasons.push(`最大DDが大きすぎる（含み損込み ${ddGate}% > 35%）`); }
+  if (metrics.ruined === true) { pass = false; reasons.push(`資金が尽きた（破産。${metrics.ruinDate || '期日不明'}）`); }
   if (wf && !wf.consistent) { pass = false; reasons.push(`ウォークフォワード不安定 (${wf.netPositiveFolds}/${wf.totalFolds} フォルダでプラス)`); }
   // フル検証（カーブフィッティング対策）の結果。未実施（null）は合格扱いにしない＝判定を保留する。
   if (robust) {

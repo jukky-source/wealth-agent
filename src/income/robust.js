@@ -551,7 +551,9 @@ export function verdictFrom(report = {}) {
   if (Number(m.trades || 0) < 30) { pass = false; reasons.push(`取引回数が少なすぎる (${m.trades ?? 0} < 30)`); }
   if (m.profitFactor !== null && Number(m.profitFactor) < 1.15) { pass = false; reasons.push(`プロフィットファクター不足 (${m.profitFactor} < 1.15)`); }
   if (Number(m.expectancy || 0) <= 0) { pass = false; reasons.push('期待値がプラスでない'); }
-  if (Number(m.maxDrawdownPct || 0) > 35) { pass = false; reasons.push(`最大DDが大きすぎる (${m.maxDrawdownPct}% > 35%)`); }
+  const ddGateR = Number(m.maxDrawdownPctMtm ?? m.maxDrawdownPct ?? 0);
+  if (ddGateR > 35) { pass = false; reasons.push(`最大DDが大きすぎる（含み損込み ${ddGateR}% > 35%）`); }
+  if (m.ruined === true) { pass = false; reasons.push(`資金が尽きた（破産。${m.ruinDate || '期日不明'}）`); }
 
   const pf = report.purged || {};
   if (pf.ok !== false && pf.positive_share != null) {
