@@ -55,8 +55,9 @@ export function e8Profile(key) {
 // ---------------------------------------------------------------------------
 // どのロジックを走らせるか
 //   1) env.E8_LOGICS（明示: "USDJPY:donchian_breakout,GOLD:ema_cross"）
-//   2) 探索器（optimizer.js）が選んだ「相関の低い集合」= opt:collection
-//   3) 既定（過去10年を生き残った5本の等加重）
+//   2) 作業台（lab.js）が門を通した個体だけを渡してくる集合 = lab:collection（自律ループが更新する）
+//   3) 探索器（optimizer.js）が選んだ「相関の低い集合」= opt:collection
+//   4) 既定（過去10年を生き残った5本の等加重）
 // ---------------------------------------------------------------------------
 export const E8_DEFAULT_LOGICS = [
   { symbol: 'USDJPY', want: 'donchian' },
@@ -91,6 +92,13 @@ export async function e8Members({ store, env = {} } = {}) {
     for (const spec of parseLogoics(env.E8_LOGICS)) {
       const key = resolveKey(spec.want, spec.symbol);
       push({ symbol: spec.symbol, key, params: { symbol: spec.symbol }, label: `${spec.symbol} / ${STRATEGIES[key]?.label || key}`, from: 'env' });
+    }
+  }
+  if (!out.length) {
+    // 作業台（/lab）が「門を通した個体だけ」で作った集合。人が押さなくても毎tick更新される。
+    const lab = safeJson((await store.first(`SELECT value FROM settings WHERE key='lab:collection'`).catch(() => null))?.value, null);
+    for (const m of (lab && lab.members) || []) {
+      push({ symbol: m.symbol, key: m.key, params: m.params || { symbol: m.symbol }, weight: m.weight ?? null, label: m.label || `${m.symbol} / ${m.key}`, from: 'lab' });
     }
   }
   if (!out.length) {
@@ -530,7 +538,7 @@ export function e8Help() {
       scale: 'E8_SCALE（建玉倍率、既定 0.75。1.0は基準の建玉）',
       accountSize: 'E8_ACCOUNT（既定 100000 USD）',
       days: 'E8_DAYS（データ本数、既定700）',
-      logics: 'E8_LOGICS（"USDJPY:donchian_breakout,GOLD:ema_cross"）／未指定なら探索器の集合→既定5本',
+      logics: 'E8_LOGICS（"USDJPY:donchian_breakout,GOLD:ema_cross"）／未指定なら作業台の集合（lab:collection）→探索器の集合→既定5本',
       backfill: 'E8_BACKFILL_DAYS（起動時に再生する本数、既定120）',
     },
     endpoints: { get: '/api/e8 （?format=text / ?help=1）', post: '/api/e8 {profile,scale,accountSize,days,reset:true}' },

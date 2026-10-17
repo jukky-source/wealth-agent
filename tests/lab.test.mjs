@@ -5,6 +5,7 @@ import {
   labE8Plan, e8ProfileOf, labSpec, labRuleSpec, labCost,
   weightedEnsemble, equityCurve, drawdownSeries, monthlyReturns, portfolioStats, thin,
   challengeReplay, labOwnScore, labE8Score, evalGates, candidateSpecs, labHeatmap, labCatalog, trimMetrics,
+  pickChampion, labCollectionFrom, labAuto, LAB_AUTO_KEY, LAB_COLLECTION_KEY,
 } from '../src/income/lab.js';
 
 let pass = 0; let fail = 0;
@@ -24,7 +25,7 @@ console.log('バックテスト作業台（lab）');
 
 // 1) 規格
 {
-  ok('版が入っている', LAB_VERSION === 'lab-1.0', LAB_VERSION);
+  ok('版が入っている', LAB_VERSION === 'lab-1.1', LAB_VERSION);
   ok('E8規格は5種類', Object.keys(LAB_E8_PROFILES).length === 5);
   const p = e8ProfileOf('p10');
   ok('p10 は 10/15/6.6', p.maxLossPct === 10 && p.targetPct === 15 && p.dailyLossPct === 6.6, JSON.stringify(p));
@@ -162,6 +163,82 @@ console.log('バックテスト作業台（lab）');
   ok('E8の支払い規則を返す', c.e8.pay.sharePct === 80);
   const tm = trimMetrics({ trades: 5, netProfitPct: 3, sharpe: 1.2, nonsense: 9 });
   ok('指標は必要なものだけ返す', tm.trades === 5 && tm.nonsense === undefined);
+}
+
+// 10) 自律ループ（門を通した個体だけを E8 実行部へ渡す）
+{
+  const specOf = (symbol, key, tier) => ({
+    v: 1, tier, symbol, tf: '1d', filter: 'none', exit: 'tight', dir: 'both',
+    base: tier === 'rule'
+      ? { kind: 'rule', op: 'AND', parts: [] }
+      : { kind: 'strategy', key: 'ema_cross', variant: 0, params: {} },
+  });
+  const row = (o) => ({
+    symbol: o.symbol, key: o.key, fitness: o.fitness, verdict: o.pass ? 'pass' : 'fail',
+    gatesPass: !!o.pass, reasons: o.pass ? [] : ['OOSの純益がマイナス'], label: `${o.symbol} / ${o.key}`,
+    objective: o.objective || null, oosNetPct: 10, oosDdMtmPct: 20, spec: specOf(o.symbol, o.key, o.tier || 'rule'),
+  });
+  const good = [row({ symbol: 'USDJPY', key: 'g_aaa1', fitness: 0.62, pass: true, objective: { passRatePct: 60, medianMonthlyUSD: 900, survivorPct: 30 } }),
+    row({ symbol: 'GOLD', key: 'ema_cross', fitness: 0.41, pass: true, tier: 'core' })];
+  const bad = [row({ symbol: 'EURJPY', key: 'g_bbb2', fitness: 0.9, pass: false })];
+
+  const col = labCollectionFrom([...good, ...bad], { max: 6 });
+  ok('門を通った個体だけが集合に入る', col.members.length === 2, JSON.stringify(col.members.map((m) => m.key)));
+  ok('門を通らなかった個体は理由つきで外れる', col.skipped.length === 0 && col.members.every((m) => m.key !== 'g_bbb2'));
+  ok('重みは合計1に正規化される', near(col.members.reduce((a, m) => a + m.weight, 0), 1, 1e-3), JSON.stringify(col.members.map((m) => m.weight)));
+  ok('重みは素点の順で減る', col.members[0].weight > col.members[1].weight);
+  ok('実行部がそのまま食える params を作る', !!col.members[0].params.logic && col.members[0].params.symbol === 'USDJPY');
+  ok('同じ銘柄と論理は重複しない', labCollectionFrom([...good, ...good]).members.length === 2);
+
+  ok('最良は門を通った中から選ぶ', pickChampion([...good, ...bad], 'e8').symbol === 'USDJPY');
+  ok('床に届かない個体は選ばない', pickChampion([row({ symbol: 'XAUUSD', key: 'g_c3', fitness: 0.05, pass: true })], 'e8') === null);
+
+  const e8rows = [...good, ...bad];
+  const store = {
+    _s: new Map(),
+    async first(sql, ...p) { return this._s.has(p[0]) ? { value: this._s.get(p[0]) } : null; },
+    async run(sql, key, value) { this._s.set(key, value); },
+    async all() { return e8rows; },
+    async insert() {},
+  };
+  const auto = await labAuto({ store, env: {}, now: '2026-10-17T09:00:00.000Z' });
+  ok('引き渡しを記録する', /lab:collection/.test(auto.handoff), auto.handoff);
+  ok('集合を settings に書く', store._s.has(LAB_COLLECTION_KEY) && JSON.parse(store._s.get(LAB_COLLECTION_KEY)).members.length === 2);
+  ok('台帳を残す', store._s.has(LAB_AUTO_KEY) && JSON.parse(store._s.get(LAB_AUTO_KEY)).ticks === 1);
+  ok('何本通ったかを残す', auto.e8.passed === 2 && auto.e8.candidates === 3, JSON.stringify(auto.e8));
+  ok('最良と集合の中身を残す', auto.e8.champion.symbol === 'USDJPY' && auto.e8.collection.keys.length === 2);
+
+  const store2 = {
+    _s: new Map([[LAB_COLLECTION_KEY, JSON.stringify({ members: [{ symbol: 'USDJPY', key: 'g_aaa1' }, { symbol: 'GOLD', key: 'ema_cross' }] })]]),
+    async first(sql, ...p) { return this._s.has(p[0]) ? { value: this._s.get(p[0]) } : null; },
+    async run(sql, key, value) { this._s.set(key, value); },
+    async all() { return e8rows; },
+    async insert() {},
+  };
+  const auto2 = await labAuto({ store: store2, env: {}, now: '2026-10-17T09:05:00.000Z' });
+  ok('同じ集合なら「更新した」と言わない', auto2.e8.collection.changed === false, auto2.handoff);
+
+  const store3 = {
+    _s: new Map(),
+    async first() { return null; },
+    async run() {},
+    async all() { return bad; },
+    async insert() {},
+  };
+  const auto3 = await labAuto({ store: store3, env: {}, now: '2026-10-17T09:10:00.000Z' });
+  ok('門を通る個体が無いときは前の集合を残す（黙って既定に戻さない）', auto3.e8.collection.wrote === false && /残した/.test(auto3.handoff), auto3.handoff);
+}
+
+// 11) E8の採点は「合格率」ではなく「払い出せるか」まで見る
+{
+  const dd = { maxDrawdownPctMtm: 20 };
+  const noPay = labE8Score({ passRatePct: 60 }, dd, null);
+  const thinPay = labE8Score({ passRatePct: 60 }, dd, { medianMonthly: 100 });
+  const fatPay = labE8Score({ passRatePct: 60 }, dd, { medianMonthly: 20000 });
+  ok('支払いを計算していない個体は合格率だけで採点', near(noPay, 0.6, 1e-6), String(noPay));
+  ok('支払いが出ない個体は沈む', thinPay < noPay && thinPay > noPay * 0.4, `${thinPay} vs ${noPay}`);
+  ok('支払いが出る個体は戻る（上限1.0）', fatPay > noPay && fatPay <= 0.6, `${fatPay} vs ${noPay}`);
+  ok('DDが大きい個体はさらに沈む', labE8Score({ passRatePct: 60 }, { maxDrawdownPctMtm: 80 }, null) < noPay);
 }
 
 console.log(`\nlab: ${pass} passed / ${fail} failed`);
