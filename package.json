@@ -7,6 +7,13 @@
   "scripts": {
     "dev": "node server/local.mjs",
     "test": "node tests/run.mjs && node tests/capabilities.mjs",
+    "test:ea": "node tests/ea.test.mjs",
+    "test:scout": "node tests/scout.test.mjs",
+    "test:cdp": "node tests/cdp-facilitator.test.mjs",
+    "test:fxlab": "node tests/fxlab.test.mjs",
+    "test:robust": "node tests/robust.test.mjs",
+    "test:social": "node tests/social.test.mjs",
+    "report:ea": "node scripts/ea-report.mjs",
     "test:unit": "node tests/unit.test.mjs",
     "deploy:worker": "wrangler deploy",
     "deploy:db": "wrangler d1 execute wealth-agent --file=./schema.sql --remote",
@@ -16,7 +23,10 @@
     "test:all": "node tests/unit.test.mjs && node tests/run.mjs && node tests/avatar.test.mjs && node tests/fleet.test.mjs && node tests/runner.test.mjs",
     "runner": "node runner/agent-runner.mjs",
     "deploy": "bash scripts/deploy-cloudflare.sh",
-    "test:jobs": "node tests/jobs.test.mjs"
+    "test:jobs": "node tests/jobs.test.mjs",
+    "test:pairing": "node --test tests/pairing.test.mjs",
+    "test:loop": "node tests/loop.test.mjs",
+    "test:free": "node tests/freemium.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

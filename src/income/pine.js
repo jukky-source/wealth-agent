@@ -190,6 +190,342 @@ if strategy.position_size > 0
 if strategy.position_size < 0
     strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
 `,
+    macd_trend: () => `
+fastLen  = input.int(${params.fast ?? 12}, "Fast EMA")
+slowLen  = input.int(${params.slow ?? 26}, "Slow EMA")
+sigLen   = input.int(${params.signal ?? 9}, "Signal")
+trendLen = input.int(${params.trendFilter ?? 200}, "Trend Filter EMA")
+atrLen   = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 2.5}, "ATR Stop x")
+tpMult   = input.float(${params.atrTargetMult ?? 3.0}, "ATR Target x")
+
+[ml, sl, hist] = ta.macd(close, fastLen, slowLen, sigLen)
+tf = ta.ema(close, trendLen)
+a  = ta.atr(atrLen)
+
+upOk = hist > 0 and ml > sl and close > tf
+dnOk = hist < 0 and ml < sl and close < tf
+longSig  = barstate.isconfirmed and upOk and not upOk[1]
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and dnOk and not dnOk[1]' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-exit", from_entry="L", stop=strategy.position_avg_price - a * stopMult, limit=strategy.position_avg_price + a * stopMult * tpMult)
+if strategy.position_size < 0
+    strategy.exit("S-exit", from_entry="S", stop=strategy.position_avg_price + a * stopMult, limit=strategy.position_avg_price - a * stopMult * tpMult)
+`,
+    adx_di_trend: () => `
+adxLen  = input.int(${params.period ?? 14}, "ADX/DMI Length")
+adxMin  = input.float(${params.threshold ?? 20}, "ADX minimum (trend required)")
+atrLen  = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 3.0}, "ATR Stop x")
+tpMult   = input.float(${params.atrTargetMult ?? 4.0}, "ATR Target x")
+
+[dip, dim, adxVal] = ta.dmi(adxLen, adxLen)
+a = ta.atr(atrLen)
+
+longOk  = dip > dim and adxVal > adxMin
+shortOk = dim > dip and adxVal > adxMin
+longSig  = barstate.isconfirmed and longOk and not longOk[1]
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and shortOk and not shortOk[1]' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-exit", from_entry="L", stop=strategy.position_avg_price - a * stopMult, limit=strategy.position_avg_price + a * stopMult * tpMult)
+if strategy.position_size < 0
+    strategy.exit("S-exit", from_entry="S", stop=strategy.position_avg_price + a * stopMult, limit=strategy.position_avg_price - a * stopMult * tpMult)
+`,
+    stoch_reversal: () => `
+kLen     = input.int(${params.period ?? 14}, "Stoch Length")
+kSmooth  = input.int(${params.smoothK ?? 3}, "K smoothing")
+dSmooth  = input.int(${params.smoothD ?? 3}, "D smoothing")
+osLevel  = input.float(${params.oversold ?? 20}, "Oversold")
+obLevel  = input.float(${params.overbought ?? 80}, "Overbought")
+atrLen   = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 2.5}, "ATR Stop x")
+
+rawK = ta.stoch(close, high, low, kLen)
+k = ta.sma(rawK, kSmooth)
+d = ta.sma(k, dSmooth)
+a = ta.atr(atrLen)
+
+longUp  = k[1] <= osLevel and k > osLevel
+shortDn = k[1] >= obLevel and k < obLevel
+longSig  = barstate.isconfirmed and longUp
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and shortDn' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-stop", from_entry="L", stop=strategy.position_avg_price - a * stopMult)
+if strategy.position_size < 0
+    strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
+`,
+    cci_reversal: () => `
+cciLen   = input.int(${params.period ?? 20}, "CCI Length")
+cciThr   = input.float(${params.threshold ?? 100}, "CCI threshold")
+atrLen   = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 2.5}, "ATR Stop x")
+
+c = ta.cci(close, cciLen)
+a = ta.atr(atrLen)
+
+longSig  = barstate.isconfirmed and c < -cciThr
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and c > cciThr' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-stop", from_entry="L", stop=strategy.position_avg_price - a * stopMult)
+if strategy.position_size < 0
+    strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
+`,
+    keltner_breakout: () => `
+kcLen    = input.int(${params.period ?? 20}, "KC Length (EMA)")
+kcMult   = input.float(${params.mult ?? 2.0}, "KC ATR mult")
+atrLen   = input.int(${params.atrPeriod ?? 14}, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 2.0}, "ATR Stop x")
+tpMult   = input.float(${params.atrTargetMult ?? 3.0}, "ATR Target x")
+
+basis = ta.ema(close, kcLen)
+a = ta.atr(atrLen)
+upper = basis + kcMult * a
+lower = basis - kcMult * a
+
+longSig  = barstate.isconfirmed and close > upper
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and close < lower' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-exit", from_entry="L", stop=strategy.position_avg_price - a * stopMult, limit=strategy.position_avg_price + a * stopMult * tpMult)
+if strategy.position_size < 0
+    strategy.exit("S-exit", from_entry="S", stop=strategy.position_avg_price + a * stopMult, limit=strategy.position_avg_price - a * stopMult * tpMult)
+`,
+    squeeze_breakout: () => `
+bbLen    = input.int(${params.period ?? 20}, "BB Length")
+bbMult   = input.float(${params.mult ?? 2.0}, "BB Mult")
+sqLook   = input.int(${params.squeezeLookback ?? 120}, "Squeeze lookback")
+sqPct    = input.float(${params.squeezePct ?? 0.35}, "Squeeze threshold")
+brkLen   = input.int(${params.breakoutBars ?? 20}, "Breakout lookback")
+stopMult = input.float(${params.atrStopMult ?? 2.5}, "ATR Stop x")
+
+basis = ta.sma(close, bbLen)
+dev   = ta.stdev(close, bbLen)
+bw    = (2 * bbMult * dev) / basis
+bwAvg = ta.sma(bw, sqLook)
+squeezed = bw <= bwAvg * sqPct
+a = ta.atr(14)
+
+hi = ta.highest(close, brkLen)[1]
+lo = ta.lowest(close, brkLen)[1]
+wasSqueezed = squeezed[1] or squeezed[2] or squeezed[3]
+
+longSig  = barstate.isconfirmed and wasSqueezed and close > hi
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and wasSqueezed and close < lo' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-stop", from_entry="L", stop=strategy.position_avg_price - a * stopMult)
+if strategy.position_size < 0
+    strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
+`,
+    supertrend_atr: () => `
+stPeriod = input.int(${params.period ?? 10}, "ATR Period")
+stMult   = input.float(${params.mult ?? 3.0}, "ATR mult")
+
+// ta.supertrend の direction は -1 が上昇、1 が下降
+[stLine, stDir] = ta.supertrend(stMult, stPeriod)
+upTrend = stDir == -1
+
+longSig  = barstate.isconfirmed and upTrend and not upTrend[1]
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and not upTrend and upTrend[1]' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0 and not upTrend
+    strategy.close("L")
+if strategy.position_size < 0 and upTrend
+    strategy.close("S")
+`,
+    roc_momentum: () => `
+rocLen   = input.int(${params.period ?? 20}, "ROC Length")
+rocThr   = input.float(${params.threshold ?? 1.5}, "ROC threshold %")
+maLen    = input.int(${params.maFilter ?? 100}, "MA filter")
+atrLen   = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 2.5}, "ATR Stop x")
+tpMult   = input.float(${params.atrTargetMult ?? 3.0}, "ATR Target x")
+
+r = ta.roc(close, rocLen)
+maF = ta.sma(close, maLen)
+a = ta.atr(atrLen)
+
+upOk = r > rocThr and close > maF
+dnOk = r < -rocThr and close < maF
+longSig  = barstate.isconfirmed and upOk and not upOk[1]
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and dnOk and not dnOk[1]' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-exit", from_entry="L", stop=strategy.position_avg_price - a * stopMult, limit=strategy.position_avg_price + a * stopMult * tpMult)
+if strategy.position_size < 0
+    strategy.exit("S-exit", from_entry="S", stop=strategy.position_avg_price + a * stopMult, limit=strategy.position_avg_price - a * stopMult * tpMult)
+`,
+    zscore_meanrev: () => `
+zLen     = input.int(${params.period ?? 20}, "z-score Length")
+zEntry   = input.float(${params.entryZ ?? 2.0}, "Entry |z|")
+atrLen   = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 2.5}, "ATR Stop x")
+
+basis = ta.sma(close, zLen)
+sd    = ta.stdev(close, zLen)
+z     = sd > 0 ? (close - basis) / sd : 0
+a     = ta.atr(atrLen)
+
+longSig  = barstate.isconfirmed and z < -zEntry
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and z > zEntry' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0 and z >= 0
+    strategy.close("L")
+if strategy.position_size < 0 and z <= 0
+    strategy.close("S")
+if strategy.position_size > 0
+    strategy.exit("L-stop", from_entry="L", stop=strategy.position_avg_price - a * stopMult)
+if strategy.position_size < 0
+    strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
+`,
+    ichimoku_trend: () => `
+tenkanLen = input.int(${params.tenkan ?? 9}, "転換線")
+kijunLen  = input.int(${params.kijun ?? 26}, "基準線")
+atrLen    = input.int(14, "ATR Length")
+stopMult  = input.float(${params.atrStopMult ?? 2.5}, "ATR Stop x")
+tpMult    = input.float(${params.atrTargetMult ?? 3.0}, "ATR Target x")
+
+tenkan = (ta.highest(high, tenkanLen) + ta.lowest(low, tenkanLen)) / 2
+kijun  = (ta.highest(high, kijunLen) + ta.lowest(low, kijunLen)) / 2
+a = ta.atr(atrLen)
+
+upOk = close > kijun and tenkan > kijun
+dnOk = close < kijun and tenkan < kijun
+longSig  = barstate.isconfirmed and upOk and not upOk[1]
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and dnOk and not dnOk[1]' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-exit", from_entry="L", stop=strategy.position_avg_price - a * stopMult, limit=strategy.position_avg_price + a * stopMult * tpMult)
+if strategy.position_size < 0
+    strategy.exit("S-exit", from_entry="S", stop=strategy.position_avg_price + a * stopMult, limit=strategy.position_avg_price - a * stopMult * tpMult)
+`,
+    dual_thrust: () => `
+lbLen    = input.int(${params.lookback ?? 5}, "Lookback")
+k1       = input.float(${params.k1 ?? 0.5}, "k1 (upper)")
+k2       = input.float(${params.k2 ?? 0.5}, "k2 (lower)")
+atrLen   = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 2.0}, "ATR Stop x")
+
+// 前バーまでのレンジ（未来参照なし）
+hh = ta.highest(high, lbLen)[1]
+ll = ta.lowest(low, lbLen)[1]
+hc = ta.highest(close, lbLen)[1]
+lc = ta.lowest(close, lbLen)[1]
+range = math.max(hh - lc, hc - ll)
+
+upper = open + k1 * range
+lower = open - k2 * range
+a = ta.atr(atrLen)
+
+longSig  = barstate.isconfirmed and close > upper
+shortSig = ${params.allowShort ? 'barstate.isconfirmed and close < lower' : 'false'}
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size > 0
+    strategy.exit("L-stop", from_entry="L", stop=strategy.position_avg_price - a * stopMult)
+if strategy.position_size < 0
+    strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
+`,
+    weekday_seasonality: () => `
+// Pine の dayofweek は 1=日曜 ... 7=土曜（JS側の 0=日曜 に +1 して合わせる）
+targetDow = input.int(${Number(params.weekday ?? 1) + 1}, "曜日 (1=日, 2=月, 3=火, 4=水, 5=木, 6=金, 7=土)")
+sideInput = input.int(${params.side ?? 1}, "方向 (1=買い, -1=売り)", options=[1, -1])
+holdBars  = input.int(${params.hold ?? 2}, "保有バー数")
+atrLen    = input.int(14, "ATR Length")
+stopMult  = input.float(${params.atrStopMult ?? 3.0}, "ATR Stop x")
+
+inDay = dayofweek == targetDow
+a = ta.atr(atrLen)
+
+longSig  = barstate.isconfirmed and inDay and sideInput == 1 and not inDay[1]
+shortSig = barstate.isconfirmed and inDay and sideInput == -1 and not inDay[1]
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size != 0 and strategy.opentrades > 0 and bar_index - strategy.opentrades.entry_bar_index(0) >= holdBars
+    strategy.close_all()
+if strategy.position_size > 0
+    strategy.exit("L-stop", from_entry="L", stop=strategy.position_avg_price - a * stopMult)
+if strategy.position_size < 0
+    strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
+`,
+    turn_of_month: () => `
+beforeN  = input.int(${params.before ?? 2}, "月末の何日前から")
+afterN   = input.int(${params.after ?? 3}, "月初の何日まで")
+sideInput = input.int(${params.side ?? 1}, "方向 (1=買い, -1=売り)", options=[1, -1])
+atrLen   = input.int(14, "ATR Length")
+stopMult = input.float(${params.atrStopMult ?? 3.0}, "ATR Stop x")
+
+// その月の最終日を、翌月1日の前日から求める（未来の価格は使わない）
+nextM   = month == 12 ? 1 : month + 1
+nextY   = month == 12 ? year + 1 : year
+lastDom = dayofmonth(timestamp(nextY, nextM, 1) - 86400000)
+inWindow = dayofmonth >= lastDom - beforeN or dayofmonth <= afterN
+a = ta.atr(atrLen)
+
+longSig  = barstate.isconfirmed and inWindow and sideInput == 1 and not inWindow[1]
+shortSig = barstate.isconfirmed and inWindow and sideInput == -1 and not inWindow[1]
+
+if longSig
+    strategy.entry("L", strategy.long)
+if shortSig
+    strategy.entry("S", strategy.short)
+if strategy.position_size != 0 and not inWindow
+    strategy.close_all()
+if strategy.position_size > 0
+    strategy.exit("L-stop", from_entry="L", stop=strategy.position_avg_price - a * stopMult)
+if strategy.position_size < 0
+    strategy.exit("S-stop", from_entry="S", stop=strategy.position_avg_price + a * stopMult)
+`,
   }[strategyKey];
 
   if (!body) throw new Error(`no pine template for ${strategyKey}`);

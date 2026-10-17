@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="color-scheme" content="dark" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>動画スタジオ — Wealth Agent</title>
+<meta name="robots" content="noindex" />
+<style>
+  :root{
+    --ink:#0b0b0d; --panel:#141417; --panel2:#1b1b1f; --line:#2a2a30;
+    --fg:#f3f0e9; --fg2:#a5a19a; --amber:#e8a33d; --rec:#d9483b; --ok:#5fbf7f;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--ink);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:var(--amber)}
+  .wrap{max-width:1120px;margin:0 auto;padding:22px 18px 64px}
+  header{display:flex;flex-wrap:wrap;gap:14px;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:14px}
+  .brand{display:flex;align-items:center;gap:10px}
+  .brand i{width:9px;height:9px;background:var(--amber);border-radius:50%;box-shadow:0 0 0 4px rgba(232,163,61,.14)}
+  h1{font-size:19px;margin:0;letter-spacing:.02em}
+  .sub{color:var(--fg2);font-size:12.5px;margin:0}
+  .tc{font-family:var(--mono);font-size:12px;color:var(--fg2);letter-spacing:.06em}
+  /* フィルムストリップ: この画面の署名。場面＝コマとして並べる */
+  .strip{position:relative;margin:18px 0 6px;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow-x:auto;white-space:nowrap}
+  .strip::before,.strip::after{content:"";position:absolute;left:0;right:0;height:7px;background-image:radial-gradient(circle,var(--ink) 2.5px,transparent 2.6px);background-size:14px 7px;background-repeat:repeat-x}
+  .strip::before{top:2px}.strip::after{bottom:2px}
+  .frame{display:inline-block;vertical-align:top;width:150px;margin:10px 8px 0;cursor:pointer;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel2);position:relative}
+  .frame.on{border-color:var(--amber);box-shadow:0 0 0 2px rgba(232,163,61,.2)}
+  .frame canvas{display:block;width:150px;height:84px;background:#0e0e11}
+  .frame .f-t{font-family:var(--mono);font-size:10.5px;color:var(--fg2);padding:4px 6px;display:flex;justify-content:space-between}
+  .frame.on .f-t{color:var(--amber)}
+  .frame .dot{position:absolute;top:6px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--rec);opacity:0}
+  .frame.on .dot{opacity:1;animation:blink 1s steps(2,end) infinite}
+  @keyframes blink{50%{opacity:.15}}
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;margin-top:18px}
+  @media (max-width:860px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .sec-t{font-size:11.5px;letter-spacing:.12em;color:var(--fg2);text-transform:uppercase;margin:0 0 10px}
+  #stageCv{display:block;width:100%;height:auto;max-height:56vh;background:#0e0e11;border-radius:8px}
+  .ctrl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
+  button,.btn{font-family:var(--sans);font-size:13.5px;padding:9px 14px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--fg);cursor:pointer}
+  button.primary{background:var(--amber);border-color:var(--amber);color:#17130a;font-weight:700}
+  button:disabled{opacity:.45;cursor:default}
+  select,input[type=number]{font-family:var(--sans);font-size:13px;padding:8px 10px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--fg)}
+  .bar{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden;margin-top:12px}
+  .bar i{display:block;height:100%;width:0;background:var(--amber)}
+  .rowm{display:flex;justify-content:space-between;gap:10px;font-family:var(--mono);font-size:12px;color:var(--fg2);margin-top:8px}
+  .meta{margin-top:14px}
+  .meta label{display:block;font-size:11.5px;color:var(--fg2);letter-spacing:.1em;margin:12px 0 6px}
+  .meta .box{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:230px;overflow:auto}
+  .note{font-size:12px;color:var(--fg2);line-height:1.6;margin-top:12px;border-left:2px solid var(--line);padding-left:10px}
+  .live{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;color:var(--fg2)}
+  .live i{width:8px;height:8px;border-radius:50%;background:#3a3a42}
+  .live.on i{background:var(--rec);animation:blink 1s steps(2,end) infinite}
+  textarea{width:100%;min-height:120px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;color:var(--fg);font-family:var(--mono);font-size:12.5px;padding:10px;line-height:1.6}
+  video{width:100%;border-radius:8px;margin-top:12px;background:#000}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <i></i>
+      <div>
+        <h1>動画スタジオ</h1>
+        <p class="sub">台本から、ブラウザの中で動画になります。サーバーも課金も使いません。</p>
+      </div>
+    </div>
+    <div class="live" id="live"><i></i><span id="liveTxt">待機中</span></div>
+  </header>
+
+  <div id="manualWrap" class="card hidden" style="margin-top:18px">
+    <p class="sec-t">台本を貼る</p>
+    <p class="sub" style="margin-bottom:10px">アプリから開くと台本が自動で入ります。直接開いた場合はここに貼ってください。1行1場面（例: <span class="tc">0:20 何が起きたか — 説明…</span>）。</p>
+    <textarea id="manual" placeholder="0:00 導入 — 今日拾った候補を1つ紹介します。&#10;0:20 何が起きたか — …"></textarea>
+    <div class="ctrl"><button class="primary" id="useManual">この台本で作る</button></div>
+  </div>
+
+  <div class="strip" id="strip" aria-label="場面（コマ）"></div>
+
+  <div class="grid">
+    <div class="card">
+      <p class="sec-t">プレビュー</p>
+      <canvas id="stageCv" width="1080" height="1920"></canvas>
+      <div class="bar"><i id="barFill"></i></div>
+      <div class="rowm"><span id="tcNow">0:00 / 0:00</span><span id="sizeNow">—</span></div>
+      <div class="ctrl">
+        <button class="primary" id="rec">録画して作る</button>
+        <button id="stop" disabled>停止</button>
+        <select id="ratio">
+          <option value="shorts">ショート 9:16（1080×1920）</option>
+          <option value="wide">横 16:9（1920×1080）</option>
+        </select>
+        <select id="sec">
+          <option value="4">1場面 4秒</option>
+          <option value="6" selected>1場面 6秒</option>
+          <option value="9">1場面 9秒</option>
+        </select>
+      </div>
+      <div id="out" class="hidden">
+        <video id="preview" controls playsinline></video>
+        <div class="ctrl"><a class="btn" id="dl" download="wealth-agent.webm">動画を保存する（.webm）</a></div>
+      </div>
+      <p class="note" id="status">場面を読み込んでいます…</p>
+    </div>
+
+    <div class="card meta">
+      <p class="sec-t">YouTubeに貼るもの</p>
+      <label>タイトル</label>
+      <div class="box" id="mTitle">—</div>
+      <div class="ctrl"><button id="cpTitle">コピー</button></div>
+      <label>概要欄（AI開示・出典つき）</label>
+      <div class="box" id="mDesc">—</div>
+      <div class="ctrl"><button id="cpDesc">コピー</button></div>
+      <label>アップロード</label>
+      <div class="ctrl">
+        <a class="btn" href="https://studio.youtube.com/channel/UC/videos/upload" target="_blank" rel="noreferrer">YouTubeを開く</a>
+        <a class="btn" href="/" target="_blank" rel="noreferrer">エージェントに戻る</a>
+      </div>
+      <p class="note">
+        動画はこの端末の中で作られます（無料・サーバー負荷なし）。音声は入っていません。声を載せたい場合は、できた動画に後から音声を足すか、撮り直しのときに画面録画を使ってください。YouTubeは <span class="tc">.webm</span> を受け付けます。
+      </p>
+    </div>
+  </div>
+</div>
+<script type="module" src="studio.js"></script>
+</body>
+</html>

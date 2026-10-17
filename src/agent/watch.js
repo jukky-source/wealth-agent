@@ -66,7 +66,7 @@ export function parseWatch(text) {
 /** Read the metric's current value out of the store — never from memory. */
 export async function metricValue(store, metric) {
   if (metric === 'measured_revenue') {
-    const rows = await store.all(`SELECT kind, amount, basis FROM ledger`);
+    const rows = await store.all(`SELECT kind, amount, basis, currency FROM ledger`);
     return summarizeLedger(rows).revenue.measured;
   }
   // 入金済み・純益は receipts（決済通知で確認した分）から数える。自己申告では動かない。

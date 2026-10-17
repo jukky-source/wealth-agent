@@ -270,14 +270,14 @@ async function doAction(spec, btn) {
       state.mode = { ...r.mode, chips: r.chips };
       toast(`「${r.mode.label}」モードに切り替えました`);
       closeSheet();
-      await refresh({ quiet: true });
+      refreshSoon();
       renderThread();
     } else { toast('切り替えられませんでした'); btn.disabled = false; }
     return;
   }
   if (kind === 'watch_hold') {
     const r = await api(`/api/watches/${encodeURIComponent(id)}`, { method: 'POST', body: { action: 'hold' }, quiet: true });
-    if (r && r.ok !== false) { toast('達成するまで続ける完了条件にしました'); closeSheet(); await refresh({ quiet: true }); }
+    if (r && r.ok !== false) { toast('達成するまで続ける完了条件にしました'); closeSheet(); refreshSoon(); }
     else btn.disabled = false;
     return;
   }
@@ -301,7 +301,8 @@ function bindMsg(root) {
   $$('[data-open]', root).forEach((b) => b.addEventListener('click', () => openSheet(b.dataset.open)));
   $$('[data-copy]', root).forEach((b) => b.addEventListener('click', async () => {
     const m = state.messages[Number(b.dataset.copy)];
-    try { await navigator.clipboard.writeText(m?.text || ''); toast('コピーしました'); } catch { toast('コピーできませんでした'); }
+    const ok = await copySmart(m?.text || '');
+    toast(ok ? 'コピーしました' : 'この端末ではコピーが通りません（本文を長押しで選択してください）', ok ? 1600 : 4600);
   }));
   $$('[data-remember]', root).forEach((b) => b.addEventListener('click', () => send('この手順を覚えて')));
   $$('[data-do]', root).forEach((b) => b.addEventListener('click', () => doAction(b.dataset.do, b)));
@@ -316,7 +317,7 @@ function renderThread() {
     const name = state.dash?.character?.name || 'Wealth Agent';
     const m = state.mode;
     el.innerHTML = `
-      <div class="m agent"><div class="bub">${esc(`はじめまして、${name} です。\n\n目標を教えてもらえれば、計画を立てて調査・実行・検証まで自分で進めます。むずかしい設定は要りません — 話しかけるだけで動きます。${m ? `\n\nいまは「${m.label}」モードです（${m.blurb || ''}）。用途は「調べるモードにして」のように言えば切り替わります。` : ''}`)}</div>
+      <div class="m agent"><div class="bub">${esc(`はじめまして、${name} です。\n\n目標を教えてもらえれば、計画を立てて調査・実行・検証まで自分で進めます。むずかしい設定は要りません — 話しかけるだけで動きます。${m ? `\n\n「x402 直販API」「API・自動化ツール出品」「AI代行サービス」の3つの稼ぎ方を同時に進めています（画面の「稼ぎ方」で進行が見えます）。` : ''}`)}</div>
       <span class="t">エージェント</span></div>`;
     return;
   }
@@ -423,7 +424,7 @@ async function renderFoot() {
   $('#railFoot').innerHTML = `
     ${teammates}
     <div class="rail-sec">エージェント</div>
-    <button class="rail-item" data-open="mode">${icon('gear', 'i sm')}モード <span class="mut-strong">${esc(d.mode?.label || '稼ぐ')}</span></button>
+    <button class="rail-item" data-open="streams">${icon('gear', 'i sm')}稼ぎ方 <span class="mut-strong">${(d.streams || []).length}件 同時進行</span></button>
     <button class="rail-item" data-open="work">${icon('eye', 'i sm')}作業をのぞく</button>
     <button class="rail-item" data-open="approvals">${icon('shield', 'i sm')}承認${waiting ? `<span class="badge warn">${waiting}</span>` : ''}</button>
     <button class="rail-item" data-open="watch">${icon('eye', 'i sm')}見張り${watchCount ? `<span class="badge accent">${watchCount}</span>` : ''}</button>
@@ -518,11 +519,91 @@ function renderHeader() {
     d?.engine?.total_steps != null ? `通算 ${d.engine.total_steps} ステップ` : null,
     waiting ? `承認待ち ${waiting} 件` : null,
   ].filter(Boolean).join(' · ');
+  renderStreams(d);
   const ava = ch?.avatar_url;
-  $('#avaBtn').innerHTML = /^data:image\//i.test(String(ava || ''))
-    ? `<img src="${esc(ava)}" alt="">`
+  const avaIsImg1 = /^data:image\//i.test(String(ava || '')) || /^\/api\//.test(String(ava || ''));
+  $('#avaBtn').innerHTML = avaIsImg1
+    ? `<img src="${esc(avaSrc(ava))}" alt="">`
     : esc(String(ch?.avatar || ch?.name || 'WA').replace(/\p{Extended_Pictographic}+/gu, '').slice(0, 2) || 'WA');
 }
+
+/** 稼ぎ方（同時進行）の進行ボード。目標入力は不要 — 見るだけ。 */
+function streamRowsHTML(list) {
+  return (list || []).map((s) => {
+    const st = s.status === 'active' ? '<span class="badge accent">進行中</span>' : `<span class="badge">${esc(s.status)}</span>`;
+    const nums = s.total ? `${s.completed}/${s.total} 完了` : '着手前';
+    const extra = [s.running ? `実行中 ${s.running}` : null, s.queued ? `待機 ${s.queued}` : null,
+      s.failed ? `失敗 ${s.failed}` : null, s.waiting ? `承認待ち ${s.waiting}` : null].filter(Boolean).join(' ・ ');
+    const next = (s.next_task && s.next_task.title) || (s.status === 'active' ? '次のタスクを準備中' : '—');
+    return `<div class="row"><div class="row-main">
+      <div class="row-t">${esc(s.label)} ${st}</div>
+      <div class="row-s">${esc(nums)} ・ 進行 ${Number(s.progress) || 0}%${extra ? ' ・ ' + esc(extra) : ''}</div>
+      <div class="row-s">次: ${esc(next)}</div>
+      ${s.last_done ? `<div class="row-s">直近の完了: ${esc(s.last_done.title)}</div>` : ''}
+    </div></div>`;
+  }).join('');
+}
+function renderStreams(d) {
+  const list = (d && d.streams) || [];
+  if (!list.length) return;
+  let host = document.getElementById('streamBoard');
+  if (!host) {
+    host = document.createElement('section');
+    host.id = 'streamBoard';
+    host.style.cssText = 'margin:12px 10px 4px;';
+    const main = document.querySelector('main') || document.querySelector('#app, .app, .wrap') || document.body;
+    main.insertBefore(host, main.firstChild);
+  }
+  const done = list.reduce((a, s) => a + (Number(s.completed) || 0), 0);
+  host.innerHTML = `<div class="sec-t">稼ぎ方（同時進行）</div>
+    <div class="row-s" style="margin:-2px 0 8px">目標の入力は要りません。自動で計画し、並行して進めます（完了 通算 ${done} 件）。</div>
+    <div class="rows">${streamRowsHTML(list)}</div>`;
+}
+let _notifCount = 0;
+/** 承認が必要になったら知らせる（タイトル + 端末の通知）。 */
+async function checkNotifications() {
+  try {
+    const n = await api('/api/notifications', { quiet: true });
+    if (!n || n.ok === false) return;
+    const u = Number(n.unread || 0);
+    document.title = u > 0 ? `(${u}) Wealth Agent` : 'Wealth Agent';
+    if (u > 0 && u !== _notifCount) {
+      _notifCount = u;
+      const top = (n.items && n.items[0]) || {};
+      const body = `${top.title || '承認待ちがあります'}${u > 1 ? `\n他 ${u - 1} 件` : ''}`;
+      let shown = false;
+      try {
+        if ('Notification' in window && Notification.permission === 'granted') { new Notification('承認が必要です', { body, icon: './icons/icon-192.png' }); shown = true; }
+      } catch { shown = false; }
+      if (!shown) toast('承認待ちが ' + u + ' 件あります');
+    } else if (u === 0) { _notifCount = 0; }
+  } catch { /* 通知の失敗で本筋は止めない */ }
+}
+/** 稼ぎ方シート（進行の詳細 + 承認通知のオン） */
+async function openStreams() {
+  const r = await api('/api/streams', { quiet: true }).catch(() => null);
+  const list = (r && r.streams) || (state.dash && state.dash.streams) || [];
+  const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+  openSheetRaw('稼ぎ方（同時進行）', `
+    <div class="muted" style="font-size:12.5px">目標の入力は不要です。稼ぎ方ごとに自動で計画し、同時に進めます。承認が必要なときだけ通知します。</div>
+    <div class="rows" style="margin-top:10px">${streamRowsHTML(list)}</div>
+    ${perm !== 'granted' ? '<div class="btn-row" style="margin-top:12px"><button class="btn primary" id="notifyOn">承認通知をオンにする</button></div><div class="muted" style="font-size:11.5px;margin-top:6px">端末の通知を許可すると、承認待ちが出たときに知らせます。</div>' : '<div class="muted" style="font-size:12px;margin-top:10px">承認通知はオンです。</div>'}
+  `);
+  $('#notifyOn')?.addEventListener('click', async () => {
+    try {
+      const p = await Notification.requestPermission();
+      if (p === 'granted') { await checkNotifications(); toast('承認通知をオンにしました'); closeSheet(); } else toast('通知は許可されませんでした');
+    } catch { toast('この端末では通知を使えません'); }
+  });
+}
+
+function avaSrc(u) {
+  const s = String(u || '');
+  if (/^\/api\//.test(s)) return s + (s.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(state.token || '');
+  return s;
+}
+
+function refreshSoon() { refresh({ quiet: true }).catch(() => {}); }
 
 async function refresh({ quiet = true } = {}) {
   const d = await api('/api/dashboard', { quiet });
@@ -615,7 +696,10 @@ async function openSheet(which = 'info') {
   if (which === 'work') return openWork();
   if (which === 'approvals') return openApprovals();
   if (which === 'watch') return openWatch();
-  if (which === 'mode') return openMode();
+  if (which === 'mode' || which === 'streams') return openStreams();
+  if (which === 'sns') return openSns();
+  if (which === 'fx') return openFx();
+  if (which === 'scout') return openScout();
   if (which === 'agent') return openAgent();
 
   const d = state.dash || (await refresh({ quiet: false })) || {};
@@ -626,7 +710,9 @@ async function openSheet(which = 'info') {
   const paired = Array.isArray(runner?.runners) ? runner.runners.length > 0 : !!runner?.runner;
 
   openSheetRaw(which === 'settings' ? '設定' : 'エージェント', `
-    <button class="btn primary wide" id="goAgent" type="button">${icon('mask', 'i sm')}エージェント設定を開く（性格・お金の範囲・アイコン）</button>
+    <button class="btn primary wide" id="snsBtn" type="button">${icon('file', 'i sm')}SNS投稿（開いて押すだけ）</button>
+    <button class="btn wide" id="fxBtn" type="button">${icon('pulse', 'i sm')}FXの成績と論理を見る</button>
+    <button class="btn wide" id="goAgent" type="button">${icon('mask', 'i sm')}エージェント設定を開く（性格・お金の範囲・アイコン）</button>
     <div>
       <div class="sec-t">いまの目標</div>
       ${d.current_mission
@@ -637,6 +723,9 @@ async function openSheet(which = 'info') {
     <div>
       <div class="sec-t">数字</div>
       ${kv('実測収益', `${fmt(led.measured)} 円`)}
+      ${Object.keys(led.measured_by_currency || {}).length
+        ? kv('実測収益（円以外）', Object.entries(led.measured_by_currency).map(([c, v]) => `${c} ${fmt(v)}`).join(' / '))
+        : ''}
       ${kv('推定収益（実績に数えない）', `${fmt(led.total_estimated)} 円`)}
       ${kv('完了した作業', `${fmt((d.completed_tasks || []).length)} 件`)}
     </div>
@@ -666,6 +755,12 @@ async function openSheet(which = 'info') {
       <div class="sec-t">この端末</div>
       <div class="field"><span>アクセストークン</span>
         <input id="sToken" type="password" placeholder="サーバーで設定したトークン" value="${esc(state.token)}"></div>
+      <div class="muted" style="font-size:12.5px;margin-top:10px">つながらなくなったときは、サーバー側で発行した<strong>ペアリングコード</strong>をここに入れてください。1回だけ有効で、期限があります。</div>
+      <div class="field" style="margin-top:8px"><span>ペアリングコード</span>
+        <input id="pairCode" placeholder="例: ABCD-2345" autocapitalize="characters" autocomplete="off" spellcheck="false"></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn primary" id="pairGo">この端末をつなぐ</button>
+      </div>
       <div class="btn-row" style="margin-top:10px">
         <button class="btn primary" id="saveTok">保存</button>
         <button class="btn danger" id="wipe">この端末の情報を消す</button>
@@ -674,6 +769,36 @@ async function openSheet(which = 'info') {
   `);
 
   $('#goAgent').addEventListener('click', () => openAgent());
+  $('#snsBtn').addEventListener('click', () => openSns());
+  $('#fxBtn').addEventListener('click', () => openFx());
+  // ペアリング: コードを持っている端末だけがトークンを受け取る（1回だけ有効）。
+  $('#pairGo').addEventListener('click', async () => {
+    const code = $('#pairCode').value.trim();
+    if (!code) { toast('コードを入れてください'); return; }
+    $('#pairGo').disabled = true;
+    let r = null;
+    try {
+      const res = await fetch('/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code }) });
+      r = await res.json();
+    } catch { r = null; }
+    $('#pairGo').disabled = false;
+    if (r && r.ok && r.token) {
+      state.token = r.token;
+      localStorage.setItem(LS_TOKEN, r.token);
+      closeSheet();
+      toast('つながりました');
+      await refresh({ quiet: true });
+      await loadThreads();
+      push({ role: 'agent', text: 'つながりました。これで指示できます。' });
+      return;
+    }
+    const why = r?.error === 'expired' ? 'コードの期限が切れています。新しく発行してください。'
+      : r?.error === 'too_many_tries' ? '何度も間違えたためコードを無効にしました。新しく発行してください。'
+      : r?.error === 'bad_code' ? `コードが違います（残り ${r.tries_left ?? 0} 回）`
+      : r?.error === 'no_pairing_open' ? 'サーバー側でコードが発行されていません'
+      : 'つながりませんでした';
+    toast(why, 4200);
+  });
   $('#saveTok').addEventListener('click', async () => {
     state.token = $('#sToken').value.trim();
     localStorage.setItem(LS_TOKEN, state.token);
@@ -690,8 +815,8 @@ async function openSheet(which = 'info') {
     toast('この端末の情報を消しました');
   });
   $('#copyCmd')?.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText($('#runnerCmd').textContent); toast('コピーしました'); }
-    catch { toast('コピーできませんでした'); }
+    const ok = await copySmart($('#runnerCmd').textContent);
+    toast(ok ? 'コピーしました' : 'この端末ではコピーが通りません（コマンドを長押しで選択してください）', ok ? 1600 : 4600);
   });
 }
 
@@ -714,7 +839,7 @@ async function openAgent() {
       <small>${esc(hint)}</small></label>`;
   openSheetRaw('エージェント設定', `
     <div class="ag-head">
-      <button class="ag-ava" id="agAva" type="button" aria-label="アイコンを変える">${/^data:image\//i.test(String(ava || '')) ? `<img src="${esc(ava)}" alt="">` : esc(String(ch.avatar || ch.name || 'WA').slice(0, 2))}<i>${icon('image', 'i sm')}</i></button>
+      <button class="ag-ava" id="agAva" type="button" aria-label="アイコンを変える">${(/^data:image\//i.test(String(ava || '')) || /^\/api\//.test(String(ava || ''))) ? `<img src="${esc(avaSrc(ava))}" alt="">` : esc(String(ch.avatar || ch.name || 'WA').slice(0, 2))}<i>${icon('image', 'i sm')}</i></button>
       <div class="ag-id">
         <div class="field"><span>名前</span><input id="agName" maxlength="40" value="${esc(ch.name || 'Wealth Agent')}"></div>
         <div class="btn-row" style="margin-top:8px">
@@ -826,11 +951,11 @@ async function openAgent() {
   $('#agRun')?.addEventListener('click', async () => {
     const r = await api(`/api/engine/${eng.status === 'paused' ? 'resume' : 'start'}`, { method: 'POST', quiet: true });
     toast(r && r.ok !== false ? '動かしました。5分ごとに自分で1手ずつ進めます' : '動かせませんでした');
-    await refresh({ quiet: true }); openAgent();
+    refreshSoon(); openAgent();
   });
   $('#agPause')?.addEventListener('click', async () => {
     await api('/api/engine/pause', { method: 'POST', body: { reason: 'オーナーが設定画面から停止' }, quiet: true });
-    toast('止めました'); await refresh({ quiet: true }); openAgent();
+    toast('止めました'); refreshSoon(); openAgent();
   });
 
   $('#agSave').addEventListener('click', async (e) => {
@@ -857,7 +982,7 @@ async function openAgent() {
     e.target.disabled = false;
     if (c?.ok !== false && v?.ok !== false) {
       const b = e.target; b.classList.add('done'); b.textContent = '保存しました';
-      await refresh({ quiet: true });
+      refreshSoon();
       setTimeout(closeSheet, 650);
     } else toast('保存できませんでした');
   });
@@ -956,19 +1081,41 @@ async function openMode() {
       state.mode = { ...res.mode, chips: res.chips };
       toast(`「${res.mode.label}」モードを追加しました`);
       closeSheet();
-      await refresh({ quiet: true });
+      refreshSoon();
       send('このモードで次にやることを1つ進めて');
     } else { toast('追加できませんでした'); e.target.disabled = false; }
   });
 }
 
+/** 承認1件を1行の日本語にする（生の action 名をそのまま人に見せない）。 */
+function approvalLabel(x) {
+  const p = x.payload || {};
+  if (x.action === 'x402_refund_or_redeliver') return '入金済みだが納品できなかった1件（返金または再納品）';
+  if (x.action === 'live_order') return '実口座の発注';
+  if (x.action === 'fund_transfer') return '換金・資金移動';
+  if (x.action === 'external_publish') return '外部への投稿・公開';
+  if (x.action === 'account_signup') return 'アカウント登録';
+  return x.summary || x.action || '承認要求';
+}
+function approvalDetail(x) {
+  const p = x.payload || {};
+  const bits = [];
+  if (p.resource) bits.push(`品目 ${p.resource}`);
+  if (p.amount != null) bits.push(`金額 ${(Number(p.amount) / 1e6).toFixed(2)} USDC`);
+  if (p.tx) bits.push(`tx ${String(p.tx).slice(0, 12)}…`);
+  if (p.error || p.detail) bits.push(`理由 ${p.error || p.detail}`);
+  bits.push(`受付 ${esc(x.requested_at || '')}`);
+  if (x.risk_level) bits.push(`リスク ${x.risk_level}`);
+  return bits.join(' ・ ');
+}
+
 async function openApprovals() {
   const a = await api('/api/approvals', { quiet: true });
-  const pending = (a?.approvals || []);
+  const pending = (a?.approvals || []).filter((x) => x.status === 'pending');
   openSheetRaw('承認', `
     <div>
       <div class="sec-t">あなたの判断が必要な操作</div>
-      ${pending.length ? `<div class="rows">${pending.map((x) => `<div class="row"><div class="row-main"><div class="row-t">${esc(x.summary || x.action || x.kind || '承認要求')}</div><div class="row-s">${esc(x.reason || '')}</div></div><span class="badge warn">承認待ち</span></div>`).join('')}</div>`
+      ${pending.length ? `<div class="rows">${pending.map((x) => `<div class="row"><div class="row-main"><div class="row-t">${esc(approvalLabel(x))}</div><div class="row-s">${esc(approvalDetail(x))}</div><div class="btn-row" style="margin-top:8px"><button class="btn primary" data-ap-yes="${esc(x.id)}">承認する</button><button class="btn" data-ap-no="${esc(x.id)}">却下する</button></div></div><span class="badge warn">承認待ち</span></div>`).join('')}</div>`
         : '<div class="muted" style="font-size:13px">いま承認待ちはありません。</div>'}
     </div>
     <div>
@@ -988,6 +1135,396 @@ async function openApprovals() {
       <div class="muted" style="font-size:12.5px">${esc(a?.policy?.keys || 'APIキーはサーバー側にのみ保存し、会話には出しません。')}</div>
     </div>
   `);
+  // 承認・却下はここで1タップ。押した瞬間にサーバーへ記録し、承認済みは次の実行で進める。
+  document.querySelectorAll('[data-ap-yes],[data-ap-no]').forEach((b) => b.addEventListener('click', async () => {
+    const yes = !!b.dataset.apYes;
+    const id = b.dataset.apYes || b.dataset.apNo;
+    const btns = document.querySelectorAll(`[data-ap-yes="${id}"],[data-ap-no="${id}"]`);
+    btns.forEach((x) => { x.disabled = true; });
+    const r = await api(`/api/approvals/${id}/decide`, { method: 'POST', body: { decision: yes ? 'approved' : 'rejected' }, quiet: true });
+    if (r?.ok) {
+      toast(yes ? '承認しました。エージェントが進めます' : '却下しました');
+      await openApprovals();
+      refreshSoon();
+    } else { toast('記録できませんでした'); btns.forEach((x) => { x.disabled = false; }); }
+  }));
+}
+
+// ------------------------------------------------------- コピー（貼り付けまでの一本道）
+// アプリ内ブラウザなどで navigator.clipboard が通らない端末がある。
+// ①タップの権限をそのまま使う同期コピー → ②非同期API → ③別タブで「長押し→全選択→コピー」の順に落とす。
+function execCopy(t) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = String(t);
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0;';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, String(t).length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch { return false; }
+}
+
+/** 本文を控えに置いて、長押しでコピーできる別タブのURLを返す。 */
+function copyHelperLink(text, title, url) {
+  try {
+    localStorage.setItem('wa_copybox', JSON.stringify({ text: String(text || ''), title: String(title || ''), url: String(url || ''), at: Date.now() }));
+  } catch {}
+  return '/copy';
+}
+
+/**
+ * コピーを試す。同期パスが成功したらその場で true（await を挟むと無効になる環境があるため、
+ * 呼び出し側は戻り値の Promise を待たずに window.open してよい）。
+ */
+function copySmart(text, opts = {}) {
+  const t = String(text || '');
+  if (!t) return Promise.resolve(false);
+  if (execCopy(t)) return Promise.resolve(true);
+  return (async () => {
+    try { await navigator.clipboard.writeText(t); return true; } catch {}
+    if (opts.box) { try { opts.box.hidden = false; opts.box.focus(); opts.box.select(); } catch {} }
+    return false;
+  })();
+}
+
+// ------------------------------------------------------- SNS（開いて押すだけ）
+// エージェントは「開くリンク」と「貼る本文」までを用意し、押すのは人。既存の承認制は崩さない。
+function snsItemHTML(it, i) {
+  const url = it.url || '';
+  // 媒体名はサーバーが返す値を使う。ここで決め打ちすると、媒体を足したときに
+  // 別の媒体の名前で表示されてしまう（ココナラがYouTubeと表示されていた不具合）。
+  const FALLBACK_UI = {
+    x: { action: 'Xにポスト', cta: '開いて、ポストする', done: '投稿済みにする' },
+    note: { action: 'noteに公開', cta: '開いて、公開する', done: '公開した' },
+    coconala: { action: 'ココナラに出品', cta: '開いて、出品する', done: '出品した' },
+    youtube: { action: 'YouTubeにアップロード', cta: '開いて、アップロードする', done: 'アップロードした' },
+  };
+  const fall = { action: '投稿する', cta: '開いて、進める', done: '完了にする' };
+  const ui = (it.action ? { action: it.action, cta: it.cta, done: it.done_label } : FALLBACK_UI[it.channel]) || fall;
+  const title = ui.action;
+  const cta = ui.cta || '開く';
+  const doneLabel = ui.done || '完了にする';
+  const copyLabel = it.copy_label || (it.mode === 'paste' ? 'タイトルと本文をコピー' : '本文をコピー');
+  const steps = (it.steps || []).map((s) => `<div class="row-s">${esc(s)}</div>`).join('');
+  const xNote = it.channel === 'x'
+    ? `<div class="row-s">重み付き ${esc(String(it.weighted ?? ''))} / ${esc(String(it.limit ?? 280))} 文字${it.truncated ? '（末尾のURLを残すため本文を短くしました）' : ''}</div>` : '';
+  const studio = it.channel === 'youtube' ? `<button class="btn" type="button" data-studio="${i}">台本から動画を作る（無料）</button>` : '';
+  const body = String(it.copy_text || '');
+  return `<div class="row" style="display:block">
+    <div class="row-t">${esc(title)}${it.channel_label ? ` <span class="badge">${esc(it.channel_label)}</span>` : ''}</div>
+    <button class="btn primary wide" type="button" data-open="${i}" style="margin:8px 0">${esc(cta)}</button>
+    ${steps}${xNote}
+    <textarea class="copybox" data-body="${i}" readonly spellcheck="false" hidden>${esc(body)}</textarea>
+    <div class="btn-row" style="margin-top:8px">
+      <button class="btn" type="button" data-show="${i}">本文を読む</button>
+      <button class="btn" type="button" data-copy="${i}">${esc(copyLabel)}</button>
+      <button class="btn" type="button" data-done="${esc(it.id || '')}">${esc(doneLabel)}</button>
+      ${studio}
+    </div>
+    <div class="row-s" style="margin-top:6px">上のボタンは<b>本文をコピーしてから</b>画面を開きます（貼り付けて押すだけ）。コピーが効かない端末では <a href="#" data-helper="${i}">別のタブで開く</a> → 枠を長押し → 全選択 → コピー。</div>
+    <div class="row-s" style="margin-top:4px"><a href="${esc(url)}" target="_blank" rel="noreferrer">リンクだけ開く</a>${it.fallback_url ? ` ・ <a href="${esc(it.fallback_url)}" target="_blank" rel="noreferrer">代替リンク</a>` : ''}</div>
+  </div>`;
+}
+
+async function openSns() {
+  const s = await api('/api/social', { quiet: true });
+  if (!s || s.ok === false) {
+    openSheetRaw('SNS投稿', '<div class="muted" style="font-size:13px">サーバーにつながりませんでした。「設定」→「この端末をつなぐ」でペアリングしてください。</div>');
+    return;
+  }
+  const ch = s.by_channel || [];
+  openSheetRaw('SNS投稿', `
+    <div>
+      <div class="sec-t">あなたの操作は「開いて押す」だけ</div>
+      <div class="muted" style="font-size:12.5px">下書きと開くリンクはエージェントが用意します。ポストを押すのはあなたです（投稿は承認制のまま）。</div>
+      <div class="btn-row" style="margin-top:10px">
+        <button class="btn" id="snsRefill">下書きをそろえる</button>
+        <button class="btn primary" id="snsApprove">開くリンクを出す</button>
+        <button class="btn ghost" id="snsScout">拾ったネタと試す計画</button>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:8px">${s.outcomes?.recorded ? `記録済みの結果: ${esc(String(s.outcomes.recorded))}件（売れた ${esc(String(s.outcomes.sold || 0))} / 反応あり ${esc(String(s.outcomes.replied || 0))} / 反応なし ${esc(String(s.outcomes.no_reaction || 0))}）— 次の選別に効かせています。` : '投稿したら「開いた／出した／反応あり／売れた／反応なし」を記録してください。次に拾う候補の優先順位が変わります。'}</div>
+    </div>
+    <div>
+      <div class="sec-t">いまの残り枠</div>
+      <div class="rows">${ch.map((c) => `<div class="row"><div class="row-main"><div class="row-t">${esc(c.label)}</div><div class="row-s">${esc(c.human || '')}</div></div><span class="badge ${c.left > 0 ? 'ok' : 'warn'}">残り ${esc(String(c.left))}/${esc(String(c.limit))}</span></div>`).join('')}</div>
+    </div>
+    <div id="snsOut"><div class="muted" style="font-size:13px">「開くリンクを出す」を押すと、待ち行列${esc(String(s.one_tap_total || 0))}件ぶんのリンクが出ます。</div></div>
+  `);
+  state.snsItems = [];
+  const render = (items) => {
+    state.snsItems = items || [];
+    $('#snsOut').innerHTML = state.snsItems.length
+      ? `<div><div class="sec-t">タップで開く（${state.snsItems.length}件）</div><div class="rows">${state.snsItems.map((it, i) => `${snsItemHTML(it)}<div class="btn-row" data-outrow="${i}" style="margin:-2px 0 12px">${OUTCOME_BTNS}</div>`).join('')}</div></div>`
+      : '<div class="muted" style="font-size:13px">出す材料がありません。「下書きをそろえる」を押してください。</div>';
+    const snsRoot = $('#snsOut');
+    const itemAt = (i) => state.snsItems[Number(i)] || {};
+    const boxAt = (i) => snsRoot.querySelector(`[data-body="${Number(i)}"]`);
+    const revealBox = (i) => { const b = boxAt(i); if (b) { b.hidden = false; try { b.focus(); b.select(); b.setSelectionRange(0, b.value.length); } catch {} } return b; };
+    // 1タップで「コピー＋画面を開く」。await を挟むとポップアップが止められる環境があるので同期でコピーしてすぐ開く。
+    $$('[data-open]', snsRoot).forEach((b) => b.addEventListener('click', () => {
+      const i = b.dataset.open;
+      const it = itemAt(i);
+      const p = copySmart(String(it.copy_text || ''), { box: boxAt(i) });
+      try { window.open(String(it.url || ''), '_blank', 'noopener'); } catch {}
+      p.then((ok) => toast(ok
+        ? '本文をコピーしました。開いた画面で貼り付けて押すだけです'
+        : 'コピーできませんでした。「本文を読む」の枠を長押し → 全選択 → コピーしてください', ok ? 3400 : 5600));
+    }));
+    $$('[data-show]', snsRoot).forEach((b) => b.addEventListener('click', () => {
+      const box = boxAt(b.dataset.show);
+      if (!box) return;
+      if (box.hidden) { revealBox(b.dataset.show); b.textContent = '本文を閉じる'; }
+      else { box.hidden = true; b.textContent = '本文を読む'; }
+    }));
+    $$('[data-helper]', snsRoot).forEach((b) => b.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      const it = itemAt(b.dataset.helper);
+      window.open(copyHelperLink(it.copy_text, it.title || it.channel_label, it.url), '_blank', 'noopener');
+    }));
+    $$('[data-copy]', snsRoot).forEach((b) => b.addEventListener('click', async () => {
+      const i = b.dataset.copy;
+      const it = itemAt(i);
+      const ok = await copySmart(String(it.copy_text || ''), { box: boxAt(i) });
+      if (ok) toast('本文をコピーしました');
+      else { revealBox(i); toast('この端末ではコピーが通りません。出ている枠を長押し → 全選択 → コピーしてください', 5600); }
+    }));
+    $$('[data-done]', $('#snsOut')).forEach((b) => b.addEventListener('click', async () => {
+      if (!b.dataset.done) return;
+      const r = await api('/api/publish/posted', { method: 'POST', body: { id: b.dataset.done }, quiet: true });
+      if (r && r.ok !== false) { toast('投稿済みにしました'); b.disabled = true; refreshSoon(); }
+      else toast('記録できませんでした');
+    }));
+    $$('[data-studio]', $('#snsOut')).forEach((b) => b.addEventListener('click', () => {
+      const it = state.snsItems[Number(b.dataset.studio)] || {};
+      openStudio({ title: it.title || '', script: String(it.copy_text || '') });
+    }));
+    // 結果の書き戻し。ここで押した内容が、次に拾う候補の優先順位に効く。
+    $$('[data-out]', $('#snsOut')).forEach((b) => b.addEventListener('click', async () => {
+      const i = Number(b.closest('[data-outrow]')?.dataset.outrow ?? -1);
+      const it = state.snsItems[i] || {};
+      const r = await api('/api/outcome', { method: 'POST', body: { draft_id: it.id, outcome: b.dataset.out }, quiet: true });
+      if (r && r.ok !== false) toast(`${r.summary || '記録しました'}`, 3000);
+      else toast('記録できませんでした', 3000);
+    }));
+  };
+  $('#snsRefill').addEventListener('click', async () => {
+    $('#snsRefill').disabled = true;
+    const r = await api('/api/social/refill', { method: 'POST', body: {}, quiet: true });
+    $('#snsRefill').disabled = false;
+    const rep = r?.report || r || {};
+    const made = (rep.created || []).length;
+    if (!r) toast('そろえられませんでした（通信かサーバー側）', 4000);
+    else if (made) toast(`下書きを${made}件そろえました`);
+    else toast(`新しく作れた下書きは0件です。${rep.reason || ''}`, 4600);
+  });
+  $('#snsApprove').addEventListener('click', async () => {
+    $('#snsApprove').disabled = true;
+    const r = await api('/api/social/approve-all', { method: 'POST', body: {}, quiet: true });
+    $('#snsApprove').disabled = false;
+    if (!r) { toast('出せませんでした'); return; }
+    render(r.approved || []);
+    if (!(r.approved || []).length) toast('材料がありません。先に「下書きをそろえる」を押してください', 3600);
+  });
+  $('#snsScout')?.addEventListener('click', () => openScout());
+}
+
+// ------------------------------------------- 拾ったネタ（自動巡回）と「試す計画」
+const OUTCOME_BTNS = [['opened', '開いた'], ['posted', '出した'], ['replied', '反応あり'], ['sold', '売れた'], ['no_reaction', '反応なし']]
+  .map(([id, label]) => `<button class="btn" data-out="${id}">${label}</button>`).join('');
+
+async function openScout() {
+  const d = await api('/api/scout', { quiet: true });
+  if (!d || d.ok === false) {
+    openSheetRaw('拾ったネタ', '<div class="muted" style="font-size:13px">サーバーにつながりませんでした。設定からペアリングしてください。</div>');
+    return;
+  }
+  const rows = d.findings || [];
+  const bySrc = Object.entries(d.by_source || {}).sort((a, b) => b[1] - a[1]);
+  const measured = d.loop?.measured_outcomes || 0;
+  openSheetRaw('拾ったネタ（自動巡回）', `
+    <div>
+      <div class="sec-t">無料の巡回先から「金を払う人がいそうな話」だけ拾っています</div>
+      <div class="muted" style="font-size:12.5px">鍵が要る所は使いません（原価0）。拾った候補は、既存の能力で「小さく試す計画」に自動で変換されます。</div>
+      <div class="kpis with-head" style="margin-top:10px">
+        <div class="kpi"><div class="kpi-v">${fmt(rows.length)}<small>件</small></div><div class="kpi-l">いまの候補</div></div>
+        <div class="kpi"><div class="kpi-v">${fmt(d.source_count || 0)}<small>箇所</small></div><div class="kpi-l">巡回している先</div></div>
+        <div class="kpi"><div class="kpi-v">${fmt(rows.filter((r) => (r.trial?.steps || []).length).length)}<small>件</small></div><div class="kpi-l">試す計画つき</div></div>
+        <div class="kpi"><div class="kpi-v">0<small>円</small></div><div class="kpi-l">手順にかかる原価</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="sec-t">試す価値のある順</div>
+      ${rows.length ? `<div class="rows">${rows.slice(0, 12).map((r) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(String(r.title || '').slice(0, 90))}</div><div class="row-s">${esc(r.source_label || r.source || '')} ・ 相性 ${esc((r.fits || []).join('/'))}${r.url ? ` ・ <a href="${esc(r.url)}" target="_blank" rel="noopener">開く</a>` : ''}${r.status && r.status !== 'new' ? ` ・ 状態 ${esc(r.status)}` : ''}</div>${(r.trial?.steps || []).length ? `<div class="row-s">試す計画: ${esc((r.trial.steps || []).map((x) => x.action).join(' → '))}</div><div class="row-s">人がやること: ${esc((r.trial.human_taps || []).join(' / ') || 'なし（下書きまで自動）')}</div>` : ''}</div><span class="badge ${r.score >= 50 ? 'ok' : 'ghost'}">${esc(String(r.score))}点</span></div>`).join('')}</div>` : '<div class="muted" style="font-size:13px">まだ候補がありません。巡回は180分おきに自動で回ります。</div>'}
+    </div>
+    <div>
+      <div class="sec-t">巡回先の内訳</div>
+      <div class="muted" style="font-size:12.5px">${bySrc.map(([k, v]) => `${esc(k)}: ${esc(String(v))}件`).join(' / ') || '—'}</div>
+    </div>
+    <div>
+      <div class="sec-t">この輪のどこが自動で、どこが人か（正直に）</div>
+      <div class="rows">
+        <div class="row"><div class="row-main"><div class="row-t">巡回・採点・保存・「試す計画」</div></div><span class="badge ok">全自動</span></div>
+        <div class="row"><div class="row-main"><div class="row-t">実行（投稿・出品・応募）</div><div class="row-s">凍結で入金経路ごと失うため、人の1タップを残しています</div></div><span class="badge warn">人が1タップ</span></div>
+        <div class="row"><div class="row-main"><div class="row-t">結果の書き戻し（反応・成約）</div><div class="row-s">記録した結果が、次に拾う候補の優先順位に効きます（FXは実験ループが自動で閉じています）</div></div><span class="badge ${measured ? 'ok' : 'ghost'}">${measured ? `記録 ${esc(String(measured))}件` : 'まだ記録なし'}</span></div>
+      </div>
+      <div class="btn-row" style="margin-top:10px"><button class="btn" id="scoutRefill">下書きをそろえる</button><button class="btn ghost" id="scoutSns">SNS投稿へ</button></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">巡回先は開発者コミュニティ（Hacker News / GitHub / dev.to / Qiita / Zenn / Product Hunt / Lobsters / Indie Hackers / MCPレジストリ）です。SNSの投稿そのものを巡回しているわけではありません。</div>
+    </div>
+  `);
+  $('#scoutSns')?.addEventListener('click', () => openSns());
+  $('#scoutRefill')?.addEventListener('click', async () => {
+    $('#scoutRefill').disabled = true;
+    const r = await api('/api/social/refill', { method: 'POST', body: {}, quiet: true });
+    $('#scoutRefill').disabled = false;
+    const rep = r?.report || r || {};
+    const made = (rep.created || []).length;
+    toast(made ? `下書きを${made}件そろえました` : `新しく作れた下書きは0件です。${rep.reason || ''}`, made ? 2600 : 4600);
+  });
+}
+
+/** ブラウザ内で動画を作る（原価0）。台本はセッション経由でスタジオへ渡す。 */
+function openStudio(payload) {
+  try { sessionStorage.setItem('wa.studio', JSON.stringify({ token: state.token || '', ...payload })); } catch {}
+  window.open('/studio.html', '_blank', 'noopener');
+}
+
+// ------------------------------------------------------- FX（どんな論理・どんな成績）
+function fxKVs(m = {}) {
+  const LABEL = {
+    netProfitPct: '純益', profitFactor: 'プロフィットファクター', maxDrawdownPct: '最大ドローダウン',
+    trades: '取引回数', winRatePct: '勝率', winRate: '勝率', expectancy: '期待値（1取引あたり）',
+    avgWin: '平均利益', avgLoss: '平均損失', cagrPct: '年率換算', netProfit: '純益（金額）',
+    grossProfit: '総利益', grossLoss: '総損失', bars: '本数',
+  };
+  const out = [];
+  for (const [k, v] of Object.entries(m || {})) {
+    if (typeof v !== 'number' || !isFinite(v)) continue;
+    const pct = /Pct|Rate/.test(k);
+    const val = /Rate/.test(k) && Math.abs(v) <= 1 ? `${Number((v * 100).toFixed(1))}%` : `${Number(v.toFixed(2))}${pct ? '%' : ''}`;
+    out.push(kv(LABEL[k] || k, esc(val)));
+  }
+  return out.length ? out.join('') : '<div class="muted" style="font-size:13px">まだ記録がありません。</div>';
+}
+
+async function openFx() {
+  const d = await api('/api/fx/lab', { quiet: true });
+  if (!d || d.ok === false) {
+    openSheetRaw('FX', '<div class="muted" style="font-size:13px">サーバーにつながりませんでした。設定からペアリングしてください。</div>');
+    return;
+  }
+  const c = d.champion;
+  const strat = d.strategies || [];
+  const labelOf = (k) => (strat.find((s) => s.key === k)?.label || k);
+  const howOf = (k) => (strat.find((s) => s.key === k)?.how || '');
+  const best = d.best || [];
+  const champParams = c ? Object.entries(c.params || {}).map(([k, v]) => kv(k, esc(String(v)))).join('') : '';
+  const champBlock = c ? `
+    <div>
+      <div class="sec-t">いまの王者（自動で更新されます）</div>
+      <div class="rows">
+        <div class="row"><div class="row-main"><div class="row-t">${esc(c.symbol)} / ${esc(labelOf(c.strategy_key))}</div><div class="row-s">${esc(howOf(c.strategy_key))}</div></div><span class="badge ok">評価 ${esc(String(c.fitness ?? '—'))}</span></div>
+      </div>
+      <div style="margin-top:10px">${fxKVs(c.metrics)}</div>
+      ${champParams ? `<div style="margin-top:8px"><div class="sec-t">いまのパラメータ</div>${champParams}</div>` : ''}
+      ${c.walkforward ? `<div class="row-s" style="margin-top:8px">ウォークフォワード: ${esc(String(c.walkforward.netPositiveFolds))}/${esc(String(c.walkforward.totalFolds))} フォルダでプラス${c.walkforward.consistent ? '（一貫）' : '（不安定）'}</div>` : ''}
+      ${c.promoted_to ? `<div class="row-s">昇格済み: fx_strategies に書き出しました（Pine / MQL5 の対象）</div>` : ''}
+      <div class="muted" style="font-size:12px;margin-top:8px">ここから MT5 用の EA（.mq5）と設定ファイル（.set）を書き出せます。検証で終わらせないための出口です。</div>
+      <div class="btn-row" style="margin-top:8px"><button class="btn primary" id="fxEa">EA（MQL5）を書き出す</button></div>
+    </div>` : `<div><div class="sec-t">いまの王者</div><div class="muted" style="font-size:13px">まだ門を通過した候補がありません。「今すぐ試させる」を押すと実験が始まります。</div></div>`;
+
+  openSheetRaw('FX（考え方と成績）', `
+    <div>
+      <div class="sec-t">このエージェントのやり方</div>
+      <div class="muted" style="font-size:12.5px">完成品を置くのではなく、少数の実験を繰り返して強い組み合わせを探し続けます。負けた実験も残し、「次に試さないこと」の判断に使います。使うのは無料の市場データだけで、原価は0円です。</div>
+      <div class="kpis with-head" style="margin-top:10px">
+        <div class="kpi"><div class="kpi-v">${fmt(d.total_experiments || 0)}<small>件</small></div><div class="kpi-l">試した組み合わせ</div></div>
+        <div class="kpi"><div class="kpi-v">${fmt(d.passed || 0)}<small>件</small></div><div class="kpi-l">門を通過${d.pass_rate != null ? `（${esc(String(d.pass_rate))}%）` : ''}</div></div>
+        <div class="kpi"><div class="kpi-v">${fmt(d.stats?.runs || 0)}<small>回</small></div><div class="kpi-l">自動で回った反復</div></div>
+        <div class="kpi"><div class="kpi-v">${fmt(d.stats?.improvements || 0)}<small>回</small></div><div class="kpi-l">王者が更新された回数</div></div>
+      </div>
+    </div>
+    ${champBlock}
+    <div>
+      <div class="sec-t">成績の上位（過去データでの検証）</div>
+      ${best.length ? `<div class="rows">${best.map((b) => `<div class="row"><div class="row-main"><div class="row-t">${esc(b.symbol)} / ${esc(labelOf(b.strategy_key))}</div><div class="row-s">純益 ${esc(String(b.metrics?.netProfitPct ?? '—'))}% ・ PF ${esc(String(b.metrics?.profitFactor ?? '—'))} ・ 最大DD ${esc(String(b.metrics?.maxDrawdownPct ?? '—'))}% ・ ${esc(String(b.metrics?.trades ?? '—'))}取引${b.promoted ? ' ・ 昇格済み' : ''}</div>${b.verdict !== 'pass' && (b.gates || []).length ? `<div class="row-s">見送り理由: ${esc((b.gates || []).join(' / '))}</div>` : ''}</div><span class="badge ${b.verdict === 'pass' ? 'ok' : 'ghost'}">${b.verdict === 'pass' ? '門を通過' : '見送り'}</span></div>`).join('')}</div>`
+        : '<div class="muted" style="font-size:13px">まだ実験の記録がありません。</div>'}
+    </div>
+    <div>
+      <div class="sec-t">何を探しているか（探索範囲）</div>
+      <div class="rows">${strat.map((s) => `<div class="row"><div class="row-main"><div class="row-t">${esc(s.label)}</div><div class="row-s">${esc(s.how)}</div><div class="row-s">入り口 ${esc(s.entry)} ／ 出口 ${esc(s.exit)}</div><div class="row-s">グリッド ${esc(String(s.combo_count))}通り${Object.keys(s.grid || {}).length ? `（${Object.entries(s.grid).map(([k, v]) => `${k}: ${(v || []).join('/')}`).join(' ・ ')}）` : ''}＋ATRストップ・逆張り可否を連続でサンプル</div></div></div>`).join('')}</div>
+      <div class="muted" style="font-size:12.5px;margin-top:8px">銘柄: ${esc((d.symbols || []).map((x) => x.symbol).join(' / '))}${d.cost ? ` ／ 費用: ${esc(d.cost)}` : ''}</div>
+    </div>
+    <div>
+      <div class="sec-t">次に試す予定（自動）</div>
+      <div class="rows">${(d.next || []).map((n) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:13px">${esc(n.what)}</div><div class="row-s">狙い: ${esc(n.expected)}</div></div><span class="badge ghost">${esc(n.tag)}</span></div>`).join('')}</div>
+      <div class="btn-row" style="margin-top:10px"><button class="btn primary" id="fxTick">今すぐ試させる</button></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">過去データの成績は将来の利益を保証しません。実口座の発注はしていません（研究と検証のみ）。</div>
+    </div>
+  `);
+  $('#fxTick')?.addEventListener('click', async () => {
+    $('#fxTick').disabled = true;
+    const r = await api('/api/fx/lab/tick', { method: 'POST', body: { n: 2 }, quiet: true });
+    if (r && r.ok !== false) { toast(`${r.ran || 0}件の実験を回しました${r.improved ? '（王者を更新）' : ''}`); await openFx(); }
+    else { toast('回せませんでした'); $('#fxTick').disabled = false; }
+  });
+  $('#fxEa')?.addEventListener('click', async () => {
+    $('#fxEa').disabled = true;
+    const r = await api('/api/fx/ea', { method: 'POST', body: {}, quiet: true });
+    $('#fxEa').disabled = false;
+    if (r && r.ok !== false) openEa(r);
+    else toast(r?.summary || '書き出せませんでした', 3600);
+  });
+}
+
+// --------------------------------------------------- EA（MQL5）の書き出し画面
+function openEa(d) {
+  const chk = (d.lint?.checks || []).map((c) => `<div class="row"><div class="row-main"><div class="row-t" style="font-size:12.5px">${esc(c.note)}</div></div><span class="badge ${c.ok ? 'ok' : 'warn'}">${c.ok ? 'OK' : '要確認'}</span></div>`).join('');
+  const paramsText = Object.entries(d.params || {}).map(([k, v]) => kv(k, esc(String(v)))).join('');
+  openSheetRaw('EA（MQL5）の書き出し', `
+    <div>
+      <div class="sec-t">${esc(d.filename || 'ea.mq5')}</div>
+      <div class="muted" style="font-size:12.5px">${esc(d.symbol || '')} / ${esc(d.strategy_label || d.strategy_key || '')} / ${esc(d.timeframe || '')}。過去データの検証を通過した王者を、そのままMT5で動く形に落としたものです。</div>
+      ${paramsText ? `<div style="margin-top:8px">${paramsText}</div>` : ''}
+    </div>
+    <div>
+      <div class="sec-t">MT5での手順</div>
+      <div class="rows">
+        <div class="row"><div class="row-main"><div class="row-t">1. コードを保存</div><div class="row-s">「コードをコピー」して、MT5 の ファイル → データフォルダを開く → MQL5\Experts\ に <b>${esc(d.filename || '')}</b> として保存</div></div></div>
+        <div class="row"><div class="row-main"><div class="row-t">2. コンパイル</div><div class="row-s">MetaEditor で開いて F7。警告とエラーを確認します（私の環境にMT5が無いので、コンパイル確認はできていません）</div></div></div>
+        <div class="row"><div class="row-main"><div class="row-t">3. 設定ファイル</div><div class="row-s"><b>${esc(d.set_filename || '')}</b> も保存（EAの「読み込み」で使えます）</div></div></div>
+        <div class="row"><div class="row-main"><div class="row-t">4. まずデモ口座で前向きに検証</div><div class="row-s">日足・スプレッド固定という前提なので、実口座のスワップ・約定差・週末の窓は別物です。いきなり実資金を入れないでください</div></div></div>
+      </div>
+      <div class="btn-row" style="margin-top:10px"><button class="btn primary" id="eaCopy">コードをコピー</button><button class="btn" id="eaCopySet">設定ファイルをコピー</button></div>
+      <div class="muted" style="font-size:12px;margin-top:8px">構造の自己点検: 重大な問題は${d.lint?.ok ? '見つかっていません' : '残っています（要確認）'}。</div>
+    </div>
+    <div>
+      <div class="sec-t">自己点検（構造）</div>
+      <div class="rows">${chk || '<div class="muted" style="font-size:13px">—</div>'}</div>
+    </div>
+    <div>
+      <div class="sec-t">コード（${esc(d.strategy_key || '')}）</div>
+      <pre style="max-height:320px;overflow:auto;font-size:11px;line-height:1.45;background:rgba(127,127,127,.08);padding:10px;border-radius:8px;white-space:pre">${esc(String(d.mq5_code || ''))}</pre>
+    </div>
+    <div class="row-s" style="margin-top:6px">コピーが効かない端末では <a href="#" id="eaHelper">別のタブで開く</a> → 枠を長押し → 全選択 → コピー。</div>
+    <div><div class="muted" style="font-size:12px">過去データの成績は将来の利益を保証しません。このEAは発注を自動化する道具で、勝ちを約束するものではありません。</div></div>
+  `);
+  $('#eaCopy')?.addEventListener('click', async () => {
+    const ok = await copySmart(String(d.mq5_code || ''));
+    toast(ok ? 'EAのコードをコピーしました' : 'この端末ではコピーが通りません。「別のタブで開く」→ 枠を長押し → 全選択 → コピー', ok ? 1800 : 5600);
+  });
+  $('#eaCopySet')?.addEventListener('click', async () => {
+    const ok = await copySmart(String(d.set_code || ''));
+    toast(ok ? '設定ファイルをコピーしました' : 'この端末ではコピーが通りません。「別のタブで開く」→ 枠を長押し → 全選択 → コピー', ok ? 1800 : 5600);
+  });
+  $('#eaHelper')?.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    window.open(copyHelperLink(d.mq5_code, d.filename || 'EA'), '_blank', 'noopener');
+  });
 }
 
 // ------------------------------------------------------------------ composer
@@ -1034,20 +1571,25 @@ async function boot() {
   bind();
   renderChips();
   await Promise.all([refresh({ quiet: true }), loadThreads()]);
+  // トークンが古い（401）ときは、黙って失敗させずに再接続の入口を出す。
+  const who = await api('/api/owner/whoami', { quiet: true }).catch(() => null);
+  if (state.token && who && who.ok === false) {
+    setTimeout(() => push({ role: 'agent', text: 'この端末のトークンが変わっています。「⋯」→「この端末をつなぐ」にペアリングコードを入れると復帰します。', action: 'settings' }), 300);
+  }
   renderThread();
   scrollDown(false);
   document.body.classList.add('ready');
   // 直リンク: #agent でエージェント設定、#settings で端末設定を開く。
   {
     const want = (location.hash || '').slice(1) || new URL(location.href).searchParams.get('open') || '';
-    if (/^(agent|settings|work|mode|watch|approvals)$/.test(want)) openSheet(want);
+    if (/^(agent|settings|work|mode|watch|approvals|sns|fx|scout)$/.test(want)) openSheet(want);
   }
   setTimeout(() => $('#splash')?.remove(), 900);
   if (!state.token) {
     setTimeout(() => push({ role: 'agent', text: 'はじめての端末ですね。「⋯」からアクセストークンを貼り付けると、あなた専用のエージェントとして動きます。', action: 'settings' }), 400);
   }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
-  setInterval(() => { refresh({ quiet: true }); renderFoot(); }, 45000);
+  setInterval(() => { refresh({ quiet: true }); renderFoot(); checkNotifications(); }, 20000);
 }
 
 boot();

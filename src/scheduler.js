@@ -10,6 +10,8 @@
 import { nowIso, safeJson, utcDay, truncate } from './util.js';
 import { setting, setSetting } from './db.js';
 import { checkWatches } from './agent/watch.js';
+import { ensureStreams } from './agent/streams.js';
+import { convene, saveDecision, pickTopic, DEFAULT_SEATS } from './agent/council.js';
 
 export function createScheduler(deps) {
   const { store, env, engine, memory, ranking, workflows, router, research, fleet = null } = deps;
@@ -17,6 +19,21 @@ export function createScheduler(deps) {
   async function scheduledTick({ source = 'cron', maxSteps = null } = {}) {
     const started = Date.now();
     const report = { source, at: nowIso(), steps: [] };
+
+    // 0) 稼ぎ方ストリームを保証（無ければ自動作成。目標入力は不要）
+    try {
+      const s0 = await ensureStreams({ store, router, memory, engine });
+      report.steps.push({ step: 'streams', created: s0.created.length });
+    } catch (e) { report.steps.push({ step: 'streams', error: e.message }); }
+
+    // 0b) 停止は「オーナーの明示操作」だけにする。理由が自動判定の停止なら起こす。
+    try {
+      const st0 = await engine.engineState();
+      if (st0.status === 'stopped' || (st0.status === 'paused' && /戦略切替|再計画|人手/.test(String(st0.reason || '')))) {
+        await engine.control('resume', { note: '自律運転のため自動再開' }).catch(() => {});
+        report.steps.push({ step: 'auto_resume', from: st0.status });
+      }
+    } catch (e) { report.steps.push({ step: 'auto_resume', error: e.message }); }
 
     // 1) wake tasks waiting on quota
     try {
@@ -68,6 +85,58 @@ export function createScheduler(deps) {
       else report.steps.push({ step: 'watch', checked: w.checked, fired: 0 });
     } catch (e) { report.steps.push({ step: 'watch', error: e.message }); }
 
+    // 5b) スカウト（自律リサーチ）— 無料の巡回先だけを数箇所ずつ回し、稼げそうな
+    //     話を点数化して残す。原価0。投稿・購入・アカウント作成はしない。
+    //     毎tickやると外部に迷惑なので、既定3時間おきに間引く。
+    try {
+      const everyMin = Math.max(30, Number(env.SCOUT_EVERY_MINUTES || 180));
+      const last = await setting(store, 'scout:last_run_at', null);
+      const due = !last || (Date.now() - new Date(last).getTime() >= everyMin * 60e3);
+      // SCOUT_ENABLED を明示したときだけ動かす（テストや想定外の環境で外部通信しない）
+      if (due && env && env.SCOUT_ENABLED === 'true') {
+        const { scoutTick } = await import('./agent/scout.js');
+        const s = await scoutTick({ store, env, maxSources: Number(env.SCOUT_SOURCES_PER_TICK || 3), perSource: Number(env.SCOUT_PER_SOURCE || 12), minScore: Number(env.SCOUT_MIN_SCORE || 30) });
+        await setSetting(store, 'scout:last_run_at', nowIso());
+        report.steps.push({ step: 'scout', inserted: s.inserted, sources: s.sources.map((x) => `${x.source}:${x.kept}`), top: s.top[0]?.title || null });
+      } else {
+        report.steps.push({ step: 'scout', skipped: 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'scout', error: e.message }); }
+
+    // 5c) FX Lab（試行錯誤ループ）— 少数の実験を回し続け、王者が更新されたら昇格させる。
+    //     「ここで完成させる」のではなく、エージェントが試し続ける状態を作るのが目的。
+    //     原価0（無料の市場データ＋自作バックテスト）。既定60分おきに2実験だけ。
+    try {
+      const everyMin = Math.max(15, Number(env.FX_LAB_EVERY_MINUTES || 60));
+      const last = await setting(store, 'fxlab:last_run_at', null);
+      const due = !last || (Date.now() - new Date(last).getTime() >= everyMin * 60e3);
+      if (due && env && env.FX_LAB_ENABLED === 'true') {
+        const { fxLabTick } = await import('./income/fxLab.js');
+        const r = await fxLabTick({ store, env, n: Number(env.FX_LAB_EXPERIMENTS_PER_TICK || 2) });
+        await setSetting(store, 'fxlab:last_run_at', nowIso());
+        const top = (r.experiments || []).find((e) => e.fitness != null);
+        report.steps.push({ step: 'fx_lab', ran: r.ran, improved: r.improved, best: top ? `${top.symbol}/${top.strategyKey} fitness=${top.fitness}` : null, promoted: r.promoted?.name || null });
+      } else {
+        report.steps.push({ step: 'fx_lab', skipped: due ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'fx_lab', error: e.message }); }
+
+    // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
+    //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
+    try {
+      const everyMin = Math.max(30, Number(env.SOCIAL_EVERY_MINUTES || 720));
+      const prev = await setting(store, 'social:last_refill', null);
+      const lastAt = prev && typeof prev === 'object' ? prev.at : null;
+      const due = !lastAt || (Date.now() - new Date(lastAt).getTime() >= everyMin * 60e3);
+      if (due && env && env.SOCIAL_ENABLED === 'true') {
+        const { refillQueue } = await import('./agent/social.js');
+        const r = await refillQueue({ store, limit: Number(env.SOCIAL_DRAFTS_PER_TICK || 2) });
+        report.steps.push({ step: 'social_refill', created: r.created.length, blocked: r.blocked.length, skipped: r.skipped });
+      } else {
+        report.steps.push({ step: 'social_refill', skipped: due ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'social_refill', error: e.message }); }
+
     // 6) goal（完了条件としての見張り）— 未達なら止めない。あと何が必要かを数え直し、
     //    エンジンが止まっていれば起こす。ここも重い処理はしない。
     try {
@@ -93,6 +162,29 @@ export function createScheduler(deps) {
       JSON.stringify({ at: report.at, durationMs: Date.now() - started, source, steps: report.steps.map((s) => s.step) }), nowIso());
 
     report.durationMs = Date.now() - started;
+    // 議会（チーム制）: 数時間おきに開き、異なる立場の合意点を決めて残す。
+    //   キャッシュが効くので同一議題の再審議はAIを呼ばない。予算切れなら決定的に議論。
+    try {
+      const everyMin = Math.max(30, Number(env.COUNCIL_EVERY_MINUTES || 180));
+      const last = await setting(store, 'council:last_at', null);
+      const due = !last || (Date.now() - new Date(last).getTime() >= everyMin * 60e3);
+      if (due) {
+        const t = await pickTopic(store);
+        if (t) {
+          const character = await engine.getCharacter().catch(() => null);
+          const ev = await store.all("SELECT title,severity,source_url FROM memories WHERE kind='evidence' ORDER BY created_at DESC LIMIT 10").catch(() => []);
+          const r = await convene({ router, character, topic: t.topic, evidenceBlock: `# 証拠メモ\n${JSON.stringify(ev)}`, seats: DEFAULT_SEATS });
+          await saveDecision(store, r.decision, { missionId: t.mission_id, source: 'cron' });
+          if (memory) await memory.write({ kind: 'checkpoint', scope: 'council', evidence: 'measured', importance: 70,
+            text: `議会: 「${t.topic}」→ ${r.decision.verdict}（${r.decision.direction || ''}）` }).catch(() => {});
+          await setSetting(store, 'council:last_at', nowIso());
+          report.steps.push({ step: 'council', verdict: r.decision.verdict, seats: r.cost.seats, cached: r.cost.cached });
+        }
+      } else {
+        report.steps.push({ step: 'council', skipped: 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'council', error: e.message }); }
+
     return report;
   }
 

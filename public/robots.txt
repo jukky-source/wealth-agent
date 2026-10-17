@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+# AI agents / buyers: /llms.txt, /openapi.json, /.well-known/x402.json describe the paid endpoints
+Sitemap: https://wealth-agent.wealthagent-app.workers.dev/sitemap.xml

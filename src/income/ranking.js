@@ -52,7 +52,11 @@ export function scoreOpportunity(opp, { character, memories = [] } = {}) {
   d.cashability = /高|即|現金|出金可能/.test(String(opp.cashability)) ? 0.9 : /低|限定的/.test(String(opp.cashability)) ? 0.3 : 0.5;
   d.japan = { yes: 1, conditional: 0.6, unknown: 0.35, no: 0 }[opp.japan_availability] ?? 0.35;
   d.tos = { ok: 1, unknown: 0.5, risky: 0.25, violation: 0 }[opp.tos_compliance] ?? 0.5;
-  d.verified_results = /計測値|実測/.test(String(opp.verified_results)) ? 0.9 : /未検証|未確認/.test(String(opp.verified_results)) ? 0.15 : 0.4;
+  // 「未検証」の判定を先に見る。逆順だと「未検証（実測売上なし）」という文字列が
+  // 「実測」に引っかかり、実績ゼロの稼ぎ方が満点近くの根拠スコアを得てしまう。
+  d.verified_results = /未検証|未確認|実績なし|売上なし/.test(String(opp.verified_results))
+    ? 0.15
+    : /計測値|実測/.test(String(opp.verified_results)) ? 0.9 : 0.4;
 
   // ---- strategic fit: learn from rejections and failures ----
   const rejectedHit = memories.some((m) => m.kind === 'rejected' && (m.data?.name || '').toLowerCase() === String(opp.name).toLowerCase());
@@ -147,29 +151,50 @@ export function createRanking({ store, memory }) {
   async function recalibrate(storeRef, { character = null } = {}) {
     const rows = await storeRef.all(`SELECT * FROM opportunities`);
     const ledger = await storeRef.all(`SELECT * FROM ledger WHERE kind='revenue'`);
-    const measuredByOpp = {};
+    // 通貨をまたいで足さない。円は円として推定値の補正に使えるが、円以外は
+    // 為替レートの取得元が無いので「実際に売れた」という事実だけを書き戻す。
+    // ここを混ぜると、1 USDC の売上が 1 円の売上として純益計算に入ってしまう。
+    const measuredByCurrency = {};
+    const yenByOpp = {};
+    const salesByOpp = {};
     for (const l of ledger) {
-      if (l.basis !== 'measured' || !l.opportunity_id) continue;
-      measuredByOpp[l.opportunity_id] = (measuredByOpp[l.opportunity_id] || 0) + l.amount;
+      if (l.basis !== 'measured') continue;
+      const cur = String(l.currency || 'JPY').toUpperCase();
+      const amt = Number(l.amount) || 0;
+      measuredByCurrency[cur] = (measuredByCurrency[cur] || 0) + amt;
+      if (!l.opportunity_id) continue;
+      salesByOpp[l.opportunity_id] = salesByOpp[l.opportunity_id] || {};
+      salesByOpp[l.opportunity_id][cur] = (salesByOpp[l.opportunity_id][cur] || 0) + amt;
+      if (cur === 'JPY') yenByOpp[l.opportunity_id] = (yenByOpp[l.opportunity_id] || 0) + amt;
     }
     const adjustments = [];
     for (const o of rows) {
-      const measured = measuredByOpp[o.id];
-      if (measured === undefined) continue;
+      const sales = salesByOpp[o.id];
+      if (!sales) continue;
+      const label = Object.entries(sales).map(([c, v]) => `${c} ${v}`).join(' / ');
+      const yen = yenByOpp[o.id];
       const predicted = Number(o.est_monthly_revenue) || 0;
-      const error = predicted - measured;
-      adjustments.push({ id: o.id, name: o.name, predicted, measured, error });
-      // If we consistently over-predict, lower the estimate — but never turn an
-      // estimate into a measured figure.
-      await storeRef.run(`UPDATE opportunities SET est_monthly_revenue=?, verified_results=?, updated_at=? WHERE id=?`,
-        Math.max(0, (predicted * 0.5 + measured * 0.5)),
-        `${o.verified_results || ''} / 実測収益 ${measured} JPY を反映`.trim(), nowIso(), o.id);
+      // 追記を繰り返しても伸びないよう、前回の実測メモだけ差し替える。
+      // 実際に売れた以上、「未検証」という古い但し書きは残さない（根拠の表示として嘘になる）。
+      const base = String(o.verified_results || '').split(' / ')
+        .map((s) => s.trim()).filter((s) => s && !/^実測の入金あり/.test(s) && !/^未検証/.test(s)).join(' / ');
+      adjustments.push({ id: o.id, name: o.name, predicted, measured_yen: yen || 0, sales });
+      if (yen !== undefined) {
+        // 円の実測があるときだけ推定値を補正する（推定は推定のまま残す）。
+        await storeRef.run(`UPDATE opportunities SET est_monthly_revenue=?, verified_results=?, updated_at=? WHERE id=?`,
+          Math.max(0, predicted * 0.5 + yen * 0.5),
+          [base, `実測の入金あり（${label}）`].filter(Boolean).join(' / '), nowIso(), o.id);
+      } else {
+        await storeRef.run(`UPDATE opportunities SET verified_results=?, updated_at=? WHERE id=?`,
+          [base, `実測の入金あり（${label}・円換算なし）`].filter(Boolean).join(' / '), nowIso(), o.id);
+      }
     }
     return {
       adjusted: adjustments.length,
       adjustments,
+      measured_by_currency: measuredByCurrency,
       note: adjustments.length
-        ? '推定値を実測で補正しました（推定は推定のまま、実測は実測として記録）。'
+        ? '実測の入金を稼ぎ方に紐づけて反映しました（推定は推定のまま、実測は実測として記録）。'
         : '実測収益がまだ無いため補正は行っていません。',
     };
   }
@@ -180,9 +205,6 @@ export function createRanking({ store, memory }) {
 function nextStepFor(s) {
   const b = s.breakdown || {};
   if (b.evidence < 0.5) return '一次情報（公式/規約/実測報告）を追加取得して根拠を強化する';
-  if (s.domain === 'fx') return 'バックテストと非リペイント検査を通過させ、デモ検証に進む';
-  if (s.domain === 'rewards') return '換金条件と最低換金額を公式規約で確定し、実際の獲得額を計測する';
-  if (s.domain === 'side_hustle') return 'MVPを作成し、公開して訪問→登録→成約の計測を開始する';
   return '検証計画を立てて実行する';
 }
 

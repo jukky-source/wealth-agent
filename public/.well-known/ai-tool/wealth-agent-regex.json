@@ -1,0 +1,77 @@
+{
+  "type": "https://ercs.ethereum.org/ERCS/erc-8257#tool-manifest-v1",
+  "name": "Wealth Agent — regex",
+  "description": "Apply one regular expression to a text blob on the server and return every match with its index and capture groups. Deterministic, so the same input always returns the same answer. Useful for log triage, field extraction and validation at scale.",
+  "endpoint": "https://wealth-agent.wealthagent-app.workers.dev/api/x402/regex",
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string"
+      },
+      "text": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "pattern",
+      "text"
+    ]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "ok": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "ok"
+    ]
+  },
+  "creatorAddress": "0x3291398dc7070472cf2ed2e757246d089760ca91",
+  "pricing": [
+    {
+      "amount": "10000",
+      "asset": "eip155:8453/erc20:0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "recipient": "eip155:8453:0x3291398dC7070472CF2ED2e757246d089760Ca91",
+      "protocol": "x402"
+    },
+    {
+      "amount": "10000",
+      "asset": "eip155:42161/erc20:0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+      "recipient": "eip155:42161:0x3291398dC7070472CF2ED2e757246d089760Ca91",
+      "protocol": "x402"
+    },
+    {
+      "amount": "10000",
+      "asset": "eip155:137/erc20:0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+      "recipient": "eip155:137:0x3291398dC7070472CF2ED2e757246d089760Ca91",
+      "protocol": "x402"
+    },
+    {
+      "amount": "10000",
+      "asset": "eip155:43114/erc20:0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+      "recipient": "eip155:43114:0x3291398dC7070472CF2ED2e757246d089760Ca91",
+      "protocol": "x402"
+    },
+    {
+      "amount": "10000",
+      "asset": "eip155:1329/erc20:0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392",
+      "recipient": "eip155:1329:0x3291398dC7070472CF2ED2e757246d089760Ca91",
+      "protocol": "x402"
+    },
+    {
+      "amount": "10000",
+      "asset": "eip155:196/erc20:0xB6CEceAB302E2E4948951eE7843FC24E92933061",
+      "recipient": "eip155:196:0x3291398dC7070472CF2ED2e757246d089760Ca91",
+      "protocol": "x402"
+    },
+    {
+      "amount": "10000",
+      "asset": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp/spl:EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "recipient": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp:GgvECKqPR1LHdv9vvpi3bfqs2v9jEJsqdwbNT7DzouD",
+      "protocol": "x402"
+    }
+  ]
+}

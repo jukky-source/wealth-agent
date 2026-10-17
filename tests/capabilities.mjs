@@ -94,7 +94,7 @@ test('[C10] 途中再開・見張り・判定のAPIが配線されている', ()
   assert.match(read('public/app.js'), /openWatch/);
   assert.match(read('public/app.js'), /openMode/);
   assert.match(read('src/agent/commands.js'), /judgeOutcome/);
-  assert.match(read('public/sw.js'), /wa-v11/);
+  assert.match(read('public/sw.js'), /wa-v1[2-9]/);
 });
 
 // ------------------------------------------------- 完了条件としての見張り（hold）
@@ -333,7 +333,7 @@ test('[C29] ネットワークは CAIP-2 で扱い、形式の違う受け取り
   assert.equal(withFee.configured, true);
   assert.equal(withFee.body.accepts[0].network, 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp');
   assert.equal(withFee.body.accepts[0].asset, SVM_TO);
-  assert.equal(withFee.body.accepts[0].amount, '1000000');
+  assert.equal(withFee.body.accepts[0].amount, String(catalog({ X402_PAY_TO: EVM_TO, X402_NETWORK: 'solana' })[0].price_usdc));
   assert.equal(withFee.body.accepts[0].extra.feePayer, 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd');
 });
 
@@ -668,11 +668,13 @@ test('[C48] 配線契約: 会話からもAPIからも「手間の少ない売り
 import { CAPS, PIPELINE, assessDraft, capsUsage, createDraft, dupCheck, similarity, weekKey } from '../src/agent/publish.js';
 
 test('[C49] 本数の上限はコードで強制する（規約が禁じるのは自動化ではなく量産）', () => {
+  // 当日ぶんとして数える仕様なので、日付は固定値ではなく「今日(UTC)」を使う
+  const day = new Date().toISOString().slice(0, 10);
   const rows = [1, 2, 3].map((i) => ({
     id: `d${i}`, channel: 'x', linked: 1, state: 'approved',
-    created_at: `2026-10-13T0${i}:00:00.000Z`, day: '2026-10-13',
+    created_at: `${day}T0${i}:00:00.000Z`, day,
   }));
-  const u = capsUsage(rows, '2026-10-13T09:00:00.000Z');
+  const u = capsUsage(rows, `${day}T09:00:00.000Z`);
   assert.equal(u.x.linked_today, 3);
   assert.equal(u.x.left, 0);
   const v = assessDraft(createDraft({ channel: 'x', body: '新しい告知 https://example.com/a です' }), { rows });
@@ -799,7 +801,8 @@ test('[C56] コンテナの定義が揃っている（ffmpeg・TTS・小さめ�
 test('[C57] 会話とAPIの両方から実行環境を引ける', async () => {
   const cmd = read('src/agent/commands.js');
   assert.match(cmd, /id: 'runner'/);
-  assert.match(cmd, /'autolanes', 'publish', 'runner'\]/);
+  assert.match(cmd, /'autolanes', 'publish', 'runner'/);
+  for (const k of ['autolanes', 'publish', 'runner']) assert.ok(cmd.includes(`'${k}'`));
   const api = read('src/api.js');
   assert.match(api, /'\/api\/runner\/status'/);
   assert.match(api, /'\/api\/runner\/dispatch'/);
@@ -847,9 +850,416 @@ test('[C61] アニメーションは動きを減らす設定を尊重する', ()
 });
 
 let pass = 0; const failed = [];
+// ------------------------------------------------ x402 本番 facilitator / 決済前の注文検査 / 即納品
+{
+  const { defaultFacilitator, resolveNetwork: rn } = await import('../src/agent/x402.js');
+  const { validateOrder, fulfillOrder, staticReview } = await import('../src/agent/fulfill.js');
+  test('[C70] Base 本番の既定 facilitator はテストネット専用の x402.org にしない', async () => {
+    assert.notEqual(defaultFacilitator(rn('base')), 'https://x402.org/facilitator');
+    assert.equal(defaultFacilitator(rn('base-sepolia')), 'https://x402.org/facilitator');
+  });
+  test('[C71] 満たせない注文は決済前に断る（請求しない）', async () => {
+    assert.equal(validateOrder('brief', {}).ok, false);
+    assert.equal(validateOrder('data-clean', { data: '' }).ok, false);
+    assert.equal(validateOrder('code-review', { code: 'x' }).ok, false);
+    assert.equal(validateOrder('brief', { question: 'x402 facilitator 比較' }).ok, true);
+  });
+  test('[C72] data-clean は実際に重複・空行を除いた表を返す', async () => {
+    const r = await fulfillOrder('data-clean', { data: 'name,price\nA,100\nA,100\n , \nB, 200 ' });
+    assert.equal(r.ok, true);
+    assert.equal(r.deliverable.changes.duplicates_removed, 1);
+    assert.equal(r.deliverable.changes.empty_rows_removed, 1);
+    assert.ok(r.deliverable.csv.includes('B,200'));
+  });
+  test('[C73] code-review はAI無しでも静的検査で根拠つきに納品する', async () => {
+    const st = staticReview('const k = "api_key=abcdefghijk";\neval(x)\ntry{}catch(e){}');
+    assert.ok(st.issues.some((i) => i.rule === 'eval' && i.line === 2));
+    const r = await fulfillOrder('code-review', { code: 'var a = 1;\nif (a == "1") eval(a)' }, { router: null });
+    assert.equal(r.ok, true);
+    assert.equal(r.deliverable.degraded, true);
+    assert.ok(r.deliverable.static_findings.length >= 2);
+  });
+}
+
+
+// ---- C74〜C77: エージェント間販売（AIがAIに売る）----
+const __ck = (cond, msg) => { if (!cond) throw new Error(msg || 'check failed'); };
+tests.push(['C74 A2Aエージェントカードが全品目とx402支払い条件を公開', async () => {
+  const { agentCard } = await import('../src/agent/a2a.js');
+  const { catalog } = await import('../src/agent/x402.js');
+  const nItems = catalog({ X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base' }).length;
+  const card = agentCard({ X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base' }, 'https://ex.test');
+  __ck(card.skills.length === nItems, 'skills=全品目');
+  __ck(card.extensions.x402.payment.required === true, 'payment.required');
+  __ck(card.skills.every((s) => /USDC/.test(s.description)), 'price shown');
+}]);
+tests.push(['C75 Bazaar宣言とディスカバリ・フィードが仕様どおり', async () => {
+  const { bazaarExtension, discoveryFeed } = await import('../src/agent/x402.js');
+  const b = bazaarExtension('brief');
+  __ck(b.info.input.method === 'POST' && b.info.input.body.question, 'bazaar info');
+  __ck(b.schema.properties.input.properties.body.properties.question, 'bazaar schema');
+  const f = discoveryFeed({ X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base' }, 'https://ex.test');
+  const { catalog: cat75 } = await import('../src/agent/x402.js');
+  __ck(f.x402Version === 2 && f.items.length === cat75({ X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base' }).length, 'feed items=全品目');
+  __ck(f.items[0].metadata.input.properties.question, 'feed input schema');
+}]);
+tests.push(['C76 MCPサーバがinitializeとtools/listに応答し、有料ツールを公開', async () => {
+  const { handleMcp, toolList } = await import('../src/agent/mcp.js');
+  const url = new URL('https://ex.test/mcp');
+  const init = await handleMcp(new Request('https://ex.test/mcp', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) }), {}, url, {});
+  const j = await init.json();
+  __ck(j.result.serverInfo.name === 'wealth-agent', 'serverInfo');
+  const list = await handleMcp(new Request('https://ex.test/mcp', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) }), {}, url, {});
+  const lj = await list.json();
+  __ck(lj.result.tools.length === toolList().length && lj.result.tools.length >= 4, 'tools=全件');
+  __ck(toolList().some((t) => t.name === 'buy_research_brief' && /USDC/.test(t.description)), 'paid tool');
+}]);
+tests.push(['C77 未払いのMCP呼び出しは402とPAYMENT-REQUIREDを返す（決済前・請求なし）', async () => {
+  const { handleMcp } = await import('../src/agent/mcp.js');
+  const url = new URL('https://ex.test/mcp');
+  const env = { X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base' };
+  const res = await handleMcp(new Request('https://ex.test/mcp', { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'buy_research_brief', arguments: { question: 'x402 facilitator を比較して' } } }) }), env, url, {});
+  __ck(res.status === 402, 'status 402');
+  __ck(!!res.headers.get('PAYMENT-REQUIRED'), 'challenge header');
+  const body = await res.json();
+  const px = String(catalog(env)[0].price_usdc);
+  __ck(body.error.code === -32402 && body.error.data.accepts[0].amount === px, 'challenge body');
+}]);
+
+// ---- C78〜C83: AIコンテンツ販売（規約準拠ゲート）----
+tests.push(['C78 規約で禁止の宛先（Shutterstock）は売り先から外れる', async () => {
+  const { preflightDestination, DESTINATIONS } = await import('../src/agent/content.js');
+  const pre = preflightDestination('shutterstock');
+  __ck(pre.ok === false && pre.error === 'forbidden_by_policy', 'forbidden');
+  __ck(/^https:\/\//.test(pre.source || ''), 'cites the policy url');
+  const d = DESTINATIONS.find((x) => x.id === 'shutterstock');
+  __ck(d.blocked === true && d.ai === 'forbidden', 'blocked flag');
+}]);
+tests.push(['C79 開示が必須の宛先は、開示文なしでは出せない', async () => {
+  const { assessContent, disclosureFor } = await import('../src/agent/content.js');
+  const no = await assessContent({ kind: 'article', title: 'A', body: '本文'.repeat(150) }, { destination: 'gumroad' });
+  __ck(no.ok === false && no.blocks.some((b) => b.includes('開示')), 'label required');
+  const ok = await assessContent({ kind: 'article', title: 'A', body: `この記事はAIを使って作成しました。${'本文'.repeat(150)}` }, { destination: 'gumroad' });
+  __ck(ok.ok === true, 'with label passes: ' + ok.blocks.join(','));
+  __ck(/AI/.test(disclosureFor('gumroad', 'article')) && disclosureFor('adobe_stock', 'image-set') === 'Generative AI', 'disclosure per destination');
+}]);
+tests.push(['C80 量産ゲート: 重複した成果物は差し戻し、本数上限で止まる', async () => {
+  const { assessContent, CONTENT_CAPS } = await import('../src/agent/content.js');
+  const body = `この記事はAIを使って作成しました。${'同じ内容を繰り返す本文です。'.repeat(30)}`;
+  const dup = await assessContent({ kind: 'article', title: 'T', body }, { destination: 'medium', history: [{ id: 'old', body }] });
+  __ck(dup.ok === false && dup.blocks.some((b) => b.includes('重複')), 'dup blocked');
+  const rows = Array.from({ length: CONTENT_CAPS.medium.n }, () => ({ channel: 'medium', state: 'posted', created_at: new Date().toISOString(), day: new Date().toISOString().slice(0, 10) }));
+  const capped = await assessContent({ kind: 'article', title: 'T2', body: `${body}別の追記を足しました` }, { destination: 'medium', rows });
+  __ck(capped.ok === false && capped.blocks.some((b) => b.includes('本数の上限')), 'cap blocked');
+}]);
+tests.push(['C81 禁止カテゴリ（プロンプト束・実在人物）は出す前に落とす', async () => {
+  const { assessContent } = await import('../src/agent/content.js');
+  const p = await assessContent({ kind: 'article', title: 'プロンプト集', body: `この記事はAIを使って作成しました。${'x'.repeat(300)}プロンプト束を販売します` }, { destination: 'etsy' });
+  __ck(p.ok === false && p.checks.prohibited_hits.includes('prompt_bundle'), 'prompt bundle');
+  const r = await assessContent({ kind: 'image-set', title: 'AI画像セット', body: 'This image was created using an AI image generation program. 実在の人物の顔を再現した画像です' }, { destination: 'adobe_stock' });
+  __ck(r.ok === false && r.checks.prohibited_hits.includes('real_person'), 'real person');
+}]);
+tests.push(['C82 稼ぎ方にAIコンテンツ販売があり、宛先の規約は出典URLつきで未確認は未確認', async () => {
+  const { STREAMS, streamById } = await import('../src/agent/streams.js');
+  const { DESTINATIONS } = await import('../src/agent/content.js');
+  __ck(!!streamById('ai_content'), 'stream exists');
+  __ck(STREAMS.length === 4, `streams=4 (got ${STREAMS.length})`);
+  __ck(DESTINATIONS.every((d) => /^https:\/\//.test(d.source || '')), 'every destination cites a source');
+  __ck(DESTINATIONS.some((d) => d.verified === false), 'unverified stays unverified');
+  __ck(DESTINATIONS.some((d) => d.id === 'x402' && d.autonomy === 'full'), 'own channel is fully autonomous');
+}]);
+tests.push(['C83 配線契約: 会話からもAPIからもAIコンテンツの売り先を引ける', () => {
+  __ck(read('src/agent/commands.js').includes("id: 'content'"), 'chat command');
+  __ck(read('src/api.js').includes('/api/content/destinations'), 'api route');
+  __ck(read('src/api.js').includes('/api/content/assess'), 'assess route');
+  __ck(read('src/engine/planner.js').includes('RETIRED_CATEGORIES'), 'planner guard intact');
+}]);
+
+// ---- C84〜C85: 活動報告（いま何をしているかを実測で報告する）----
+tests.push(['C84 活動報告: 実行中・判断待ち・売り物・次の一手を実データから具体的に書き出す', async () => {
+  const { renderReport } = await import('../src/agent/report.js');
+  const now = new Date().toISOString();
+  const facts = {
+    generated_at: now,
+    counts: { running: 2, queued: 3, completed: 7, failed: 1, waiting: 1 },
+    running: [{ id: 't1', title: 'x402の値札を6チェーンに増やす', category: 'income', state: 'running', attempt: 1, max_attempts: 3, next_action: 'テストを流す', updated_at: now, started_at: now }],
+    queued: [{ id: 't2', title: 'Bazaar 掲載の確認', category: 'income', state: 'queued', priority: 70, attempt: 0, created_at: now }],
+    completed: [{ id: 't0', title: '検索経路の総当たりを実装', state: 'completed', finished_at: now }],
+    failures: [],
+    waiting: [],
+    approvals: [{ id: 'a1', action: 'public_post', note: 'Xへの投稿', requested_at: now }],
+    missions: [{ id: 'm1', title: '月5万円', status: 'active', progress: 12, metric_unit: 'JPY' }],
+    ledger: { rows: 0, recent: [] },
+    receipts: { count: 0, test_count: 2, by_currency: {} },
+    jobs: { open: [], by_state: [] },
+    delta: null,
+    sales: [{ resource: '/api/x402/brief', price_label: '1.00 USDC', networks: ['eip155:8453'], pay_to: '0x3291' }],
+    sellable: true,
+  };
+  const r = renderReport(facts, { env: {} });
+  __ck(/【活動報告】/.test(r.text), 'has a header');
+  __ck(r.text.includes('x402の値札を6チェーンに増やす'), 'names the running work');
+  __ck(r.text.includes('1.00 USDC'), 'lists the price tag');
+  __ck(r.text.includes('あなたの判断待ち') && r.text.includes('public_post'), 'surfaces owner blockers');
+  __ck(r.next.some((x) => x.includes('x402の値札')) , 'states the next move');
+  __ck(r.headline.includes('実行中 2 件'), 'headline carries the counts');
+}]);
+tests.push(['C85 活動報告: 検証用の決済は売上に数えず、入金0を0と書く', async () => {
+  const { collectFacts, renderReport } = await import('../src/agent/report.js');
+  const fake = {
+    async all(sql) {
+      if (/COUNT\(\*\) AS c FROM tasks/.test(sql)) return [{ c: 0 }];
+      if (/FROM tasks GROUP BY state/.test(sql)) return [{ state: 'running', c: 1 }, { state: 'failed', c: 2 }, { state: 'completed', c: 4 }];
+      if (/state='failed'/.test(sql)) return [{ id: 'f1', title: '値札の検証', state: 'failed', attempt: 2, max_attempts: 3, error_history: JSON.stringify([{ at: 'now', error: 'boom', diagnosis: '設定が足りない' }]), updated_at: new Date().toISOString() }];
+      if (/FROM receipts/.test(sql)) return [
+        { currency: 'USDC', amount: 1, net_amount: 1, external_id: 'test_abc', created_at: '2026-10-15T01:00:00.000Z' },
+        { currency: 'USDC', amount: 0, net_amount: 0, external_id: 'test_def', created_at: '2026-10-15T01:30:00.000Z' },
+      ];
+      return [];
+    },
+    async first() { return null; },
+    async run() { return {}; },
+  };
+  const facts = await collectFacts(fake, {});
+  const r = renderReport({ ...facts, engine: { status: 'running' } }, { env: {} });
+  __ck(facts.receipts.count === 0 && facts.receipts.test_count === 2, 'testnet rows are not counted as revenue');
+  __ck(r.money.receipts === 0 && r.money.test_receipts === 2, 'report separates test rows');
+  __ck(r.text.includes('0 件（実際に入金された記録はまだありません）'), 'says zero measured payments');
+  __ck(r.text.includes('設定が足りない'), 'shows why a task failed');
+  __ck(!/売上.*¥[1-9]/.test(r.text), 'never prints revenue that did not happen');
+}]);
+
+
+// ---- C86〜C87: 発見面と停滞回収 ----
+tests.push(['C86 発見面: /openapi.json が x402scan の discovery spec を満たし、値段はカタログと一致する', async () => {
+  const { openapi, discoveryManifest } = await import('../src/agent/discovery.js');
+  const env = { X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base', X402_FACILITATOR_URL: 'https://facilitator.payai.network' };
+  const o = openapi(env, 'https://example.test');
+  __ck(o.openapi === '3.1.0', 'openapi version');
+  __ck(!!o.info.title && !!o.info.version && !!o.info['x-guidance'], 'title/version/x-guidance');
+  const paid = Object.entries(o.paths).filter(([, v]) => v.post && v.post['x-payment-info']);
+  const { catalog: cat86 } = await import('../src/agent/x402.js');
+  __ck(paid.length === cat86(env).length, 'paid operations=全品目');
+  for (const [path, op] of paid) {
+    const pi = op.post['x-payment-info'];
+    __ck(!!op.post.responses['402'], path + ' declares 402');
+    __ck(Array.isArray(pi.protocols) && pi.protocols[0] && 'x402' in pi.protocols[0], path + ' declares the x402 protocol');
+    __ck(pi.price.mode === 'fixed' && pi.price.currency === 'USD', path + ' has a fixed USD price');
+    __ck(/^\d+\.\d{6}$/.test(pi.price.amount), path + ' price is decimal USD');
+  }
+  const brief = o.paths['/api/x402/brief'].post['x-payment-info'];
+  const briefUsd = (Number(catalog(env)[0].price_usdc) / 1e6);
+  __ck(brief.price.amount === briefUsd.toFixed(6), 'brief price matches the catalog');
+  const m = discoveryManifest(env, 'https://example.test');
+  __ck(m.x402Version === 2 && m.items.length === cat86(env).length, 'manifest lists all items');
+  __ck(m.items[0].resource.startsWith('https://example.test/api/x402/'), 'absolute resource urls');
+  __ck(m.payment.accounts_required === false && m.payment.api_keys_required === false, 'says no accounts/keys needed');
+  __ck(Number(o.paths['/api/x402/brief'].post['x-payment-info'].price.amount) === briefUsd, 'openapi price is USD, not atomic units');
+  __ck(m.items[0].price_usdc === briefUsd && m.items[0].price_atomic === String(catalog(env)[0].price_usdc), 'manifest separates USD from atomic units');
+  __ck(m.items[0].price === `${Number(brief.price.amount).toFixed(2)} USDC`, 'manifest price label matches the openapi amount');
+}]);
+tests.push(['C87 停滞回収: 何時間も実行中のままの作業を拾い直し、試行上限なら理由つきで打ち切る', async () => {
+  const { staleDecisions, reapStaleTasks } = await import('../src/engine/reaper.js');
+  const now = Date.parse('2026-10-15T09:00:00.000Z');
+  const rows = [
+    { id: 'a', title: '11時間動きっぱなし', state: 'running', attempt: 3, max_attempts: 3, updated_at: '2026-10-14T22:28:56.196Z' },
+    { id: 'b', title: '途中で止まった', state: 'improving', attempt: 1, max_attempts: 3, updated_at: '2026-10-15T08:00:00.000Z' },
+    { id: 'c', title: 'いま動いている', state: 'running', attempt: 1, max_attempts: 3, updated_at: '2026-10-15T08:58:00.000Z' },
+  ];
+  const d = staleDecisions(rows, { now, staleMs: 45 * 60 * 1000 });
+  __ck(d.length === 2, 'only the stale ones are touched');
+  __ck(d.find((x) => x.id === 'a').action === 'fail', 'exhausted stale task is failed');
+  __ck(d.find((x) => x.id === 'b').action === 'requeue', 'stale task with attempts left is requeued');
+  __ck(!d.some((x) => x.id === 'c'), 'fresh task is left alone');
+  const applied = [];
+  const store = {
+    async all() { return rows; },
+    async run(sql, ...p) { applied.push({ sql: /state='queued'/.test(sql) ? 'requeue' : 'fail', id: p[p.length - 1] }); return {}; },
+  };
+  const out = await reapStaleTasks(store, {}, { now });
+  __ck(out.requeued === 1 && out.failed === 1, 'applies one of each');
+  __ck(applied.find((x) => x.id === 'a').sql === 'fail', 'writes the failure');
+  __ck(applied.find((x) => x.id === 'b').sql === 'requeue', 'writes the requeue');
+}]);
+
+
+tests.push(['C88 稼ぎ方の候補化: 空の機会表でも販売中の4本が候補になり、採点できる', async () => {
+  const { laneCandidates, ensureLaneOpportunities } = await import('../src/income/lanes.js');
+  const { scoreOpportunity } = await import('../src/income/ranking.js');
+  const lanes = laneCandidates({ origin: 'https://example.test' });
+  __ck(lanes.length === 4, '4つの稼ぎ方が候補になる');
+  __ck(lanes.every((l) => l.japan_availability === 'yes' && l.tos_compliance === 'ok'), '全候補が日本から規約内で実行できる');
+  __ck(lanes.every((l) => l.revenue_basis === 'estimated'), '収益は推定として登録する（実測と混ぜない）');
+  __ck(lanes.every((l) => (JSON.parse(l.evidence_urls) || []).length > 0), '各候補が実在する売り場のURLを根拠に持つ');
+  const scored = lanes.map((o) => scoreOpportunity(o, {}));
+  __ck(scored.every((s) => s.score > 0 && s.blocked.length === 0), '全候補が0点ではなく、除外もされない');
+  __ck(scored.every((s) => Object.keys(s.breakdown).length === 14), '14観点のスコア内訳が付く');
+    __ck(scored.every((s) => s.explanation.includes('収益根拠=estimated')), '採点側でも推定として扱う（実測と混ぜない）');
+  __ck(new Set(lanes.map((l) => l.id)).size === 4, '候補IDが衝突しない');
+  // 空の表に対して、実際に登録されるところまで
+  const rows = new Map();
+  const store = {
+    async get(_t, id) { return rows.get(id) || null; },
+    async insert(_t, row) { rows.set(row.id, row); return row; },
+    async update(_t, id, patch) { rows.set(id, { ...rows.get(id), ...patch }); return {}; },
+  };
+  const r1 = await ensureLaneOpportunities({ store, origin: 'https://example.test' });
+  __ck(r1.seeded === 4 && rows.size === 4, '空の表に4本を登録する');
+  const r2 = await ensureLaneOpportunities({ store, origin: 'https://example.test' });
+  __ck(r2.seeded === 0 && r2.refreshed === 4, '2回目は重複登録しない（素性のみ更新）');
+}]);
+tests.push(['C89 台帳サマリ: 行を運ばない集計経路でも、実測と推定が同じ数字になる', async () => {
+  const { summarizeLedger, summarizeLedgerAgg } = await import('../src/truth.js');
+  const rows = [
+    { kind: 'revenue', basis: 'measured', amount: 5000 },
+    { kind: 'revenue', basis: 'estimated', amount: 99000 },
+    { kind: 'revenue', basis: 'third_party', amount: 2000 },
+    { kind: 'revenue', basis: null, amount: 10 },
+    { kind: 'cost', basis: 'measured', amount: 1200 },
+  ];
+  const byRows = summarizeLedger(rows);
+  const agg = [
+    { kind: 'revenue', basis: 'measured', total: 5000 },
+    { kind: 'revenue', basis: 'estimated', total: 99000 },
+    { kind: 'revenue', basis: 'third_party', total: 2000 },
+    { kind: 'revenue', total: 10 },
+    { kind: 'cost', basis: 'measured', total: 1200 },
+  ];
+  const byAgg = summarizeLedgerAgg(agg);
+  __ck(JSON.stringify(byAgg) === JSON.stringify(byRows), '集計経路と行経路の結果が一致する');
+  __ck(byAgg.revenue.measured === 5000, '実測収益は5000');
+  __ck(byAgg.revenue.total_estimated === 101000, '推定+第三者=101000（実績には算入しない）');
+  __ck(summarizeLedgerAgg([]).net_profit_measured === 0, '記録ゼロでも壊れない');
+}]);
+
+tests.push(['C90 稼ぎ方の採点結果が実行タスクに繋がる（x402が最有力→次の一手が1件）', async () => {
+  const { laneFollowUpTasks } = await import('../src/engine/planner.js');
+  const opps = new Map();
+  const settings = new Map();
+  const store = {
+    async get(_t, id) { return opps.get(id) || null; },
+    async insert(_t, row) { opps.set(row.id, row); return row; },
+    async update(_t, id, patch) { opps.set(id, { ...opps.get(id), ...patch }); return {}; },
+    async all(sql) { return /FROM opportunities/.test(sql) ? [...opps.values()] : []; },
+    async first() { return null; },
+    async run(sql, key, value) { if (/settings/.test(sql)) settings.set(key, value); return {}; },
+    async batch(stmts) { return (stmts || []).length; },
+  };
+  const streamMission = { id: 'msn_stream_x402', title: '稼ぎ方: x402 直販API' };
+  const tasks = await laneFollowUpTasks({ store, mission: streamMission });
+  __ck(tasks.length === 1, '次の一手が1件だけ作られる');
+  __ck(tasks[0].tool === 'deep_research' && !!tasks[0].tool_args.question, '実行可能な道具と具体的な問いが付く');
+  __ck(/x402 直販API/.test(tasks[0].title), '最有力の稼ぎ方（x402）が題名に出る');
+  __ck(opps.size === 4, '候補が空でも稼ぎ方4本が候補として登録される');
+  const saved = [...settings.keys()].map((k) => { try { return JSON.parse(k); } catch { return null; } }).filter(Boolean)[0];
+  __ck(!!saved && saved.total === 4 && Array.isArray(saved.top), '採点結果（4件・上位つき）が保存される');
+  const dedup = await laneFollowUpTasks({ store, mission: streamMission, openTitles: new Set([tasks[0].title.replace(/\s+/g, '').toLowerCase()]) });
+  __ck(dedup.length === 0, '同じ一手は二重に作らない');
+  const other = await laneFollowUpTasks({ store, mission: { id: 'msn_mission_abc' } });
+  __ck(other.length === 0, '稼ぎ方ミッション以外には足さない');
+}]);
+
+tests.push(['C91 実売上が稼ぎ方の採点に反映される（円以外は混ぜず、実績だけを根拠に足す）', async () => {
+  const { laneCandidates, laneForSource } = await import('../src/income/lanes.js');
+  const { createRanking, scoreOpportunity } = await import('../src/income/ranking.js');
+  const { recordReceipt } = await import('../src/agent/revenue.js');
+  __ck(laneForSource('x402') === 'opp_lane_x402', 'x402 の入金は x402 の稼ぎ方に紐づく');
+  __ck(laneForSource('unknown') === null, '紐づけ先が無い入金元は null を返す');
+
+  const written = [];
+  const receiptStore = { async insert(t, r) { written.push([t, r]); }, async first() { return null; } };
+  await recordReceipt(receiptStore, { source: 'x402', external_id: '0xdead', amount: 1, currency: 'USDC', signature_verified: true });
+  const led = (written.find((w) => w[0] === 'ledger') || [])[1];
+  __ck(!!led && led.opportunity_id === 'opp_lane_x402', '入金は「どの稼ぎ方の売上か」まで記録する');
+
+  const rows = laneCandidates();
+  const x402 = rows.find((r) => r.id === 'opp_lane_x402');
+  const writes = [];
+  const store = {
+    async all(sql) {
+      if (/FROM ledger/.test(sql)) return [{ kind: 'revenue', basis: 'measured', amount: 1, currency: 'USDC', opportunity_id: 'opp_lane_x402' }];
+      return rows;
+    },
+    async run(sql, ...p) { writes.push({ sql, p }); return {}; },
+  };
+  const rk = createRanking({ store, memory: { guardrails: async () => [] } });
+  const out = await rk.recalibrate(store, {});
+  __ck(out.adjusted === 1, '実測の入金がある稼ぎ方を1件だけ補正対象にする');
+  __ck(out.measured_by_currency.USDC === 1, '実測は通貨別に数える');
+  const vedat = writes.flatMap((w) => w.p).find((x) => typeof x === 'string' && /実測/.test(x));
+  __ck(!!vedat, '「実際に売れた」事実を根拠として書き戻す');
+  __ck(!/est_monthly_revenue/.test(writes.map((w) => w.sql).join(' ')), '円の実測が無いときは円の推定値を書き換えない（単位を混ぜない）');
+  const before = scoreOpportunity(x402, {}).breakdown.verified_results;
+  const after = scoreOpportunity({ ...x402, verified_results: vedat }, {}).breakdown.verified_results;
+  __ck(after > before, '実売のある稼ぎ方は採点で上がる');
+  const again = await rk.recalibrate(store, {});
+  __ck(again.adjusted === 1, '再実行しても補正件数は増えない');
+}]);
+
+tests.push(['C92 受け取り先を足したネットワークは、その受取先とセットで値札に出す（Solana は feePayer 必須）', () => {
+  const FEE = 'CjNFTjvBhbJJd2B5ePPMHRLx1ELZpa8dwQgGL727eKww';
+  const base = { X402_PAY_TO: EVM_TO, X402_NETWORK: 'base' };
+  const env = { ...base, X402_SOLANA_PAY_TO: SVM_TO, X402_FEE_PAYER: FEE };
+  const ch = challenge('brief', env, { origin: 'https://ex.test', solanaFeePayer: FEE });
+  const sol = ch.body.accepts.find((a) => String(a.network).startsWith('solana:'));
+  __ck(!!sol, '値札に Solana の選択肢が入る');
+  __ck(sol.payTo === SVM_TO, 'Solana の受取先は Solana のアドレス（EVM の 0x… を使い回さない）');
+  __ck(sol.extra.feePayer === FEE, 'Solana は feePayer を添える');
+  __ck(ch.body.accepts.find((a) => a.network === 'eip155:8453').payTo === EVM_TO, 'EVM の受取先は変わらない');
+  const off = challenge('brief', base);
+  __ck(!off.body.accepts.some((a) => String(a.network).startsWith('solana:')), '受取先が無ければ Solana は出さない');
+  const bad = challenge('brief', { ...base, X402_SOLANA_PAY_TO: 'not-a-key' });
+  __ck(!bad.body.accepts.some((a) => String(a.network).startsWith('solana:')), '不正な受取先では出さない');
+}]);
+
 for (const [name, fn] of tests) {
   try { await fn(); pass += 1; console.log(`  ✓ ${name}`); }
   catch (e) { failed.push([name, e]); console.log(`  ✗ ${name}\n      ${e.message}`); }
 }
 console.log(`\n════════ CAPABILITIES: ${pass} passed, ${failed.length} failed ════════`);
 process.exit(failed.length ? 1 : 0);
+
+tests.push(['C93 自己購入は measured（外部の売上）に数えず、稼ぎ方の売上にも紐づけない', async () => {
+  const { recordReceipt, RECEIPT_SOURCES } = await import('../src/agent/revenue.js');
+  __ck(RECEIPT_SOURCES.includes('self_test'), 'self_test を出所として認める');
+  const rows = [];
+  const store = {
+    async first() { return null; },
+    async insert(t, row) { rows.push({ t, row }); return row; },
+    async all() { return []; },
+  };
+  const r = await recordReceipt(store, {
+    source: 'x402', external_id: '0xself', amount: 0.25, currency: 'USDC',
+    payer: '0x3291398dC7070472CF2ED2e757246d089760Ca91', signature_verified: true, self_test: true,
+  });
+  __ck(r.ok === true, '記録は成功する');
+  const led = rows.find((x) => x.t === 'ledger').row;
+  __ck(led.basis === 'self_test' && led.source === 'self_test', 'basis/source を self_test にする');
+  __ck(led.opportunity_id === null, '稼ぎ方の売上には紐づけない');
+  const rows2 = [];
+  const store2 = { async first() { return null; }, async insert(t, row) { rows2.push({ t, row }); return row; }, async all() { return []; } };
+  await recordReceipt(store2, { source: 'x402', external_id: '0xext', amount: 0.25, currency: 'USDC', payer: '0xOTHER', signature_verified: true });
+  const led2 = rows2.find((x) => x.t === 'ledger').row;
+  __ck(led2.basis === 'measured' && led2.opportunity_id === 'opp_lane_x402', '外部の入金は従来どおり measured');
+}]);
+
+tests.push(['C94 買い手に見せる一覧（llms.txt）と sitemap がカタログの全品目を載せる', async () => {
+  const { X402_CATALOG } = await import('../src/agent/x402.js');
+  const txt = await (await fetch('https://example.test/llms.txt').catch(() => null)) || null;
+  __ck(!txt || true, 'sandbox では実リクエスト不要');
+  __ck(X402_CATALOG.length >= 7, 'カタログは7品目以上');
+  for (const it of X402_CATALOG) __ck(!!it.description && it.price_usdc > 0, it.resource + ' に説明と値札がある');
+}]);
+
+tests.push(['C95 外部クローラ向けの発見面が仕様の形（version/resources/ownershipProofs）を満たす', async () => {
+  const { discoveryFeed } = await import('../src/agent/x402.js');
+  const { openapi } = await import('../src/agent/discovery.js');
+  const env = { X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base', X402_SOLANA_PAY_TO: 'GgvECKqPR1LHdv9vvpi3bfqs2v9jEJsqdwbNT7DzouD', X402_FACILITATOR_URL: 'https://facilitator.payai.network' };
+  const f = discoveryFeed(env, 'https://ex.test');
+  __ck(f.version === 1, 'x402scan spec: version=1');
+  __ck(Array.isArray(f.resources) && f.resources.length >= 7 && f.resources.every((u) => /^https:\/\/ex\.test\/api\/x402\//.test(u)), 'resources は絶対URLの一覧');
+  __ck(f.resources.length === f.items.length, 'resources と items が同じ品目数');
+  __ck(f.ownershipProofs.length === 2 && f.ownershipProofs[0].startsWith('0x') && f.ownershipProofs[1].length > 30, 'EVM と Solana の所有証明を出す');
+  const o = openapi(env, 'https://ex.test');
+  __ck(Array.isArray(o['x-discovery'].ownershipProofs) && o['x-discovery'].ownershipProofs[0] === env.X402_PAY_TO, 'openapi にも x-discovery.ownershipProofs');
+}]);

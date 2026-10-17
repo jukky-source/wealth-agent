@@ -80,8 +80,8 @@ export function normalizeLedgerEntry(e) {
 /** Aggregate ledger with strict separation of measured vs estimated. */
 export function summarizeLedger(rows) {
   const out = {
-    revenue: { measured: 0, third_party: 0, estimated: 0, unverified: 0, total_measured: 0, total_estimated: 0 },
-    cost: { measured: 0, third_party: 0, estimated: 0, unverified: 0, total_measured: 0, total_estimated: 0 },
+    revenue: { measured: 0, third_party: 0, estimated: 0, unverified: 0, total_measured: 0, total_estimated: 0, measured_by_currency: {} },
+    cost: { measured: 0, third_party: 0, estimated: 0, unverified: 0, total_measured: 0, total_estimated: 0, measured_by_currency: {} },
     net_profit_measured: 0,
     net_profit_estimated: 0,
     disclaimer: '実測値には証拠記録があります。推定値は収益実績として扱いません。',
@@ -89,7 +89,49 @@ export function summarizeLedger(rows) {
   for (const r of rows) {
     const side = r.kind === 'cost' ? 'cost' : 'revenue';
     const b = ['measured', 'third_party', 'estimated'].includes(r.basis) ? r.basis : 'unverified';
-    out[side][b] += Number(r.amount) || 0;
+    const amt = Number(r.amount) || 0;
+    const cur = String(r.currency || 'JPY').toUpperCase();
+    // 通貨をまたいで足さない。measured は円だけで合計し、円以外は通貨別に分けて出す。
+    // USDC の売上を円の数字に混ぜると、純益も AMR も意味を失う。
+    if (b === 'measured' && cur !== 'JPY') {
+      const m = out[side].measured_by_currency;
+      m[cur] = (m[cur] || 0) + amt;
+    } else {
+      out[side][b] += amt;
+    }
+  }
+  out.revenue.total_measured = out.revenue.measured;
+  out.revenue.total_estimated = out.revenue.estimated + out.revenue.third_party;
+  out.cost.total_measured = out.cost.measured;
+  out.cost.total_estimated = out.cost.estimated + out.cost.third_party;
+  out.net_profit_measured = out.revenue.measured - out.cost.measured;
+  out.net_profit_estimated = out.revenue.total_estimated - out.cost.total_estimated;
+  return out;
+}
+
+/**
+ * summarizeLedger と同じ形を、行を転送せずに SQL 集計（kind,basis ごとの SUM）から作る。
+ * /api/dashboard は20秒ごとに叩かれるので、500行を運ぶ代わりにこの集計を使う。
+ */
+export function summarizeLedgerAgg(agg) {
+  const out = {
+    revenue: { measured: 0, third_party: 0, estimated: 0, unverified: 0, total_measured: 0, total_estimated: 0, measured_by_currency: {} },
+    cost: { measured: 0, third_party: 0, estimated: 0, unverified: 0, total_measured: 0, total_estimated: 0, measured_by_currency: {} },
+    net_profit_measured: 0,
+    net_profit_estimated: 0,
+    disclaimer: '実測値には証拠記録があります。推定値は収益実績として扱いません。',
+  };
+  for (const r of agg || []) {
+    const side = r.kind === 'cost' ? 'cost' : 'revenue';
+    const b = ['measured', 'third_party', 'estimated'].includes(r.basis) ? r.basis : 'unverified';
+    const amt = Number(r.total) || 0;
+    const cur = String(r.currency || 'JPY').toUpperCase();
+    if (b === 'measured' && cur !== 'JPY') {
+      const m = out[side].measured_by_currency;
+      m[cur] = (m[cur] || 0) + amt;
+    } else {
+      out[side][b] += amt;
+    }
   }
   out.revenue.total_measured = out.revenue.measured;
   out.revenue.total_estimated = out.revenue.estimated + out.revenue.third_party;

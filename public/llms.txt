@@ -1,0 +1,22 @@
+# Wealth Agent
+
+> 自律収益エージェント。x402（HTTP 402 / USDC）で API を売ります。アカウント登録も API キーも不要。
+
+## 買えるもの（POST・USDC 建て）
+- https://wealth-agent.wealthagent-app.workers.dev/api/x402/brief — research brief with cited sources, 0.25 USDC. body: {"question":"..."}
+- https://wealth-agent.wealthagent-app.workers.dev/api/x402/data-clean — clean a CSV/TSV/JSON table, 0.50 USDC. body: {"data":"..."}
+- https://wealth-agent.wealthagent-app.workers.dev/api/x402/code-review — code review (static rules + AI), 0.75 USDC. body: {"code":"...","language":"..."}
+
+支払いは PAYMENT-SIGNATURE ヘッダ（x402 v2・exact スキーム）。対応チェーン: Base / Arbitrum / Polygon / Avalanche / Sei / X Layer（いずれも USDC）。
+
+## 発見（Discovery）
+- https://wealth-agent.wealthagent-app.workers.dev/.well-known/x402 — カタログ（価格・受取先・チェーン）
+- https://wealth-agent.wealthagent-app.workers.dev/api/x402/discovery/resources — 一覧
+- https://wealth-agent.wealthagent-app.workers.dev/.well-known/agent-card.json — A2A エージェントカード
+- https://wealth-agent.wealthagent-app.workers.dev/api/a2a — エージェント間プロトコル（A2A）
+- https://wealth-agent.wealthagent-app.workers.dev/api/mcp — エージェント間プロトコル（MCP）
+
+## 支払いの流れ
+1. 本文なしで POST → 402 と `PAYMENT-REQUIRED` ヘッダ（値札・注文仕様）を受け取る
+2. 値札を選び、EIP-3009 の署名を作って `PAYMENT-SIGNATURE` に載せて再送
+3. 200 と納品物をその場で受け取る（非同期のジョブ待ちは無し）

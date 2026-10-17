@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/</loc></url>
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/llms.txt</loc></url>
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/openapi.json</loc></url>
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/.well-known/x402</loc></url>
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/.well-known/x402.json</loc></url>
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/api/x402/brief</loc></url>
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/api/x402/data-clean</loc></url>
+  <url><loc>https://wealth-agent.wealthagent-app.workers.dev/api/x402/code-review</loc></url>
+</urlset>

@@ -164,10 +164,30 @@ export function buildTools(deps) {
     },
 
     async rank_opportunities(ctx, args) {
-      const r = await ranking.rank(store, { domain: args.domain || null, persist: true });
+      const opts = { domain: args.domain || null, persist: true };
+      let r = await ranking.rank(store, opts);
+      let seeded = 0;
+      if (!r.total) {
+        // 候補表が空（方針変更で廃止分を消した後など）。ここで空回りすると
+        // 検証に落ちて「改善→再試行」を繰り返すだけになるので、実際に稼ぐ
+        // 4本を候補として登録し直してから採点する。
+        const { ensureLaneOpportunities } = await import('../income/lanes.js');
+        const s = await ensureLaneOpportunities({
+          store,
+          origin: (env && (env.AGENT_ORIGIN || env.PUBLIC_ORIGIN)) || null,
+        });
+        seeded = s.seeded;
+        r = await ranking.rank(store, opts);
+      }
+      if (!r.total) {
+        return fail('no_candidates', { summary: '機会候補が0件のためランキングを作成できませんでした', data: r });
+      }
+      const lead = r.top.slice(0, 3).map((t) => `${t.name}(${t.score})`).join(', ');
+      const alloc = (r.allocation || [])[0];
       return ok({
-        summary: `機会ランキング更新: 全${r.total}件（上位: ${r.top.slice(0, 3).map((t) => `${t.name}(${t.score})`).join(', ')}）`,
-        data: r,
+        summary: `機会ランキング更新: 全${r.total}件${seeded ? `（稼ぎ方${seeded}本を候補として登録）` : ''}（上位: ${lead}）` +
+          (alloc ? ` / 次の一手: ${alloc.name} に資源の ${Math.round(alloc.share * 100)}%（${alloc.next_step}）` : ''),
+        data: { ...r, seeded },
       });
     },
 

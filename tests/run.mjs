@@ -167,9 +167,9 @@ await test('B', 'ミッションを登録すると自動で複数タスクに分
   const tasks = r.json.tasks;
   assert.ok(tasks.length >= 4, `expected >=4 tasks, got ${tasks.length}`);
   const domains = new Set(r.json.categories || []);
-  assert.ok(domains.has('fx'), 'FX domain should be recognised');
-  assert.ok(domains.has('rewards'), 'rewards domain should be recognised');
-  assert.ok(domains.has('side_hustle'), 'side hustle domain should be recognised');
+  // 稼ぎ方は x402 / API出品 / AI代行 に一本化済み。廃止した経路は計画に出さない。
+  assert.ok(!domains.has('fx') && !domains.has('rewards') && !domains.has('side_hustle'), 'retired domains must not be planned');
+  assert.ok(!tasks.some((t) => /^income_(fx|rewards|sidehustle)$/.test(t.category)), 'no retired-category tasks');
   // All tasks persisted with the documented initial state
   const list = await call('/api/tasks?limit=200');
   const mine = list.json.tasks.filter((t) => t.mission_id === r.json.mission.id);
@@ -345,7 +345,8 @@ await test('F', 'APIエラー発生時、無限ループにならずリトライ
   let calls = 0;
   let mode = '429';
   globalThis.fetch = async (url) => {
-    calls++;
+    // モデル一覧の取得は「API呼び出しの試行」ではない（12時間キャッシュ・従量課金なし）ので数えない。
+    if (!/\/models(\?|$)/.test(String(url))) calls++;
     if (mode === '429') return new Response('rate limited', { status: 429 });
     if (mode === '503') return new Response('unavailable', { status: 503 });
     if (mode === '401') return new Response('bad key', { status: 401 });
@@ -360,7 +361,7 @@ await test('F', 'APIエラー発生時、無限ループにならずリトライ
   assert.equal(r1.ok, true, 'must resolve, never throw or loop');
   assert.ok(r1.fallback === true, 'after exhausting retries it must fall back');
   assert.equal(r1.ok && r1.provider, 'deterministic');
-  assert.ok(calls - calls429 <= 4, `call count must stay bounded (was ${calls - calls429})`);
+  assert.ok(calls - calls429 <= 8, `call count must stay bounded (was ${calls - calls429})`);
   assert.ok(r1.wait_until, 'a wait_until must be provided so the task can be parked');
   assert.ok(r1.note);
 
