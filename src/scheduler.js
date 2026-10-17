@@ -177,6 +177,27 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'opt', error: e.message }); }
 
+    // 5c-5) バックテスト作業台（2つのタブ: E8モード / 自己資金モード）。
+    //       両方のモードで候補を無作為に作り、モードごとの目的関数で採点して D1 に積む。
+    //       画面（/lab.html）を開かなくても、エージェントの中で試行錯誤が進む。原価0。
+    try {
+      const labEveryMin = Math.max(5, Number(env.LAB_EVERY_MINUTES || 15));
+      const labLast = await setting(store, 'lab:last_run_at', null);
+      const labDue = !labLast || (Date.now() - new Date(labLast).getTime() >= labEveryMin * 60e3);
+      if (labDue && env && env.LAB_ENABLED === 'true') {
+        const { labTick } = await import('./income/lab.js');
+        const r = await labTick({ store, env });
+        await setSetting(store, 'lab:last_run_at', nowIso());
+        report.steps.push({
+          step: 'lab',
+          own: r.own ? { evaluated: r.own.evaluated, best: r.own.best ? `${r.own.best.symbol} score=${r.own.best.score}` : null, errors: (r.own.errors || []).length } : null,
+          e8: r.e8 ? { evaluated: r.e8.evaluated, best: r.e8.best ? `${r.e8.best.symbol} score=${r.e8.best.score}` : null, errors: (r.e8.errors || []).length } : null,
+        });
+      } else {
+        report.steps.push({ step: 'lab', skipped: labDue ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'lab', error: e.message }); }
+
     // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
     //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
     try {
