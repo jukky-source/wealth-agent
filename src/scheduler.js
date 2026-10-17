@@ -138,6 +138,45 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'fx_logic', error: e.message }); }
 
+    // 5c-3) E8 One の実行部 — 「E8 One と仮定して、エージェントの中で回す」。
+    //       日足が1本増えるたびに1日進む（新バーが無ければ何もしない）。原価0。
+    try {
+      const everyMin = Math.max(5, Number(env.E8_EVERY_MINUTES || 15));
+      const last = await setting(store, 'e8:last_run_at', null);
+      const due = !last || (Date.now() - new Date(last).getTime() >= everyMin * 60e3);
+      if (due && env && env.E8_ENABLED === 'true') {
+        const { e8Step } = await import('./income/e8Runner.js');
+        const r = await e8Step({ store, env });
+        await setSetting(store, 'e8:last_run_at', nowIso());
+        report.steps.push({ step: 'e8', ran: r.ran, status: r.status, attempt: r.attempt, balance: r.balance, progressPct: r.progressPct, passed: r.passed || 0, failed: r.failed || 0, payouts: r.payouts || 0, lastBar: r.lastBarDate || null, error: r.error || null });
+      } else {
+        report.steps.push({ step: 'e8', skipped: due ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'e8', error: e.message }); }
+
+    // 5c-4) 最適ロジック探索（有料バックテスターの遺伝的探索を作り直したもの）。
+    //       無作為生成→変異・交叉→IS/OOS→Walk Forward→Monte Carlo→コスト増し→フル検証。
+    try {
+      const everyMin = Math.max(5, Number(env.OPT_EVERY_MINUTES || 15));
+      const last = await setting(store, 'opt:last_run_at', null);
+      const due = !last || (Date.now() - new Date(last).getTime() >= everyMin * 60e3);
+      if (due && env && env.OPT_ENABLED === 'true') {
+        const { optTick } = await import('./income/optimizer.js');
+        const r = await optTick({ store, env, n: Number(env.OPT_PER_TICK || 2) });
+        await setSetting(store, 'opt:last_run_at', nowIso());
+        report.steps.push({
+          step: 'opt', gen: r.gen, evaluated: r.evaluated, ran: r.ran, mode: r.mode,
+          best: r.best ? `${r.best.symbol}/${r.best.tf} score=${r.best.score}` : null,
+          champion: r.champion ? `${r.champion.symbol}/${r.champion.tf} score=${r.champion.score}` : null,
+          collection: r.collection && !r.collection.error ? r.collection.members : (r.collection ? 'error' : null),
+          deep: r.deep ? (r.deep.pass === true ? 'pass' : (r.deep.skipped || 'fail')) : null,
+          error: r.error || null,
+        });
+      } else {
+        report.steps.push({ step: 'opt', skipped: due ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'opt', error: e.message }); }
+
     // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
     //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
     try {

@@ -496,6 +496,58 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       }
     }
 
+    // E8 One の実行部（オーナー専用）。エージェントの中で口座を1日ずつ前へ進める。
+    //   GET  : いまの口座・進捗・通算（?format=text で人が読む形、?help=1 で説明）
+    //   POST : その場で1tick回す（{reset:true} で口座を作り直す）
+    if (url.pathname === '/api/diag/e8' || url.pathname === '/api/e8') {
+      try {
+        const { e8Step, e8Status, e8Text, e8Help } = await import('./income/e8Runner.js');
+        if (request.method === 'GET' && url.searchParams.get('help') === '1') return json({ ok: true, help: e8Help() });
+        if (request.method === 'POST') {
+          let body = {};
+          try { body = await request.json(); } catch { /* 本文なしでも動く */ }
+          if (body && body.reset) await deps.store.run(`DELETE FROM settings WHERE key LIKE 'e8:%'`).catch(() => {});
+          const r = await e8Step({ store: deps.store, env, days: body?.days, applyBackfill: body?.backfill });
+          return json({ ok: true, ran: r, status: await e8Status(deps.store, env) });
+        }
+        const st = await e8Status(deps.store, env);
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(e8Text(st), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+        }
+        return json({ ok: true, ...st });
+      } catch (e) {
+        return json({ ok: false, error: 'e8_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
+    // 最適ロジック探索（有料バックテスターの進化探索を作り直したもの・オーナー専用）
+    //   GET  : 世代・母集団・集計・相関の低い集合（?view=board / ?view=collection）
+    //   POST : その場で数個体評価する（{n, reset}）
+    if (url.pathname === '/api/diag/opt' || url.pathname === '/api/opt') {
+      try {
+        const { optTick, optStatus, optText, optHelp } = await import('./income/optimizer.js');
+        if (request.method === 'GET' && url.searchParams.get('help') === '1') return json({ ok: true, help: optHelp() });
+        if (request.method === 'POST') {
+          let body = {};
+          try { body = await request.json(); } catch { /* 本文なしでも動く */ }
+          if (body && body.reset) await deps.store.run(`DELETE FROM settings WHERE key LIKE 'opt:%'`).catch(() => {});
+          const n = Math.max(1, Math.min(12, Number(body?.n || url.searchParams.get('n') || 3)));
+          const r = await optTick({ store: deps.store, env, n });
+          return json({ ok: true, ran: r, status: await optStatus(deps.store, env) });
+        }
+        const st = await optStatus(deps.store, env);
+        const view = url.searchParams.get('view');
+        if (view === 'board') return json({ ok: true, board: st.board, champion: st.champion, stats: st.stats });
+        if (view === 'collection') return json({ ok: true, collection: st.collection, stats: st.stats });
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(optText(st), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+        }
+        return json({ ok: true, ...st });
+      } catch (e) {
+        return json({ ok: false, error: 'opt_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
     if (url.pathname === '/api/diag/research' && request.method === 'GET') {
       try {
         const { createResearch } = await import('./research/web.js');
