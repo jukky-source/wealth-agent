@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<title>プロップファーム選考 vs 自己資金5万円 — 実データで測った合格率・日数・期待収益</title>
+<style>
+  :root{
+    --ink:#16202b; --ink2:#425466; --line:#d9e1e8; --bg:#fbfcfd; --card:#ffffff;
+    --accent:#0f6f6c; --accent2:#0b4f7a; --warn:#a8431a; --ok:#1a7f4b; --bad:#a8261f;
+    --bar:#0f6f6c; --bar2:#8fb8b6;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Hiragino Mincho ProN","Yu Mincho","Noto Serif JP",Georgia,"Times New Roman",serif;
+    font-size:15px; line-height:1.85;
+  }
+  .wrap{max-width:980px; margin:0 auto; padding:36px 28px 72px}
+  header.doc{border-bottom:3px double var(--line); padding-bottom:18px; margin-bottom:8px}
+  header.doc h1{font-size:26px; line-height:1.45; margin:0 0 6px; letter-spacing:.01em}
+  header.doc .sub{color:var(--ink2); font-size:13.5px}
+  .lede{background:#fff; border:1px solid var(--line); border-left:5px solid var(--accent);
+        padding:14px 18px; margin:20px 0 26px; border-radius:3px}
+  .lede b{color:var(--accent)}
+  h2{font-size:20px; margin:38px 0 10px; padding-bottom:6px; border-bottom:1px solid var(--line)}
+  h3{font-size:16.5px; margin:26px 0 8px}
+  p{margin:8px 0}
+  small,.small{font-size:12.5px; color:var(--ink2)}
+  .tabs{display:block; margin:22px 0 0; border-bottom:2px solid var(--line)}
+  .tabbtn{
+    display:inline-block; cursor:pointer; border:1px solid var(--line); border-bottom:none;
+    background:#eef3f5; color:var(--ink2); padding:11px 20px; margin:0 6px -2px 0;
+    font-size:15px; font-weight:700; border-radius:6px 6px 0 0; font-family:inherit;
+  }
+  .tabbtn[aria-selected="true"]{background:#fff; color:var(--accent); border-color:var(--accent); border-bottom:2px solid #fff}
+  .panel{display:none; padding-top:6px}
+  .panel.active{display:block}
+  table{width:100%; border-collapse:collapse; margin:14px 0 6px; font-size:13.5px; background:#fff}
+  th,td{border:1px solid var(--line); padding:7px 9px; vertical-align:top; text-align:left}
+  th{background:#f0f4f6; font-weight:700; font-size:12.5px}
+  td.num,th.num{text-align:right; font-variant-numeric:tabular-nums}
+  tr.group td{background:#f7fafb; font-weight:700; color:var(--ink2)}
+  .bar{height:9px; background:#e8eef1; border-radius:5px; overflow:hidden; min-width:64px}
+  .bar > span{display:block; height:100%; background:var(--bar)}
+  .bar.alt > span{background:var(--accent2)}
+  .card{background:#fff; border:1px solid var(--line); border-radius:6px; padding:14px 18px; margin:16px 0}
+  .card h3{margin-top:0}
+  .grid2{display:block}
+  .kpi{display:inline-block; width:23%; min-width:170px; vertical-align:top; margin:0 1% 10px 0;
+       background:#fff; border:1px solid var(--line); border-top:3px solid var(--accent); padding:10px 12px; border-radius:4px}
+  .kpi .k{font-size:11.5px; color:var(--ink2); letter-spacing:.04em}
+  .kpi .v{font-size:21px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.3}
+  .kpi .n{font-size:11.5px; color:var(--ink2)}
+  .bad{color:var(--bad)} .ok{color:var(--ok)} .warn{color:var(--warn)}
+  ul,ol{margin:8px 0 8px 22px; padding:0}
+  li{margin:4px 0}
+  .note{background:#fff8f2; border:1px solid #f0d9c8; border-radius:5px; padding:12px 16px; margin:16px 0}
+  .note b{color:var(--warn)}
+  .src{font-size:12px; color:var(--ink2)}
+  .src a{color:var(--accent2)}
+  footer{margin-top:44px; border-top:1px solid var(--line); padding-top:16px; font-size:12.5px; color:var(--ink2)}
+  code{background:#eef3f5; padding:1px 5px; border-radius:3px; font-size:12.5px}
+  @media (max-width:720px){
+    .wrap{padding:22px 14px 56px}
+    table{font-size:12.5px}
+    .kpi{width:48%}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <h1>プロップファーム選考 vs 自己資金5万円<br>— 実データで測った合格率・合格までの日数・合格後の期待収益</h1>
+  <div class="sub">計測日 2026-10-17 ／ 対象: FundedNext（Stellar 1-Step・2-Step）、E8 Markets（E8 One）、Fintokei（速攻プロ・プロトレーダー） ／ 計測は本番Worker上（サンドボックスでFXのバックテストは回していない）</div>
+</header>
+
+<div class="lede">
+  <p><b>結論を一行で。</b> いまのロジック束を<b>建玉0.5〜0.75倍</b>に落とすと、E8 One（最大損失10%設定）で <b>合格率60%・中央値82日・合格後の月収 $1,277（≈¥20.2万）</b>。合格後の口座が12ヶ月生き残る確率は55.5%で、6社中最良。自己資金5万円の「爆益」は、<b>1年で10倍が12〜16%（撤退10〜35%）</b>で、狙うなら<b>建玉3倍前後</b>が限界線です。</p>
+</div>
+
+<h2>0. 計測方法（共通の土台）</h2>
+
+<table>
+  <tbody>
+  <tr><th style="width:26%">データ</th><td>Yahoo Finance 日足 2,982本（2016-06-17 → 2026-10-16）。OHLCの不整合は修復済み。無料・鍵不要。</td></tr>
+  <tr><th>使ったロジック</th><td>生き残った5本のみ（等加重）: <code>USDJPY/donchian_breakout</code>・<code>USDJPY/bollinger_fade</code>・<code>GOLD/donchian_breakout</code>・<code>GOLD/ema_cross</code>・<code>EURJPY/bollinger_fade</code>。過去10年で破産しなかった＝そのまま運用できるもの。</td></tr>
+  <tr><th>除外した10本</th><td><code>USDJPY/ema_cross</code>・<code>EURUSD</code>3本・<code>GOLD/bollinger_fade</code>・<code>GBPJPY</code>3本・<code>EURJPY/donchian_breakout</code>・<code>EURJPY/ema_cross</code>。1万通貨／資金10万円では円換算で約16倍の建玉になり、途中で資金が尽きる（破産判定で建玉を引く）。<b>隠さず記録しています。</b></td></tr>
+  <tr><th>損益の性格</th><td>日次 平均 +0.090% ／ 標準偏差 1.722% ／ 年率シャープ <b>0.83</b> ／ 1日の変動の中央値 0.659% ／ 95%点 3.508% ／ 最悪日 −10.71%</td></tr>
+  <tr><th>確率の出し方</th><td>日次損益率を<b>移動ブロック（5日）ブートストラップで400経路</b>生成し、各社のルールに当てて判定。1本の過去経路を繰り返すだけの「後知恵」ではありません。</td></tr>
+  <tr><th>建玉の前提</th><td>口座残高に比例させて張る（＝同じリスク率を保つ）。だから損益率をそのまま口座に当てられます。<b>「リスク倍率」= 基準（1万通貨／10万円）に対する建玉の倍率</b>です。</td></tr>
+  <tr><th>含まないもの</th><td>スワップ、週末の窓、スプレッドの時間帯変動、約定拒否、手数料、税。日次損失は<b>終値ベース</b>で判定（ザラ場の最悪値は見ていない＝実際より甘い）。</td></tr>
+  </tbody>
+</table>
+
+<div class="tabs" role="tablist">
+  <button class="tabbtn" id="tb1" role="tab" aria-selected="true" aria-controls="p1">① プロップファーム（資金提供型）</button>
+  <button class="tabbtn" id="tb2" role="tab" aria-selected="false" aria-controls="p2">② 自己資金 5万円以下（海外FX・爆益）</button>
+</div>
+
+<!-- ===================== TAB 1 ===================== -->
+<section class="panel active" id="p1" role="tabpanel" aria-labelledby="tb1">
+
+  <div class="kpi"><div class="k">最高の期待値</div><div class="v">$766<span class="small">/月</span></div><div class="n">E8 One（最大損失10%）／1口座あたり</div></div>
+  <div class="kpi"><div class="k">合格率</div><div class="v">60.0%</div><div class="n">建玉0.75倍で（400経路）</div></div>
+  <div class="kpi"><div class="k">合格までの日数</div><div class="v">82<span class="small">日</span></div><div class="n">中央値（52〜124日）</div></div>
+  <div class="kpi"><div class="k">合格後の生存率</div><div class="v">55.5%</div><div class="n">12ヶ月、ルールを破らず維持</div></div>
+
+  <h2>1-1. 各社のルール（一次情報で確認した値）</h2>
+  <table>
+    <thead><tr>
+      <th>会社 / プラン</th><th>利益目標</th><th>1日の最大損失</th><th>全体の最大損失</th><th>最低取引日数</th><th>報酬分配</th><th>初回の支払い</th>
+    </tr></thead>
+    <tbody>
+      <tr><td><b>FundedNext</b><br><span class="small">Stellar 2-Step</span></td><td>8% → 5%<br><span class="small">2段階</span></td><td>5%<br><span class="small">初期残高基準</span></td><td>10%<br><span class="small">固定（動かない）</span></td><td>各フェーズ5日</td><td>80%<br><span class="small">最大95%</span></td><td>資金提供後21日</td></tr>
+      <tr><td><b>FundedNext</b><br><span class="small">Stellar 1-Step</span></td><td>10%<br><span class="small">1段階</span></td><td>3%</td><td>6%<br><span class="small">固定</span></td><td>2日</td><td>80%</td><td>資金提供後5営業日</td></tr>
+      <tr><td><b>E8 Markets</b><br><span class="small">E8 One（6%を選択）</span></td><td>9%</td><td>4%<br><span class="small">当日開始残高基準</span></td><td>6%<br><span class="small">動的（利益で上がる）</span></td><td>なし（1日でも可）</td><td>80%（〜100%）</td><td>随時請求<br><span class="small">純益が日次許容の50%超から</span></td></tr>
+      <tr><td><b>E8 Markets</b><br><span class="small">E8 One（10%を選択）</span></td><td>15%</td><td>6.6%</td><td>10%<br><span class="small">動的</span></td><td>なし</td><td>80%（〜100%）</td><td>随時請求</td></tr>
+      <tr><td><b>Fintokei</b><br><span class="small">速攻プロ（1ステップ）</span></td><td>6%</td><td>−2%</td><td>−3%<br><span class="small">固定</span></td><td>3日</td><td>90%</td><td>支払いごとに+3%必要<br><span class="small">評価は60日以内</span></td></tr>
+      <tr><td><b>Fintokei</b><br><span class="small">プロトレーダー（2ステップ）</span><br><span class="warn small">※規則は二次情報</span></td><td>8% → 5%</td><td>5%</td><td>10%</td><td>3日</td><td>80%</td><td>要確認</td></tr>
+    </tbody>
+  </table>
+  <p class="small">出典: FundedNext＝<a href="https://tradetanto.com/learn/fundednext-rules-a-complete-guide-for-cfd-traders">Tanto（FundedNext CFD rules 2026）</a>／E8＝<a href="https://tradetanto.com/learn/e8-markets-rules">Tanto（E8 Markets rules）</a>・<a href="https://help.e8markets.com/en/articles/11775980-e8-one">E8公式ヘルプ</a>／Fintokei 速攻プロ＝<a href="https://fx.suitablism.com/fintokei-swifttrader/">FX比較ラボ（2026年7月15日改定後の条件）</a>・<a href="https://www.fintokei.com/jp/protrader/">Fintokei公式</a>。Fintokeiのプロトレーダーは公式の数値表が画像のため、二次情報（未検証）として扱っています。</p>
+
+  <h2>1-2. 実測: 合格率・日数・合格後の期待収益</h2>
+  <p>各社のルールに<b>最も期待値が高かった建玉倍率</b>の行を抜粋。口座は $100,000（Fintokeiは¥1,000万）。金額はUSD/JPY=158.0で円換算。</p>
+  <table>
+    <thead><tr>
+      <th>会社 / プラン</th><th class="num">建玉倍率</th><th class="num">合格率</th><th class="num">合格までの日数<br><span class="small">中央値（25%〜75%）</span></th>
+      <th class="num">合格後の月収<br><span class="small">中央値</span></th><th class="num">12ヶ月<br>生存率</th><th>期待値（1口座あたり）<br><span class="small">合格率 × 月収</span></th><th>主な失格理由</th>
+    </tr></thead>
+    <tbody>
+      <tr>
+        <td>FundedNext / Stellar 2-Step</td><td class="num">0.50</td><td class="num"><b>53.8%</b></td><td class="num">127日 <span class="small">(82〜176)</span></td>
+        <td class="num">$796<br><span class="small">≈¥125,800</span></td><td class="num">66.5%</td>
+        <td><div class="bar alt"><span style="width:56%"></span></div><span class="small">$428 / 月（≈¥67,600）</span></td>
+        <td class="small">全体損失70／様子見50／データ末尾48／日次17</td>
+      </tr>
+      <tr>
+        <td>FundedNext / Stellar 1-Step</td><td class="num">0.50</td><td class="num"><b>58.3%</b></td><td class="num">85日 <span class="small">(54〜128)</span></td>
+        <td class="num">$472<br><span class="small">≈¥74,600</span></td><td class="num bad">12.5%</td>
+        <td><div class="bar alt"><span style="width:36%"></span></div><span class="small">$275 / 月（≈¥43,500）</span></td>
+        <td class="small">全体損失92／日次50／様子見25</td>
+      </tr>
+      <tr>
+        <td>E8 One（最大損失6%を選択）</td><td class="num">0.50</td><td class="num"><b>60.0%</b></td><td class="num">77日 <span class="small">(47〜116)</span></td>
+        <td class="num">$841<br><span class="small">≈¥132,900</span></td><td class="num">51.5%</td>
+        <td><div class="bar alt"><span style="width:66%"></span></div><span class="small">$505 / 月（≈¥79,800）</span></td>
+        <td class="small">全体損失107／日次34／様子見19</td>
+      </tr>
+      <tr>
+        <td><b>E8 One（最大損失10%を選択）</b></td><td class="num"><b>0.75</b></td><td class="num"><b>60.0%</b></td><td class="num"><b>82日</b> <span class="small">(52〜124)</span></td>
+        <td class="num"><b>$1,277</b><br><span class="small">≈¥201,800</span></td><td class="num ok"><b>55.5%</b></td>
+        <td><div class="bar"><span style="width:100%"></span></div><span class="small"><b>$766 / 月</b>（≈¥121,000）</span></td>
+        <td class="small">全体損失90／日次43／様子見27</td>
+      </tr>
+      <tr>
+        <td>Fintokei / 速攻プロ</td><td class="num">0.25</td><td class="num bad"><b>8.5%</b></td><td class="num">46日 <span class="small">(40〜55)</span></td>
+        <td class="num">¥34,120</td><td class="num">49.0%</td>
+        <td><div class="bar alt"><span style="width:3%"></span></div><span class="small">¥2,900 / 月</span></td>
+        <td class="small"><b>60日期限切れ300</b>／全体損失45／日次21</td>
+      </tr>
+      <tr>
+        <td>Fintokei / プロトレーダー<br><span class="warn small">※規則は二次情報</span></td><td class="num">0.75</td><td class="num"><b>53.8%</b></td><td class="num">78日 <span class="small">(47〜116)</span></td>
+        <td class="num">¥101,723</td><td class="num">41.5%</td>
+        <td><div class="bar alt"><span style="width:71%"></span></div><span class="small">¥54,676 / 月</span></td>
+        <td class="small">日次79／全体損失100</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="small">期待値＝合格率×月収（1口座を買って通したときの月あたり期待値）。<b>Fintokeiの「速攻プロ」は現行ロジックでは向きません</b> — 利益目標6%に対して1日の許容が−2%、全体−3%、しかも60日期限のため、400経路のうち300経路が期限切れ。合格率8.5%まで落ちるので、参加費（¥1,000万口座なら¥93,800）を回収するのに月¥2,900では33ヶ月かかります。</p>
+
+  <h3>建玉倍率ごとの全行（同じデータ・同じ経路数）</h3>
+  <table>
+    <thead><tr><th>会社 / プラン</th><th class="num">倍率</th><th class="num">合格率</th><th class="num">日数中央値</th><th class="num">合格後の月収</th><th class="num">生存率</th><th class="num">期待値/月</th></tr></thead>
+    <tbody>
+      <tr class="group"><td colspan="7">FundedNext / Stellar 2-Step（日次5%・全体10%・固定床）</td></tr>
+      <tr><td></td><td class="num">0.25</td><td class="num">15.3%</td><td class="num">192</td><td class="num">$434</td><td class="num">98.5%</td><td class="num">$66</td></tr>
+      <tr><td></td><td class="num">0.50</td><td class="num">53.8%</td><td class="num">127</td><td class="num">$796</td><td class="num">66.5%</td><td class="num">$428</td></tr>
+      <tr><td></td><td class="num">0.75</td><td class="num">51.3%</td><td class="num">75</td><td class="num">$813</td><td class="num">21.0%</td><td class="num">$417</td></tr>
+      <tr><td></td><td class="num">1.00</td><td class="num">44.3%</td><td class="num">42</td><td class="num">$421</td><td class="num bad">1.0%</td><td class="num">$186</td></tr>
+      <tr class="group"><td colspan="7">FundedNext / Stellar 1-Step（日次3%・全体6%）</td></tr>
+      <tr><td></td><td class="num">0.25</td><td class="num">36.8%</td><td class="num">158</td><td class="num">$539</td><td class="num">89.5%</td><td class="num">$198</td></tr>
+      <tr><td></td><td class="num">0.50</td><td class="num">58.3%</td><td class="num">85</td><td class="num">$472</td><td class="num bad">12.5%</td><td class="num">$275</td></tr>
+      <tr><td></td><td class="num">0.75</td><td class="num">47.5%</td><td class="num">44</td><td class="num">$167</td><td class="num bad">0.5%</td><td class="num">$79</td></tr>
+      <tr><td></td><td class="num">1.00</td><td class="num">46.0%</td><td class="num">28</td><td class="num">$160</td><td class="num bad">0.0%</td><td class="num">$74</td></tr>
+      <tr class="group"><td colspan="7">E8 One（最大損失6%を選択・日次4%・動的床）</td></tr>
+      <tr><td></td><td class="num">0.25</td><td class="num">40.8%</td><td class="num">152</td><td class="num">$439</td><td class="num">88.0%</td><td class="num">$179</td></tr>
+      <tr><td></td><td class="num">0.50</td><td class="num">60.0%</td><td class="num">77</td><td class="num">$841</td><td class="num">51.5%</td><td class="num">$505</td></tr>
+      <tr><td></td><td class="num">0.75</td><td class="num">44.8%</td><td class="num">43</td><td class="num">$516</td><td class="num">16.5%</td><td class="num">$231</td></tr>
+      <tr><td></td><td class="num">1.00</td><td class="num">44.0%</td><td class="num">20</td><td class="num">$388</td><td class="num bad">1.0%</td><td class="num">$171</td></tr>
+      <tr class="group"><td colspan="7">E8 One（最大損失10%を選択・日次6.6%・動的床）</td></tr>
+      <tr><td></td><td class="num">0.25</td><td class="num">13.3%</td><td class="num">201</td><td class="num">$449</td><td class="num">97.5%</td><td class="num">$59</td></tr>
+      <tr><td></td><td class="num">0.50</td><td class="num">47.3%</td><td class="num">136</td><td class="num">$801</td><td class="num">81.5%</td><td class="num">$378</td></tr>
+      <tr><td></td><td class="num"><b>0.75</b></td><td class="num"><b>60.0%</b></td><td class="num">82</td><td class="num"><b>$1,277</b></td><td class="num">55.5%</td><td class="num"><b>$766</b></td></tr>
+      <tr><td></td><td class="num">1.00</td><td class="num">55.5%</td><td class="num">49</td><td class="num">$1,000</td><td class="num">32.0%</td><td class="num">$555</td></tr>
+      <tr class="group"><td colspan="7">Fintokei / 速攻プロ（¥1,000万口座・日次−2%・全体−3%・60日期限）</td></tr>
+      <tr><td></td><td class="num">0.25</td><td class="num">8.5%</td><td class="num">46</td><td class="num">¥34,120</td><td class="num">49.0%</td><td class="num">¥2,900</td></tr>
+      <tr><td></td><td class="num">0.50</td><td class="num">24.3%</td><td class="num">30</td><td class="num bad">¥0</td><td class="num bad">1.5%</td><td class="num">¥0</td></tr>
+      <tr><td></td><td class="num">0.75</td><td class="num">31.0%</td><td class="num">15</td><td class="num bad">¥0</td><td class="num bad">0.0%</td><td class="num">¥0</td></tr>
+      <tr><td></td><td class="num">1.00</td><td class="num">32.8%</td><td class="num">11</td><td class="num bad">¥0</td><td class="num bad">0.0%</td><td class="num">¥0</td></tr>
+      <tr class="group"><td colspan="7">Fintokei / プロトレーダー（¥1,000万口座・規則は二次情報）</td></tr>
+      <tr><td></td><td class="num">0.25</td><td class="num">14.0%</td><td class="num">191</td><td class="num">¥47,325</td><td class="num">99.5%</td><td class="num">¥6,626</td></tr>
+      <tr><td></td><td class="num">0.50</td><td class="num">49.3%</td><td class="num">127</td><td class="num">¥75,326</td><td class="num">70.0%</td><td class="num">¥37,098</td></tr>
+      <tr><td></td><td class="num">0.75</td><td class="num">53.8%</td><td class="num">78</td><td class="num">¥101,723</td><td class="num">41.5%</td><td class="num">¥54,676</td></tr>
+      <tr><td></td><td class="num">1.00</td><td class="num">40.8%</td><td class="num">43</td><td class="num">¥43,259</td><td class="num">7.5%</td><td class="num">¥17,628</td></tr>
+    </tbody>
+  </table>
+
+  <div class="card">
+    <h3>読み取れること（3点）</h3>
+    <ol>
+      <li><b>「小さく張る」ほど合格率は上がるが、合格後の月収は下がる。</b> 期待値が最大になるのは中くらいの倍率（0.5〜0.75倍）で、どの社でも同じ形になります。等倍（基準のまま）で張ると合格はできても、資金提供口座の日次制限で数週間で飛びます（生存率0〜1%）。</li>
+      <li><b>プランの選択が結果を大きく変える。</b> FundedNext 1-Step は合格率58%と高いのに、資金提供後の日次3%／全体6%が厳しく生存率12.5%。E8 One で「最大損失10%」を選ぶと日次許容6.6%まで広がり、生存率55.5%・月収$1,277で最良。<b>同じロジックでも、ルールの選び方で期待値は2〜3倍変わります。</b></li>
+      <li><b>Fintokei 速攻プロは数字が合わない。</b> −2%／−3%という狭い損失許容に60日期限が重なり、現行ロジックでは300/400経路が期限切れ。合格率8.5%・期待値¥2,900/月では参加費を回収できません（倍率を上げると合格しても資金提供直後に失格）。</li>
+    </ol>
+  </div>
+
+  <h2>1-3. 世の中の公開統計と比べる（我々の数字は「甘い」）</h2>
+  <table>
+    <thead><tr><th>出典</th><th>数字</th><th>示唆</th></tr></thead>
+    <tbody>
+      <tr><td>FPFX Tech（10社・10万人超）</td><td>合格して資金提供に到達 14%、実際に支払いを受けたのは 7%</td><td>合格の半分以下しか報酬に届かない</td></tr>
+      <tr><td>Swiset（1万人・2024/4〜2025/4）</td><td>1ステップ 20.3% 合格 ／ 2ステップ 11.8% 合格 ／ 合格まで平均6日</td><td>1ステップの方が通りやすい</td></tr>
+      <tr><td>E8 Markets（自社公表）</td><td>評価の合格率 17.7%</td><td>当社の推計60%よりずっと低い</td></tr>
+      <tr><td>Fintokei（自社公表 2024）</td><td>2ステップで資金提供到達 2〜5%、資金提供者の約40%が支払い獲得、平均支払額 $4,473</td><td>到達後の支払い率が低い</td></tr>
+      <tr><td>OneFunded（失格理由）</td><td>失格の78.7%が「1日の損失制限」、15%が「全体の最大損失」</td><td>敗因の9割超が損失管理。ロジックより建玉の大きさ</td></tr>
+    </tbody>
+  </table>
+  <p class="small">出典: <a href="https://fortunly.com/statistics/prop-firm-challenge-pass-rate-statistics/">Fortunly — Prop Firm Challenge Pass Rate Statistics（2026-09-03）</a>。同記事の総括は「おおむね10〜20%が合格」。</p>
+  <div class="note">
+    <b>我々の推計（合格率53〜60%）は公開統計（10〜20%）より高く出ています。理由は4つあり、いずれも「実際より甘い」方向に効きます。</b>
+    <ul style="margin-bottom:0">
+      <li>日次損失を<b>日足終値</b>で判定している（実際はザラ場の瞬間的な含み損で破る＝OneFundedの78.7%はこれ）。</li>
+      <li>感情がない（リベンジトレード・分割建て・損切り拡大が無い）。</li>
+      <li>毎日同じルールで同じリスク率（実際は勝ち後に建玉を上げて飛ぶ）。</li>
+      <li>同じ10年の相場をブロック抽出しているので、未曾有の相場（急変・スプレッド拡大・週末窓）を含まない。</li>
+    </ul>
+    <p style="margin:10px 0 0"><b>したがって実運用の合格率は、ここに出た数字の半分以下と考えるのが妥当です。</b>ここでの数字は「ルールと建玉の関係を測る物差し」として使ってください。</p>
+  </div>
+
+  <h2>1-4. 費用と回収（分かる範囲で）</h2>
+  <table>
+    <thead><tr><th>プラン</th><th>参加費</th><th>期待値（1口座あたり/月）</th><th>回収の目安</th></tr></thead>
+    <tbody>
+      <tr><td>FundedNext Stellar 2-Step $100K</td><td>$549.99（初回報酬で全額返金）</td><td>$428</td><td>合格すれば<b>1〜2ヶ月</b>で実質ゼロ（返金制度あり）</td></tr>
+      <tr><td>E8 One $100K（10%設定）</td><td class="small">要確認（取得できず）</td><td>$766</td><td>—</td></tr>
+      <tr><td>Fintokei 速攻プロ（¥1,000万）</td><td>¥93,800</td><td>¥2,900</td><td class="bad">約33ヶ月（実質不可）</td></tr>
+      <tr><td>Fintokei 速攻プロ（アイアン ¥100万）</td><td>¥9,800</td><td>¥290<br><span class="small">口座規模に比例</span></td><td class="bad">約34ヶ月</td></tr>
+    </tbody>
+  </table>
+  <p class="small">合格率は口座サイズに依存しません（ルールが%のため）。<b>報酬だけが口座サイズに比例します</b>（$10K口座なら上の1/10）。FundedNextの参加費は<a href="https://propfirmmatch.com/prop-firms/fundednext">PropFirmMatchの価格表</a>より。E8の参加費は取得できませんでした（未確認と明記）。</p>
+
+  <h2>1-5. 実務での使い方</h2>
+  <ol>
+    <li><b>買うなら E8 One の「最大損失10%」設定・$100K</b>（日次6.6%・動的床）。理由は唯一、合格率60%を保ちながら生存率55.5%・期待値$766/月が両立するから。</li>
+    <li><b>建玉はロジック基準の0.75倍</b>に落とす（1万通貨のところを7,500通貨）。等倍で張ると資金提供直後に失格します。</li>
+    <li>受講中も<b>「全体の最大損失」に常に8割の余裕</b>を残す（破る主因はここ）。日次の許容もザラ場では半分と考える。</li>
+    <li><b>自動売買（EA）の可否は各社の規約で必ず確認</b>してください。当エージェントは発注も資金移動もしません（ここで出しているのは検証用の数字だけです）。</li>
+  </ol>
+
+</section>
+
+<!-- ===================== TAB 2 ===================== -->
+<section class="panel" id="p2" role="tabpanel" aria-labelledby="tb2">
+
+  <div class="kpi"><div class="k">5万円 → 10倍</div><div class="v warn">12.4%</div><div class="n">建玉3倍・1年（撤退10.4%）</div></div>
+  <div class="kpi"><div class="k">5万円 → 10倍（強気）</div><div class="v bad">16.0%</div><div class="n">建玉4倍・1年（撤退35.2%）</div></div>
+  <div class="kpi"><div class="k">現実的な狙い</div><div class="v">2倍</div><div class="n">建玉2倍で到達32.8%・撤退0%</div></div>
+  <div class="kpi"><div class="k">証拠金</div><div class="v">¥790</div><div class="n">0.05ロット（5,000通貨）@1:1000</div></div>
+
+  <h2>2-1. 前提（海外FX・5万円）</h2>
+  <table>
+    <tbody>
+      <tr><th style="width:26%">資金</th><td>¥50,000（これ以下でも同じ比率で動きます）</td></tr>
+      <tr><th>レバレッジ</th><td>海外FXは最大1:1,000程度（業者によっては無制限）。国内FXは法律で25倍まで。<a href="https://www.landprime.com/media/kaigaifx-leverage/">LandPrimeの比較（2026-10）</a>・<a href="https://fxsignup.com/knowledge/20082801.html">FX業者比較</a>より。</td></tr>
+      <tr><th>実際の証拠金</th><td>5,000通貨（0.05ロット）＝USD/JPY 158 で ¥790。1:1,000なら<b>元本の1.6%</b>しか使いません。40,000通貨（0.4ロット）でも ¥6,319＝元本の12.6%。<b>証拠金ではなく「撤退ラインの設計」が生死を分けます。</b></td></tr>
+      <tr><th>1pipの値段</th><td>5,000通貨で¥50／10,000通貨で¥100／40,000通貨で¥400。5万円で40,000通貨を持つと、<b>1日で−10%は125pips</b>の逆行です（USD/JPYの1日の変動の95%点は約100pips）。</td></tr>
+      <tr><th>建玉倍率</th><td>基準ロジック＝1万通貨／資金10万円。<b>5万円なら基準は5,000通貨（倍率1.0）</b>、倍率4倍なら20,000通貨（0.2ロット）。複利（残高比例）で張り替えます。</td></tr>
+      <tr><th>撤退ライン</th><td>残高が元本のこの%を割ったら全決済して撤退（倍率を追う表では10%＝実質破産で統一）。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>2-2. 「爆益」の前線 — 建玉倍率 × 目標倍率</h2>
+  <p>12ヶ月・400経路。各セルは <b>目標到達率 | 撤退率</b>。同じ損益列を倍率だけ変えて回しているので、差はすべて「張り方」から来ます。</p>
+  <table>
+    <thead><tr>
+      <th>建玉倍率<br><span class="small">（通貨量）</span></th>
+      <th class="num">×1.5</th><th class="num">×2</th><th class="num">×3</th><th class="num">×5</th><th class="num">×10</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>0.5倍<br><span class="small">2,500通貨</span></td><td class="num">1.2% | 0%</td><td class="num">0% | 0%</td><td class="num">0% | 0%</td><td class="num">0% | 0%</td><td class="num">0% | 0%</td></tr>
+      <tr><td>1倍<br><span class="small">5,000通貨</span></td><td class="num">25.6% | 0%</td><td class="num">3.2% | 0%</td><td class="num">0% | 0%</td><td class="num">0% | 0%</td><td class="num">0% | 0%</td></tr>
+      <tr><td>1.5倍<br><span class="small">7,500通貨</span></td><td class="num">50.0% | 0%</td><td class="num">16.4% | 0%</td><td class="num">2.0% | 0%</td><td class="num">0% | 0%</td><td class="num">0% | 0%</td></tr>
+      <tr><td>2倍<br><span class="small">10,000通貨</span></td><td class="num">61.2% | 0%</td><td class="num"><b>32.8%</b> | 0%</td><td class="num">11.2% | 0%</td><td class="num">1.6% | 0%</td><td class="num">0% | 0%</td></tr>
+      <tr><td>3倍<br><span class="small">15,000通貨</span></td><td class="num">69.6% | 0%</td><td class="num">48.0% | 0.4%</td><td class="num">17.2% | 0%</td><td class="num">6.8% | 0%</td><td class="num">0.4% | 0%</td></tr>
+      <tr><td>4倍<br><span class="small">20,000通貨</span></td><td class="num">71.2% | 1.6%</td><td class="num">54.8% | 0.8%</td><td class="num">32.4% | 1.6%</td><td class="num">14.8% | 0%</td><td class="num">2.4% | 0.4%</td></tr>
+      <tr style="background:#fff8f2"><td>6倍<br><span class="small">30,000通貨</span><br><span class="small warn">推奨の限界</span></td><td class="num">73.6% | 12.0%</td><td class="num">62.0% | 11.6%</td><td class="num"><b>40.4%</b> | 9.6%</td><td class="num"><b>26.8%</b> | 12.0%</td><td class="num"><b>12.4%</b> | 10.4%</td></tr>
+      <tr><td>8倍<br><span class="small">40,000通貨</span></td><td class="num">78.8% | 18.4%</td><td class="num">58.4% | 29.6%</td><td class="num">45.2% | 32.8%</td><td class="num">33.2% | 29.2%</td><td class="num">16.0% | 35.2%</td></tr>
+    </tbody>
+  </table>
+  <p class="small">読み方: 「×1.5」は元本の1.5倍（5万円→7.5万円）。同じ1年の間に、到達して終わるか、撤退ラインに触れて終わるかを数えています。<b>1年で10倍を狙うと、どこかの倍率で必ず2〜3割が退場します。</b></p>
+
+  <div class="card">
+    <h3>結論: 爆益は「倍率を上げれば上がる」が、勝率が先に落ちる</h3>
+    <ul>
+      <li><b>×2〜×3（2〜3倍）が最も費用対効果が良い。</b>建玉2倍で ×2到達 32.8%、3倍で ×3到達 40.4%（撤退1割）。「5万 → 15万」を1年で狙うのが現実的な上限線。</li>
+      <li><b>×10は「当たれば大きいが、外れも大きい」。</b>建玉4倍で2.4%・6倍で12.4%・8倍で16.0%。ただし8倍は撤退35.2%。<b>10倍を狙うなら、5万円は「捨ててよい金額」であることが条件</b>です。</li>
+      <li><b>撤退ラインが最重要。</b>撤退10%を守るだけで、8倍でも「ほぼ全損」は35%に収まります。撤退ライン無しで8倍を回すと、実質は全損率が跳ね上がります。</li>
+    </ul>
+  </div>
+
+  <h2>2-3. 4つの運用プラン（実測）</h2>
+  <table>
+    <thead><tr>
+      <th>プラン</th><th class="num">建玉</th><th class="num">目標</th><th class="num">撤退<br>ライン</th>
+      <th class="num">到達率</th><th class="num">撤退率</th><th class="num">到達までの<br>中央値</th>
+      <th class="num">12ヶ月後の<br>残高（中央値）</th><th class="num">下位10%<br>／上位10%</th>
+    </tr></thead>
+    <tbody>
+      <tr><td>堅実</td><td class="num">1倍<br><span class="small">5,000通貨</span></td><td class="num">×2</td><td class="num">50%</td><td class="num">2.8%</td><td class="num ok">0%</td><td class="num">10.9ヶ月</td><td class="num">¥58,886<br><span class="small">（×1.18）</span></td><td class="num">¥43,927 ／ ¥82,878</td></tr>
+      <tr><td>標準</td><td class="num">2倍<br><span class="small">10,000通貨</span></td><td class="num">×3</td><td class="num">30%</td><td class="num">9.8%</td><td class="num ok">0%</td><td class="num">10.0ヶ月</td><td class="num">¥65,997<br><span class="small">（×1.32）</span></td><td class="num">¥34,578 ／ ¥144,879</td></tr>
+      <tr><td>爆益</td><td class="num">4倍<br><span class="small">20,000通貨</span></td><td class="num">×10</td><td class="num">10%</td><td class="num">4.3%</td><td class="num">1.0%</td><td class="num">9.7ヶ月</td><td class="num">¥72,578<br><span class="small">（×1.45）</span></td><td class="num">¥20,565 ／ ¥263,942</td></tr>
+      <tr><td>超爆益</td><td class="num">8倍<br><span class="small">40,000通貨</span></td><td class="num">×20</td><td class="num">10%</td><td class="num"><b>11.8%</b></td><td class="num bad">28.3%</td><td class="num">8.0ヶ月</td><td class="num">¥35,660<br><span class="small">（×0.71）</span></td><td class="num">¥4,164 ／ ¥1,009,764</td></tr>
+    </tbody>
+  </table>
+  <p class="small">超爆益（8倍）が象徴的です。中央値では元本を3割減らしますが、上位10%は¥101万（20倍）。<b>「平均」ではなく「分布」で見るべき領域</b>です。到達率11.8%は撤退率28.3%と引き換えに得ています。</p>
+
+  <h2>2-4. 爆益ロジックの仕様（そのまま実行できる形）</h2>
+  <table>
+    <tbody>
+      <tr><th style="width:24%">1. 入口</th><td>生き残った5ロジックの等加重（<code>GOLD/ema_cross</code>・<code>GOLD/donchian_breakout</code>・<code>EURJPY/bollinger_fade</code>・<code>USDJPY/donchian_breakout</code>・<code>USDJPY/bollinger_fade</code>）。過去10年の純益は GOLD系が +182%／+239%、EURJPYの平均回帰が +275%。<b>円換算でプラスになっている系統だけを残しています</b>（EURUSD・GBPJPYは10万円基準だと16倍の建玉になり破産したため除外）。</td></tr>
+      <tr><th>2. 数量</th><td>基準＝資金×10%（1万通貨/10万円）。5万円なら5,000通貨。<b>その日に決めた倍率を残高に比例させて毎回張り直す（複利）</b>。</td></tr>
+      <tr><th>3. 損切り・利確</th><td>ATR(14)×2.0 を損切り、ATR×2.5 を利確。シグナルは日足終値、約定は翌日始値。同時に1ポジション。両方成立時は損切り優先（不利側で約定）。</td></tr>
+      <tr><th>4. 撤退ライン</th><td>残高が元本の10%（標準プランは30%、堅実は50%）を割ったら全決済して<b>その口座は終了</b>。ここを決めないと「爆益」は全損になります。</td></tr>
+      <tr><th>5. 出金</th><td>しない（複利前提）。目標到達時に<b>元本を出金して同じ資金で再スタート</b>すると、利益確定と爆益の両取りになります。</td></tr>
+      <tr><th>6. 手数料</th><td>スプレッド0.3pips＋スリッページ0.2pipsを毎取引で控除済み。<b>実際はスワップと時間帯スプレッド拡大が加わります（未計上）</b>。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <b>5万円で「爆益」を狙うときの見落としやすい落とし穴。</b>
+    <ul style="margin-bottom:0">
+      <li><b>業者リスク。</b>海外FXの多くは国内の規制外で、信託保全がない業者では業者破綻時に資金が戻りません。5万円を倍にする話と、業者が飛ばない話は別問題です（各業者の保全制度の確認を）。</li>
+      <li><b>出金拒否・スリッページ。</b>急変時に不利な価格で約定すると、この検証の想定（0.2pips）を超えて損切りが滑ります。</li>
+      <li><b>税金。</b>利益の扱いは業者形態・状況で変わります。税務は専門家に確認してください。</li>
+      <li><b>「10倍の中央値」は存在しない。</b>この検証で出たのは確率だけです。中央値（典型的な結果）はどのプランでも12ヶ月で元本前後でした。</li>
+    </ul>
+  </div>
+</section>
+
+<h2>3. この検証の限界（正直に）</h2>
+<ul>
+  <li><b>過去データの再現であり、予測ではありません。</b>同じ相場が来ることを前提にしていません。</li>
+  <li>日次損失は<b>終値ベース</b>。実際はザラ場の含み損で破ります（プロップ失格の主因）。</li>
+  <li>スワップ・週末の窓・スプレッド拡大・約定拒否・手数料・税は<b>含んでいません</b>。</li>
+  <li>プロップファームの合格後の支払いは「期日に利益があれば分配」として単純化（実際は審査・支払い遅延・規約変更があり得ます）。Fintokei プロトレーダーの規則は<b>二次情報（未検証）</b>です。</li>
+  <li>ロジック束は<b>生き残った5本のみ</b>。破産した10本は除外しました（除外したこと自体をここに記録します）。</li>
+  <li>当エージェントは<b>発注も資金移動もしません</b>。実際の運用はデモ口座で前向き（フォワード）に確認してから。</li>
+</ul>
+
+<footer>
+  <p><b>再現方法</b>: 本番Workerの <code>POST /api/diag/prop</code>（オーナートークン必須、<code>?trials=400</code>）。コードは <code>src/income/prop.js</code>・<code>src/income/propReport.js</code>、検証は <code>tests/prop.test.mjs</code>（17項目）。</p>
+  <p><b>主要な出典</b>: FundedNext規則 <a href="https://tradetanto.com/learn/fundednext-rules-a-complete-guide-for-cfd-traders">Tanto</a>／E8規則 <a href="https://tradetanto.com/learn/e8-markets-rules">Tanto</a>・<a href="https://help.e8markets.com/en/articles/11775980-e8-one">E8公式</a>／Fintokei <a href="https://fx.suitablism.com/fintokei-swifttrader/">速攻プロ条件</a>・<a href="https://www.fintokei.com/jp/protrader/">公式</a>／合格率統計 <a href="https://fortunly.com/statistics/prop-firm-challenge-pass-rate-statistics/">Fortunly（2026-09-03）</a>／価格 <a href="https://propfirmmatch.com/prop-firms/fundednext">PropFirmMatch</a>／レバレッジ <a href="https://www.landprime.com/media/kaigaifx-leverage/">LandPrime（2026-10）</a>。</p>
+  <p>計測日 2026-10-17 ／ 為替 USD/JPY = 157.99 ／ データ = Yahoo Finance 日足 2,982本（2016-06-17〜2026-10-16）／ 経路数 400（移動ブロック5日ブートストラップ）。</p>
+</footer>
+
+</div>
+<script>
+(function(){
+  var b1=document.getElementById('tb1'), b2=document.getElementById('tb2');
+  var p1=document.getElementById('p1'), p2=document.getElementById('p2');
+  function show(n){
+    var isA=(n===1);
+    b1.setAttribute('aria-selected', isA?'true':'false');
+    b2.setAttribute('aria-selected', isA?'false':'true');
+    p1.classList.toggle('active', isA);
+    p2.classList.toggle('active', !isA);
+    try{ window.scrollTo({top:0,behavior:'smooth'}); }catch(e){}
+  }
+  b1.addEventListener('click', function(){ show(1); });
+  b2.addEventListener('click', function(){ show(2); });
+})();
+</script>
+</body>
+</html>
