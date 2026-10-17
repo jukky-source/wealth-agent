@@ -626,7 +626,7 @@ export async function labSearch({
   let stopped = false;
   // 門で止まった候補を「出口の振り」で救う枠。門そのものは緩めない。
   let refinements = 0;
-  const maxRefine = Math.max(1, Math.ceil(clamp(num(n, 12), 1, 40) / 4));
+  const maxRefine = Math.max(2, Math.ceil(clamp(num(n, 12), 1, 40) / 3));
   const refineExits = ['tight', 'timebox', 'balanced', 'wide'];
 
   for (const spec of specs) {
@@ -635,6 +635,21 @@ export async function labSearch({
       let useSpec = spec;
       let ev = await evalSpecISOS({ store, spec: useSpec, env, ctx, opts: { ...opts, noRuinStop: mode === 'e8' ? true : false } });
       if (!ev.ok) { errors.push({ symbol: spec.symbol, error: ev.error, bars: ev.bars }); continue; }
+      // E8の口座は scale（既定0.75）で建てるので、門のDDも口座が見る値で測る。
+      // 元の縮尺（建玉1倍）で測ると、口座では起きない大きさのDDで候補を落としてしまう。
+      if (mode === 'e8') {
+        const sc = clamp(num(settings.scale, 0.75), 0.05, 3);
+        if (sc !== 1) {
+          const mm = ev.metrics || {};
+          const atScale = (o) => (o ? {
+            ...o,
+            maxDrawdownPctMtm: round(num(o.maxDrawdownPctMtm, num(o.maxDrawdownPct, 0)) * sc, 2),
+            maxDrawdownPct: round(num(o.maxDrawdownPct, 0) * sc, 2),
+          } : o);
+          ev.gates = evalGates({ is: atScale(mm.is), oos: atScale(mm.oos) });
+          ev.ddScale = sc;
+        }
+      }
       // 惜しい候補（止まった理由が「取引回数」か「DD」だけの候補）に限り、出口を振って門を通しにいく。
       // これは規則を書き換えるのではなく、同じ論理に合う出口を選び直すだけ。門（15/6/40/45）は据え置き。
       let refined = false;
@@ -1136,14 +1151,18 @@ export async function labEvolveSeeds(store, env = {}) {
       const champ = pickChampion(board, mode);
       // 門を通った個体がまだ1本も無いと、勾配がゼロのまま無作為探索で止まる（実測でE8はこれだった）。
       // そこで「門で止まったが上位の個体」を親にして変異させ、合格率とDDを詰める方向へ進める。
-      const top = board.filter((r) => r && r.spec).sort((a, b) => num(b.fitness, 0) - num(a.fitness, 0))[0] || null;
-      const parent = champ || top;
+      const parent = champ || (board.filter((r) => r && r.spec).sort((a, b) => num(b.fitness, 0) - num(a.fitness, 0))[0] || null);
       if (!parent || !parent.spec) continue;
-      // 王者が居ないときは、その惜しい個体そのものも次のtickで走らせ直す。
+      // 王者が居ないときは、惜しい個体（上位2本・別物のみ）を次のtickで走らせ直す。
       // 同じ論理でも出口を振り直せば門を通ることがある（取引回数が2本足りない、など）。
-      if (!champ && top) {
-        out[mode].push({ ...top.spec, __seed: true, __revisit: true, __from: top.key });
+      const tops = [];
+      for (const r of board.filter((x) => x && x.spec).sort((a, b) => num(b.fitness, 0) - num(a.fitness, 0))) {
+        if (tops.length >= 2) break;
+        /* eslint-disable-line no-empty */
+        if (tops.some((t) => t.key === r.key && t.symbol === r.symbol)) continue;
+        tops.push(r);
       }
+      if (!champ) for (const t of tops) out[mode].push({ ...t.spec, __seed: true, __revisit: true, __from: t.key });
       for (let i = 0; i < count; i++) {
         try {
           const g = mutateGenome(rnd, { spec: parent.spec, key: parent.key }, SYMBOLS);
