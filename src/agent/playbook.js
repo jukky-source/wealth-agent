@@ -18,6 +18,8 @@ export const T = 'playbooks';
 export const KINDS = [
   { id: 'bounty', label: '賞金・報奨金（成果を出して受け取る）', probe: 'gh_issue', cost_jpy: 0 },
   { id: 'free_tier', label: '無料枠・紹介・本人確認ボーナス（登録するだけで貰える）', probe: 'free_tier', cost_jpy: 0 },
+  { id: 'perk', label: '特典・無料コード（契約・購入・応募で受け取る）', probe: 'free_tier', cost_jpy: 0 },
+  { id: 'points', label: 'ポイ活・ポイント還元（条件を満たして貯める）', probe: 'free_tier', cost_jpy: 0 },
   { id: 'marketplace', label: '売り場に出品する（置くだけで売れる）', probe: 'http', cost_jpy: 0 },
   { id: 'api', label: 'API に値札を付けて直販する', probe: 'http', cost_jpy: 0 },
   { id: 'monitor', label: '監視・通知を売る（毎日見張って差分を渡す）', probe: 'http', cost_jpy: 0 },
@@ -102,6 +104,8 @@ export const SEED_PLAYBOOKS = [
 // ---------------------------------------------------------------------------
 const RULES = [
   { kind: 'bounty', re: /(bounty|賞金|報奨|懸賞|algora|issuehunt|opire|superteam|gitcoin)/i },
+  { kind: 'perk', re: /(特典|perk|ギフトコード|プレゼント|もれなく|付帯|無料コード|優待)/i },
+  { kind: 'points', re: /(ポイント|ponta|dポイント|楽天ポイント|paypay|マイル|スタンプ|還元)/i },
   { kind: 'free_tier', re: /(free tier|無料枠|free credit|クレジット|紹介|referral|verif|本人確認|airdrop(?!.*hype))/i },
   { kind: 'marketplace', re: /(marketplace|registry|ディレクトリ|掲載|listing|出品)/i },
   { kind: 'monitor', re: /(monitor|watch|alert|通知|監視|差分|再入荷|値下げ)/i },
@@ -145,6 +149,18 @@ export function stepsFor(kind, item = {}) {
         `「${t}」の無料枠・ボーナスの実額と条件を公式ページで確認する`,
         '自分で登録して受け取れるか試す（原価0・払うのは時間だけ）',
         '受け取れた額を記録して、次の判断材料にする',
+      ];
+    case 'perk':
+      return [
+        `「${t}」の対象条件・実額・期限を公式ページで確認する`,
+        '自分が条件を満たしているか（対象外条件）を先に確認する',
+        '受け取る（人の1タップ）。受け取った額を記録する',
+      ];
+    case 'points':
+      return [
+        `「${t}」の還元率と、必要な条件（カード提示・応募・スタンプ数）を確認する`,
+        '出費が要る場合は先に払う額を確かめて、損しないかを判断する',
+        '応募・受け取りは人が行い、結果を記録する',
       ];
     case 'marketplace':
       return [
@@ -226,6 +242,13 @@ export function derivePlaybooks(item = {}, { max = 2 } = {}) {
 // ---------------------------------------------------------------------------
 // 試す — 読み取りだけ。原価0。ここで「動くか / まだ生きているか」を確かめる。
 // ---------------------------------------------------------------------------
+const q1 = async (store, sql, ...args) => {
+  if (typeof store.first === 'function') return store.first(sql, ...args);
+  if (typeof store['get'] === 'function') return store['get'](sql, ...args);
+  const rows = await store.all(sql, ...args);
+  return (rows && rows[0]) || null;
+};
+
 const UA = 'wealth-agent-playbook/1.0 (+https://wealth-agent.wealthagent-app.workers.dev)';
 
 async function httpGet(url, fetchImpl, ms = 12000) {
@@ -331,7 +354,7 @@ function rowToPb(r = {}) {
 /** ネタを保存する。既にあれば何もしない（重複を増やさない）。 */
 export async function savePlaybook(store, pb, { now = null } = {}) {
   const at = now || nowIso();
-  const existing = await store.get(`SELECT id FROM ${T} WHERE key = ?`, pb.key);
+  const existing = await q1(store, `SELECT id FROM ${T} WHERE key = ?`, pb.key);
   if (existing) return { inserted: false, id: existing.id };
   const pid = id('pb');
   await store.run(
@@ -368,7 +391,7 @@ export async function listPlaybooks(store, { limit = 50, status = null, kind = n
 }
 
 export async function getPlaybook(store, pidOrKey) {
-  const r = await store.get(`SELECT * FROM ${T} WHERE id = ? OR key = ?`, pidOrKey, pidOrKey);
+  const r = await q1(store, `SELECT * FROM ${T} WHERE id = ? OR key = ?`, pidOrKey, pidOrKey);
   return r ? rowToPb(r) : null;
 }
 
@@ -395,9 +418,9 @@ export async function tryPlaybooks(store, { limit = 2, fetchImpl = fetch, now = 
 
 export async function playbookSummary(store) {
   const byKind = await store.all(`SELECT kind, status, COUNT(*) AS n FROM ${T} GROUP BY kind, status`);
-  const total = await store.get(`SELECT COUNT(*) AS n FROM ${T}`);
-  const tried = await store.get(`SELECT COUNT(*) AS n FROM ${T} WHERE tries > 0`);
-  const works = await store.get(`SELECT COUNT(*) AS n FROM ${T} WHERE status = 'works'`);
+  const total = await q1(store, `SELECT COUNT(*) AS n FROM ${T}`);
+  const tried = await q1(store, `SELECT COUNT(*) AS n FROM ${T} WHERE tries > 0`);
+  const works = await q1(store, `SELECT COUNT(*) AS n FROM ${T} WHERE status = 'works'`);
   const cells = {};
   for (const r of byKind || []) { cells[`${r.kind}:${r.status}`] = r.n; }
   return {

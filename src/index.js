@@ -563,31 +563,77 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       const pj = (o, code = 200) => new Response(JSON.stringify(o), { status: code, headers: { 'content-type': 'application/json; charset=utf-8' } });
       try {
         const pbm = await import('./agent/playbook.js');
-        await pbm.ensurePlaybookTable(store);
+        await pbm.ensurePlaybookTable(deps.store);
         const sub = url.pathname.replace('/api/playbook', '').replace(/^\//, '');
         if (sub === 'help') return pj({ ok: true, help: pbm.playbookHelp() });
-        if (sub === 'seed' && req.method === 'POST') { const r = await pbm.seedPlaybooks(store); return pj({ ok: true, ...r }); }
-        if (sub === 'derive' && req.method === 'POST') {
-          const rows = await store.all('SELECT title, url, excerpt, score, source_id FROM scout_findings ORDER BY score DESC LIMIT 40');
+        if (sub === 'seed') { const r = await pbm.seedPlaybooks(deps.store); return pj({ ok: true, ...r }); }
+        if (sub === 'derive') {
+          const rows = await deps.store.all('SELECT title, url, excerpt, score, source_id FROM scout_findings ORDER BY score DESC LIMIT 40');
           let ins = 0, cand = 0;
           for (const f of rows || []) {
-            for (const c of pbm.derivePlaybooks(f, { max: 2 })) { cand++; const r = await pbm.savePlaybook(store, c); if (r.inserted) ins++; }
+            for (const c of pbm.derivePlaybooks(f, { max: 2 })) { cand++; const r = await pbm.savePlaybook(deps.store, c); if (r.inserted) ins++; }
           }
           return pj({ ok: true, scanned: (rows || []).length, candidates: cand, inserted: ins });
         }
-        if (sub === 'try' && req.method === 'POST') {
-          const r = await pbm.tryPlaybooks(store, { limit: Number(url.searchParams.get('limit') || 2) });
+        if (sub === 'try') {
+          const r = await pbm.tryPlaybooks(deps.store, { limit: Number(url.searchParams.get('limit') || 2) });
           return pj({ ok: true, ...r });
         }
-        const list = await pbm.listPlaybooks(store, {
+        const list = await pbm.listPlaybooks(deps.store, {
           limit: Number(url.searchParams.get('limit') || 50),
           kind: url.searchParams.get('kind'), status: url.searchParams.get('status'),
         });
         if (url.searchParams.get('format') === 'text') {
           return new Response(pbm.playbookText(list), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
         }
-        return pj({ ok: true, summary: await pbm.playbookSummary(store), rows: list });
+        return pj({ ok: true, summary: await pbm.playbookSummary(deps.store), rows: list });
       } catch (e) { return pj({ ok: false, error: e.message }, 500); }
+    }
+
+    // 有益情報 — 「契約すると/買うと/応募すると、これが貰える」を出典つき・期限つきで貯める。
+    // ポイ活の自動応募・自動クリックは規約違反になるので実装しない（受け取りは人の1タップ）。
+    if (url.pathname === '/api/perks' || url.pathname.startsWith('/api/perks/')) {
+      const pj = (o, code = 200) => new Response(JSON.stringify(o), { status: code, headers: { 'content-type': 'application/json; charset=utf-8' } });
+      try {
+        const pkm = await import('./agent/perks.js');
+        await pkm.ensurePerkTable(deps.store);
+        const sub = url.pathname.replace('/api/perks', '').replace(/^\//, '');
+        if (sub === 'help') return pj({ ok: true, help: pkm.perkHelp() });
+        if (sub === 'seed') { const r = await pkm.seedPerks(deps.store); return pj({ ok: true, ...r }); }
+        if (sub === 'try') {
+          const r = await pkm.tryPerks(deps.store, { limit: Number(url.searchParams.get('limit') || 3) });
+          return pj({ ok: true, ...r });
+        }
+        if (sub === 'ingest') {
+          let body = {};
+          try { body = await request.json(); } catch { body = {}; }
+          const r = await pkm.ingestPerks(deps.store, body.items || [], { max: Number(body.max || 60) });
+          return pj({ ok: true, ...r });
+        }
+        const list = await pkm.listPerks(deps.store, {
+          limit: Number(url.searchParams.get('limit') || 40),
+          kind: url.searchParams.get('kind'), state: url.searchParams.get('state'),
+        });
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(pkm.perkText(list), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        }
+        return pj({ ok: true, summary: await pkm.perkSummary(deps.store), rows: list });
+      } catch (e) { return pj({ ok: false, error: e.message }); }
+    }
+
+    // Reddit 横断巡回の計画。実際の巡回はサンドボックス側（Worker から Reddit 公式APIには到達できない）。
+    if (url.pathname === '/api/reddit' || url.pathname.startsWith('/api/reddit/')) {
+      try {
+        const rd = await import('./agent/reddit.js');
+        const sub = url.pathname.replace('/api/reddit', '').replace(/^\//, '');
+        if (sub === 'help') return json({ ok: true, help: rd.redditHelp() });
+        if (sub === 'subreddits') return json({ ok: true, subreddits: rd.SUBREDDITS });
+        const plan = rd.sweepPlan({ limit: Number(url.searchParams.get('limit') || 8), mode: url.searchParams.get('mode') || 'top' });
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(rd.redditPlanText(plan), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        }
+        return json({ ok: true, plan });
+      } catch (e) { return json({ ok: false, error: e.message }); }
     }
 
     if (url.pathname === '/api/lab' || url.pathname.startsWith('/api/lab/')) {
