@@ -6,7 +6,7 @@ import { backtest, STRATEGIES } from './backtest.js';
 import { safeJson, round } from '../util.js';
 import {
   PROP_VERSION, PROP_FIRMS, PROP_ASSUMPTIONS,
-  dailyReturns, ensembleReturns, propSweep, ownCapitalOutcome, marginCheck, quantile, propHelp,
+  dailyReturns, ensembleReturns, propSweep, ownCapitalOutcome, ownFrontier, marginCheck, quantile, propHelp,
 } from './prop.js';
 
 export { propHelp };
@@ -128,18 +128,25 @@ export async function buildPropReport({ store, env, params = {} } = {}) {
   });
 
   // --- 自己資金（5万円以下）---
+  // ruinFloorPct は「残高が元本の何%を割ったら撤退するか」。10%＝実質破産。
   const ownPlans = [
-    { name: '堅実', riskMultiple: 1, targetMultiple: 2, ruinFloorPct: 30 },
-    { name: '標準', riskMultiple: 2, targetMultiple: 3, ruinFloorPct: 20 },
-    { name: '爆益', riskMultiple: 4, targetMultiple: 10, ruinFloorPct: 0 },
-    { name: '超爆益', riskMultiple: 8, targetMultiple: 20, ruinFloorPct: 0 },
+    { name: '堅実', riskMultiple: 1, targetMultiple: 2, ruinFloorPct: 50 },
+    { name: '標準', riskMultiple: 2, targetMultiple: 3, ruinFloorPct: 30 },
+    { name: '爆益', riskMultiple: 4, targetMultiple: 10, ruinFloorPct: 10 },
+    { name: '超爆益', riskMultiple: 8, targetMultiple: 20, ruinFloorPct: 10 },
   ];
-  const own = ownPlans.map((p) => ({
-    ...p,
-    ...ownCapitalOutcome(ensemble, { capitalJPY: 50000, months: 12, trials, seed: 'own', ...p }),
-    units: 5000 * p.riskMultiple,
-    margin: marginCheck({ capitalJPY: 50000, units: 5000 * p.riskMultiple, rate: usdJpy, leverage: 1000 }),
-  }));
+  // targetMultiple は「最終倍率」。ownCapitalOutcome 側は「追加倍率」なので1を引いて渡す。
+  const own = ownPlans.map((p) => {
+    const o = ownCapitalOutcome(ensemble, {
+      capitalJPY: 50000, months: 12, trials, seed: 'own',
+      riskMultiple: p.riskMultiple, targetMultiple: p.targetMultiple - 1, ruinFloorPct: p.ruinFloorPct,
+    });
+    return {
+      ...o, name: p.name, riskMultiple: p.riskMultiple, targetMultiple: p.targetMultiple, ruinFloorPct: p.ruinFloorPct,
+      units: 5000 * p.riskMultiple,
+      margin: marginCheck({ capitalJPY: 50000, units: 5000 * p.riskMultiple, rate: usdJpy, leverage: 1000 }),
+    };
+  });
 
   return {
     version: PROP_VERSION,
@@ -151,7 +158,7 @@ export async function buildPropReport({ store, env, params = {} } = {}) {
     ensembleStats: ensStats,
     usdJpy,
     firms,
-    ownCapital: { capitalJPY: 50000, leverageAssumed: 1000, plans: own },
+    ownCapital: { capitalJPY: 50000, leverageAssumed: 1000, plans: own, frontier: ownFrontier(ensemble, { capitalJPY: 50000, months: 12, trials: Math.min(trials, 250), seed: 'own-frontier' }) },
     assumptions: PROP_ASSUMPTIONS,
     note: '過去データの再現。合格率はブートストラップによる推計であり、予測ではない。発注も資金移動もしない。',
   };

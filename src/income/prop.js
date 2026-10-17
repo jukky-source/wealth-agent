@@ -312,12 +312,14 @@ export const OWN_CAPITAL_DEFAULT = 50000;
 // riskMultiple は「基準ロジックの建玉に対する倍率」。目標到達率と破産率のトレードオフを見る。
 export function ownCapitalOutcome(returns, {
   capitalJPY = OWN_CAPITAL_DEFAULT, riskMultiple = 1, targetMultiple = 3, months = 12,
-  ruinFloorPct = 0, trials = 400, blockDays = 5, seed = 'own',
+  ruinFloorPct = 10, trials = 400, blockDays = 5, seed = 'own',
 } = {}) {
   const r = (returns || []).map((d) => d.r * riskMultiple).filter((v) => isFinite(v));
   const horizonDays = Math.round(months * 21);
   const capital = Number(capitalJPY) || OWN_CAPITAL_DEFAULT;
-  const floor = capital * (1 - ruinFloorPct / 100);
+  // 撤退ライン: 残高が元本の ruinFloorPct%（既定10%＝実質破産）を割ったら撤退する。
+  // 以前は「1-ruinFloorPct/100」で、0を渡すと元本ちょうどで撤退扱いになる逆の意味だった（実害が出た）。
+  const floor = capital * (Math.max(0, Number(ruinFloorPct)) / 100);
   const target = capital * (1 + targetMultiple);
   const out = {
     capitalJPY: capital, riskMultiple, targetMultiple, months, ruinFloorPct,
@@ -362,6 +364,33 @@ export function marginCheck({ capitalJPY = OWN_CAPITAL_DEFAULT, units = 5000, ra
     marginPctOfCapital: round((marginJPY / capitalJPY) * 100, 1),
     fits: marginJPY < capitalJPY * 0.5,
     marginCallDistancePips: round((capitalJPY - marginJPY) / (units / 10000 * 100), 0),
+  };
+}
+
+// 自己資金の前線: 建玉倍率 × 目標倍率 の格子で、到達率と撤退率を見る。
+// 「爆益」を狙うとき、どの倍率なら破綻せずに済むかを選ぶための表。
+export function ownFrontier(returns, {
+  capitalJPY = OWN_CAPITAL_DEFAULT, riskMultiples = [0.5, 1, 1.5, 2, 3, 4, 6, 8],
+  targets = [1.5, 2, 3, 5, 10], months = 12, ruinFloorPct = 10,
+  trials = 250, blockDays = 5, seed = 'own-frontier',
+} = {}) {
+  const rows = [];
+  for (const rm of riskMultiples) {
+    const cells = targets.map((tg) => {
+      const o = ownCapitalOutcome(returns, { capitalJPY, riskMultiple: rm, targetMultiple: tg - 1, months, ruinFloorPct, trials, blockDays, seed });
+      return {
+        targetMultiple: tg, reachPct: o.reachPct, ruinPct: o.ruinPct, neitherPct: o.neitherPct,
+        medianReachMonths: o.medianReachMonths, medianMultiple: o.medianMultiple, p90FinalJPY: o.p90FinalJPY,
+      };
+    });
+    const two = cells.find((c) => c.targetMultiple === 2) || cells[0];
+    rows.push({ riskMultiple: rm, units: 5000 * rm, targets: cells, reach2xPct: two ? two.reachPct : null, ruinPct: two ? two.ruinPct : null });
+  }
+  const ok = rows.filter((r) => (r.ruinPct || 0) <= 20).sort((a, b) => b.riskMultiple - a.riskMultiple);
+  return {
+    capitalJPY, months, ruinFloorPct, rows,
+    recommendedRiskMultiple: ok.length ? ok[0].riskMultiple : null,
+    note: 'riskMultiple は基準ロジック（1万通貨/10万円）に対する建玉倍率。撤退率20%以下で最も大きい倍率を推奨として返す。',
   };
 }
 
