@@ -32,7 +32,8 @@
     "test:prop": "node tests/prop.test.mjs",
     "test:e8": "node tests/e8.test.mjs",
     "test:opt": "node tests/opt.test.mjs",
-    "test:lab": "node tests/lab.test.mjs"
+    "test:lab": "node tests/lab.test.mjs",
+    "test:labgen": "node tests/lab-gen.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

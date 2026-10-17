@@ -270,14 +270,39 @@ export function coreAt(index, symbols = SYMBOLS) {
 }
 
 /** 合成層: 部品2つを AND/OR で組む。mutateFrom を渡すと現王者の近傍を変異させる。 */
-export function randomRule(rnd, symbols = SYMBOLS, { mutateFrom = null, features = null } = {}) {
+export function randomRule(rnd, symbols = SYMBOLS, { mutateFrom = null, features = null, preferState = false } = {}) {
   const A = ATOMS.length;
   const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
   // 仮説を1本に絞る: features を渡すと、その特徴量の部品だけを使う（探索の的を絞り、試行の質を上げる）
   const allowed = (features && features.length)
     ? ATOMS.map((a, i) => (features.includes(a.f) ? i : -1)).filter((i) => i >= 0)
     : null;
-  const pickAtom = () => (allowed && allowed.length ? allowed[Math.floor(rnd() * allowed.length)] : Math.floor(rnd() * A));
+  // preferState: 「状態条件（gt/lt）」と「閾値の中間」に寄せる。
+  // 交差条件（xup/xdn）は閾値をまたぐ瞬間だけ成立するので、日足1600本でも取引が数回しか出ず、
+  // 統計の門（IS15・OOS6）に届かない。極端な閾値も同じ理由で落ちる。門は緩めず、生成側を寄せる。
+  const pickAtom = () => {
+    const pool = (allowed && allowed.length) ? allowed : ATOMS.map((_, i) => i);
+    let idx;
+    if (!preferState) {
+      idx = pool[Math.floor(rnd() * pool.length)];
+    } else {
+      const state = pool.filter((i) => ATOMS[i].op === 'gt' || ATOMS[i].op === 'lt');
+      const cross = pool.filter((i) => ATOMS[i].op === 'xup' || ATOMS[i].op === 'xdn');
+      const useState = state.length > 0 && (cross.length === 0 || rnd() < 0.75);
+      const src = useState ? state : cross;
+      idx = src[Math.floor(rnd() * src.length)];
+    }
+    if (preferState && rnd() < 0.7) {
+      const a = ATOMS[idx];
+      const ths = (FEATURES[a.f] && FEATURES[a.f].th) || null;
+      if (ths && ths.length > 2) {
+        const mid = [...ths].sort((x, y) => x - y)[Math.floor(ths.length / 2)];
+        const j = ATOMS.findIndex((x) => x.f === a.f && x.op === a.op && x.th === mid);
+        if (j >= 0) idx = j;
+      }
+    }
+    return idx;
+  };
   let base;
   if (mutateFrom && mutateFrom.base && mutateFrom.base.kind === 'rule' && rnd() < 0.7) {
     base = { ...mutateFrom.base };
@@ -289,8 +314,8 @@ export function randomRule(rnd, symbols = SYMBOLS, { mutateFrom = null, features
     base = {
       kind: 'rule',
       a: pickAtom(),
-      b: rnd() < 0.45 ? pickAtom() : null,
-      comb: rnd() < 0.5 ? 'and' : 'or',
+      b: rnd() < (preferState ? 0.35 : 0.45) ? pickAtom() : null,
+      comb: rnd() < (preferState ? 0.45 : 0.5) ? 'and' : 'or',
     };
   }
   const inherit = (from, other, p = 0.6) => (mutateFrom && from != null && rnd() < p ? from : other);

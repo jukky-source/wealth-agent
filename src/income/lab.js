@@ -182,9 +182,9 @@ export function labSpec({
   };
 }
 
-export function labRuleSpec(rnd, { symbol, feature = null, mutateFrom = null, tf = null, exit = null, dir = null, filter = null } = {}) {
+export function labRuleSpec(rnd, { symbol, feature = null, mutateFrom = null, tf = null, exit = null, dir = null, filter = null, preferState = true } = {}) {
   const sym = SYMBOLS.includes(symbol) ? symbol : SYMBOLS[0];
-  const s = randomRule(rnd, [sym], { mutateFrom, features: feature ? [feature] : null });
+  const s = randomRule(rnd, [sym], { mutateFrom, features: feature ? [feature] : null, preferState });
   const out = { ...s };
   if (tf && TIMEFRAMES.some((t) => t.key === tf)) out.tf = tf;
   if (exit && EXITS.some((e) => e.key === exit)) out.exit = exit;
@@ -542,21 +542,31 @@ async function evalSpecISOS({ store, spec, env = {}, ctx = {}, opts = {} }) {
 // ---------------------------------------------------------------------------
 // 候補づくり（試行錯誤の1手）
 // ---------------------------------------------------------------------------
-export function candidateSpecs(rnd, { symbols = SYMBOLS, count = 12, features = null } = {}) {
+export function candidateSpecs(rnd, { symbols = SYMBOLS, count = 12, features = null, preferState = true } = {}) {
   const out = []; const seen = new Set();
   const presets = basePresets();
   const feats = features && features.length ? features : Object.keys(FEATURES);
+  // 重み付き抽選。本番実測でE8の門通過が0だった原因は「取引回数が足りない」（IS 5〜10回 < 15）ことだった。
+  // 取引回数を削る選択肢（週足・逆シグナルまで保有・絞り込み・片方向）を薄くして、
+  // 「測れる候補」＝十分な取引回数が出る候補の割合を上げる。門（15/6/40/45）は緩めない。
+  const pickW = (keys, weights) => {
+    const w = keys.map((_, i) => Math.max(0.01, num(weights[i], 1)));
+    const total = w.reduce((a, b) => a + b, 0);
+    let x = rnd() * total;
+    for (let i = 0; i < keys.length; i++) { x -= w[i]; if (x <= 0) return keys[i]; }
+    return keys[keys.length - 1];
+  };
   let guard = 0;
   while (out.length < count && guard++ < count * 8) {
     const sym = symbols[Math.floor(rnd() * symbols.length)];
-    const useRule = rnd() < 0.45;
-    const tf = rnd() < 0.7 ? '1d' : '1w';
-    const exit = EXITS[Math.floor(rnd() * EXITS.length)].key;
-    const dir = DIRECTIONS[Math.floor(rnd() * DIRECTIONS.length)].key;
-    const filter = rnd() < 0.5 ? 'none' : FILTERS[Math.floor(rnd() * FILTERS.length)].key;
+    const useRule = rnd() < 0.55;
+    const tf = rnd() < 0.85 ? '1d' : '1w';
+    const exit = pickW(EXITS.map((e) => e.key), [1.3, 1.3, 0.8, 0.6, 0.3, 1.5]);
+    const dir = rnd() < 0.6 ? 'both' : (rnd() < 0.5 ? 'long' : 'short');
+    const filter = rnd() < 0.7 ? 'none' : pickW(FILTERS.map((f) => f.key), [1, 1, 1, 1, 1, 1, 1, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]);
     let spec;
     if (useRule) {
-      spec = labRuleSpec(rnd, { symbol: sym, feature: feats[out.length % feats.length], tf, exit, dir, filter });
+      spec = labRuleSpec(rnd, { symbol: sym, feature: feats[out.length % feats.length], tf, exit, dir, filter, preferState });
     } else {
       const base = presets[Math.floor(rnd() * presets.length)];
       spec = labSpec({ symbol: sym, tf, strategy: base.key, variant: base.variant, filter, exit, dir });
