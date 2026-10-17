@@ -460,6 +460,26 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       }
     }
 
+    // Logic space（論理空間）の計器。オーナー専用。
+    //   GET  : 空間の広さ・どこまで見たか・上位の論理
+    //   POST : その場で数件だけ回す（周期を待たない確認用）
+    if (url.pathname === '/api/fxlab/logic' || url.pathname === '/api/diag/logic') {
+      try {
+        const _env = typeof env !== 'undefined' ? env : {};
+        const { logicSpaceInfo, logicTick, spaceReport } = await import('./income/logic.js');
+        if (request.method === 'POST') {
+          let body = {};
+          try { body = await request.json(); } catch {}
+          const n = Math.max(1, Math.min(12, Number(body?.n || url.searchParams.get('n') || 3)));
+          const r = await logicTick({ store: deps.store, env: _env, n });
+          return json({ ok: true, ran: r.ran, tier: r.tier, coverage_pct: r.coverage_pct, cursor: r.cursor, experiments: r.experiments, robust: r.robust || null, promoted: r.promoted ? { name: r.promoted.name, id: r.promoted.id } : null, champion: r.champion ? { symbol: r.champion.symbol, fitness: r.champion.fitness, verified: !!r.champion.verified, logic: r.champion.logic_line || null } : null });
+        }
+        return json({ ok: true, plan: spaceReport(_env), space: await logicSpaceInfo(deps.store, _env) });
+      } catch (e) {
+        return json({ ok: false, error: 'logic_diag_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
     if (url.pathname === '/api/diag/research' && request.method === 'GET') {
       try {
         const { createResearch } = await import('./research/web.js');

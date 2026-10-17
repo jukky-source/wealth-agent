@@ -291,6 +291,35 @@ const RULES = [
     },
   },
   {
+    id: 'fxlab',
+    // 「FXはここで完成させず、エージェントが回し続ける」を見せる入口。
+    test: (s) => has(s, 'FXラボ', 'ロジック空間', '論理空間', 'バックテスト', '戦略を試して'),
+    run: async (s, d) => {
+      const { fxLabSummary, fxLabCards, fxLabHelp } = await import('../income/fxLab.js');
+      const { logicSpaceInfo, logicSpaceCard, logicHelp, spaceReport } = await import('../income/logic.js');
+      const env = d.env || {};
+      const summary = await fxLabSummary(d.store);
+      const info = await logicSpaceInfo(d.store, env);
+      const plan = spaceReport(env);
+      return {
+        reply: [
+          logicHelp(),
+          '',
+          '―― いまの踏破状況 ――',
+          `コア層: ${info.evaluated_core} / ${plan.core_size} 通り（${info.coverage_pct_core}%）／合成層: ${info.evaluated_rule} 件を探索中`,
+          `1日の消化: ${plan.per_day} 件（${plan.every_minutes}分ごと × ${plan.per_tick}件）／コア全通りまで約 ${plan.core_days} 日`,
+          info.champion
+            ? `いまの王者: ${info.champion.symbol} / fitness ${info.champion.fitness}（${info.champion.verified ? 'フル検証通過＝EAの対象' : '暫定（昇格していない）'}）`
+            : 'いまの王者: まだ無し（フル検証を通った論理だけが王者になります）',
+          '',
+          fxLabHelp(),
+        ].join('\n'),
+        cards: [...fxLabCards(summary), logicSpaceCard(info)],
+        suggest: ['FXラボを回して', 'ロジック空間の状況を見せて', '王者のEAを書き出して'],
+      };
+    },
+  },
+  {
     id: 'help',
     test: (s) => has(s, 'ヘルプ', '使い方', '操作方法', '何を頼め'),
     run: async () => ({ reply: HELP, suggest: SUGGESTIONS }),
