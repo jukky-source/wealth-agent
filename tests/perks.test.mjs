@@ -67,7 +67,10 @@ await t('有益情報の判定: 金額つきの特典は拾い、質問・愚痴
   ok(isBeneficial('$14.50 for verifying your Reddit account'));
   ok(!isBeneficial('Is this legit? help me understand the fees'));
   ok(!isBeneficial('愚痴：ポイント還元が減った気がする'));
-  ok(!isBeneficial('ギフトがもらえるらしいよ'), '金額も2つ目のシグナルも無いものは拾わない');
+  ok(!isBeneficial('Character.AI files for bankruptcy, to sell some assets for $20 million'), '金額だけのニュースは拾わない');
+  ok(!isBeneficial('Anthropic ran a 26B model across 15 off-brand Android TV boxes worth $55 each'), 'off-brand を「割引」と誤認しない');
+  ok(isBeneficial('Sennheiser Momentum 4 Headphones at $207 (31% off)'), '金額+割引の形は拾う');
+  ok(!isBeneficial('もらえるらしいよ'), 'シグナル1つ・金額なしは拾わない');
   ok(isBeneficial('無料トライアル実施中・ポイント5倍キャンペーン'), '別々の強いシグナルが2つあれば拾う');
 });
 
