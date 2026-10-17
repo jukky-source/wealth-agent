@@ -17,11 +17,15 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
+run_worker_first = ["/.well-known/*","/api/*","/v1/*","/a2a","/mcp","/llms.txt","/robots.txt","/sitemap.xml","/openapi.json","/server.json"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "wealth-agent"
 database_id = "ceb1ddc7-0351-4d0f-afbd-ac8989814e74"
+
+[limits]
+cpu_ms = 60000
 
 [observability]
 enabled = true
@@ -36,8 +40,37 @@ crons = ["*/5 * * * *"]
 
 [vars]
 AGENT_NAME = "Wealth Agent"
+# 自律リサーチ（スカウト）。無料・鍵不要の巡回先だけを数箇所ずつ回す。原価0。
+SCOUT_ENABLED = "true"
+SCOUT_EVERY_MINUTES = "180"
+SCOUT_SOURCES_PER_TICK = "6"
+SCOUT_PER_SOURCE = "12"
+SCOUT_MIN_SCORE = "30"
+# FX Lab（試行錯誤ループ）。少数の実験を回し続け、王者が更新されたら fx_strategies へ昇格する。
+FX_LAB_ENABLED = "true"
+INDEXNOW_KEY = "bb1344d428f592a2d266748b143b0fb1"
+# 無料枠（フリーミアム）: 決定的で原価ゼロの4品目だけを支払いなしで試せる。
+# 上限は IPごと・UTC日ごと。url-meta だけは外向き取得があるので別枠で小さくする。
+FREE_TIER_ENABLED = "1"
+FREE_DAILY_LIMIT = "25"
+FREE_URL_META_DAILY_LIMIT = "5"
+PUBLIC_HOST = "wealth-agent.wealthagent-app.workers.dev"
+FX_LAB_EVERY_MINUTES = "60"
+FX_LAB_EXPERIMENTS_PER_TICK = "2"
+# SNS下書きの自動補充（X / note / YouTube）。投稿はしない（承認制のまま）。
+SOCIAL_ENABLED = "true"
+SOCIAL_EVERY_MINUTES = "720"
+SOCIAL_DRAFTS_PER_TICK = "2"
 ENGINE_STEPS_PER_TICK = "3"
-AI_DAILY_CALL_BUDGET = "300"
+AI_DAILY_CALL_BUDGET = "1200"
+X402_TESTNET_ENABLED = "0"
+# 受け取り先（ネットワークごとに必要）。Solana は base58、EVM は 0x…。Solana の値札には
+# facilitator が提示する feePayer（ガス肩代わり）を添えるので、/supported で確認して使う。
+X402_FEE_PAYER = "CjNFTjvBhbJJd2B5ePPMHRLx1ELZpa8dwQgGL727eKww"
+X402_SOLANA_PAY_TO = "GgvECKqPR1LHdv9vvpi3bfqs2v9jEJsqdwbNT7DzouD"
+AI_CALLS_PER_TICK = "1"
+AI_HOURLY_NEURON_CAP = "380"
+AI_CACHE_TTL_MS = "21600000"
 ALLOW_PAID_AI = "false"
 WORKERS_AI_NEURON_CAP = "9000"
 RUNNER_ENABLED = "true"
