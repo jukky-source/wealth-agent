@@ -108,10 +108,17 @@ export async function e8Members({ store, env = {} } = {}) {
   return out.slice(0, Math.max(1, Math.min(8, Number(env.E8_MAX_LOGICS || 6))));
 }
 
+/** 破産した構成員（そのままでは運用できないロジック）は束から外す。外した事実は返して隠さない。 */
+export function splitViable(all = []) {
+  const viable = all.filter((s) => !s.ruined);
+  const excluded = all.filter((s) => s.ruined).map((s) => `${s.symbol}/${s.strategy}`);
+  return { used: viable, excluded };
+}
+
 /** ロジック集合から「1日あたりの損益率」の束を作る（口座比率の前提は prop.js と同じ）。 */
 export async function e8Series({ store, members, days = 700 }) {
   const mdCache = new Map();
-  const series = [];
+  const all = [];
   const detail = [];
   for (const m of members) {
     try {
@@ -123,18 +130,20 @@ export async function e8Series({ store, members, days = 700 }) {
       if (fx) cost.fx = fx;
       const bt = backtest(md.bars, { strategyKey: m.key, params: { ...(m.params || {}), symbol: m.symbol }, cost });
       const rets = dailyReturns(bt.equity);
-      series.push({ symbol: m.symbol, strategy: m.key, weight: m.weight ?? null, returns: rets, ruined: !!bt.metrics.ruined });
+      const ruined = !!bt.metrics.ruined;
+      all.push({ symbol: m.symbol, strategy: m.key, weight: m.weight ?? null, returns: rets, ruined });
       detail.push({
         symbol: m.symbol, key: m.key, label: m.label, from: m.from || null, weight: m.weight ?? null,
         bars: md.bars.length, source: md.source || null, trades: bt.metrics.trades,
-        netPct: bt.metrics.netProfitPct, ddMtmPct: bt.metrics.maxDrawdownPctMtm, ruined: !!bt.metrics.ruined,
-        lastBar: md.bars[md.bars.length - 1].date,
+        netPct: bt.metrics.netProfitPct, ddMtmPct: bt.metrics.maxDrawdownPctMtm, ruined,
+        excludedFromEnsemble: ruined, lastBar: md.bars[md.bars.length - 1].date,
       });
     } catch (e) {
       detail.push({ ...m, error: String((e && e.message) || e).slice(0, 120) });
     }
   }
-  return { series, detail };
+  const { used, excluded } = splitViable(all);
+  return { series: used, all, detail, excluded, degraded: used.length < 3 };
 }
 
 // ---------------------------------------------------------------------------
@@ -299,9 +308,9 @@ export async function e8Step({
   const stats = safeJson(statsRow?.value, null) || blankStats();
   const events = safeJson(evRow?.value, null) || [];
 
-  const { series, detail } = await e8Series({ store, members: mem, days: win });
+  const { series, detail, excluded, degraded } = await e8Series({ store, members: mem, days: win });
   if (!series.length) {
-    return { at, ran: 0, error: 'no_series', members: detail, state_status: state?.status || null };
+    return { at, ran: 0, error: 'no_series', members: detail, excluded, state_status: state?.status || null };
   }
   const ensemble = ensembleReturns(series);   // 日付で突き合わせ、その日に存在する構成員だけの等加重
 
@@ -372,7 +381,7 @@ export async function e8Step({
   state.daysTotal = (state.daysTotal || 0) + ran.length;
   state.lastAt = at;
   state.updatedAt = at;
-  state.ensembleBasis = { members: series.length, dates: ensemble.length, from: ensemble[0]?.date || null, to: ensemble[ensemble.length - 1]?.date || null };
+  state.ensembleBasis = { members: series.length, dates: ensemble.length, from: ensemble[0]?.date || null, to: ensemble[ensemble.length - 1]?.date || null, excluded, degraded };
   stats.lastAt = at;
   stats.startedAt = stats.startedAt || at;
   if (state.status === 'funded') stats.fundedDays = (stats.fundedDays || 0) + Math.max(0, ran.length);
@@ -391,6 +400,7 @@ export async function e8Step({
     backfill: ran.length && !state.history?.length ? null : (state.backfill?.bars ? state.backfill.bars : 0),
     lastBarDate: state.lastBarDate,
     members: detail,
+    excluded, degraded,
     events: ran.filter((x) => x.status === 'failed' || x.status === 'funded').slice(-5),
   };
 }
@@ -447,6 +457,8 @@ export async function e8Status(store, env = {}) {
       members: state.members || [],
       backfill: state.backfill || null,
       ensembleBasis: state.ensembleBasis || null,
+      ensembleExcluded: state.ensembleBasis?.excluded || [],
+      ensembleDegraded: state.ensembleBasis?.degraded === true,
     } : null,
     progress: state ? {
       statusJa: state.status === 'challenge' ? `選考${state.attempt}回目` : (state.status === 'funded' ? '資金提供口座' : '失格'),
