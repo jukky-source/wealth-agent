@@ -74,9 +74,10 @@ export async function buildPropReport({ store, env, params = {} } = {}) {
       const conv = await buildCurrencyConverter(store, symbol);
       for (const key of strategies) {
         try {
-          const bt = backtest(bars, { strategyKey: key, params: {}, cost: { fx: conv } });
+          // symbol を渡さないと通貨・pip・1取引の数量が USDJPY のままになり、損益が桁違いになる（実害が出た）。
+          const bt = backtest(bars, { strategyKey: key, params: { symbol }, cost: { fx: conv } });
           const rets = dailyReturns(bt.equity);
-          members.push({ symbol, strategy: key, returns: rets });
+          members.push({ symbol, strategy: key, returns: rets, ruined: !!bt.metrics.ruined });
           perMember.push({
             symbol, strategy: key, bars: bars.length, source: md.source || null, cached: !!md.cached,
             trades: bt.metrics.trades, netPct: bt.metrics.netProfitPct,
@@ -88,7 +89,11 @@ export async function buildPropReport({ store, env, params = {} } = {}) {
     } catch (e) { perMember.push({ symbol, error: String((e && e.message) || e).slice(0, 120) }); }
   }
 
-  const ensemble = ensembleReturns(members);
+  // 破産した構成員（＝そのままでは運用できないロジック）は束から外す。外した事実は返して隠さない。
+  const viable = members.filter((m) => !m.ruined);
+  const usedMembers = viable.length >= 3 ? viable : members;
+  const excluded = members.filter((m) => m.ruined).map((m) => m.symbol + '/' + m.strategy);
+  const ensemble = ensembleReturns(usedMembers);
   const ensStats = seriesStats(ensemble);
 
   // 為替レート（自己資金タブの証拠金計算に使う）
@@ -141,6 +146,7 @@ export async function buildPropReport({ store, env, params = {} } = {}) {
     generatedAt: new Date().toISOString(),
     symbols, strategies, days, trials, scales,
     members: members.length,
+    ensembleBasis: { members: members.length, used: usedMembers.length, excluded },
     perMember,
     ensembleStats: ensStats,
     usdJpy,
