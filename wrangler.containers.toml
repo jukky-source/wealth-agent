@@ -90,10 +90,15 @@ OPT_COLLECTION_EVERY = "3"
 
 # バックテスト作業台（2つのタブ: E8モード / 自己資金モード）。原価0・無料の日足だけ。
 LAB_ENABLED = "true"
-LAB_EVERY_MINUTES = "15"
-LAB_SEARCH_N = "6"
-LAB_BUDGET_MS = "15000"
+LAB_EVERY_MINUTES = "5"
+LAB_SEARCH_N = "8"
+LAB_BUDGET_MS = "20000"
 LAB_DAYS = "1600"
+LAB_AUTO = "true"
+LAB_AUTO_MIN_MEMBERS = "2"
+LAB_AUTO_MAX_MEMBERS = "6"
+LAB_EVOLVE = "true"
+LAB_SEED_MUTATIONS = "2"
 # SNS下書きの自動補充（X / note / YouTube）。投稿はしない（承認制のまま）。
 SOCIAL_ENABLED = "true"
 SOCIAL_EVERY_MINUTES = "720"

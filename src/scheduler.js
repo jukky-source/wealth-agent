@@ -192,6 +192,8 @@ export function createScheduler(deps) {
           step: 'lab',
           own: r.own ? { evaluated: r.own.evaluated, best: r.own.best ? `${r.own.best.symbol} score=${r.own.best.score}` : null, errors: (r.own.errors || []).length } : null,
           e8: r.e8 ? { evaluated: r.e8.evaluated, best: r.e8.best ? `${r.e8.best.symbol} score=${r.e8.best.score}` : null, errors: (r.e8.errors || []).length } : null,
+          seeds: r.seeds || null,
+          auto: r.auto ? { handoff: r.auto.handoff, members: r.auto.e8 ? r.auto.e8.collection.members : null, passed: r.auto.e8 ? r.e8.passedGates : null } : null,
         });
       } else {
         report.steps.push({ step: 'lab', skipped: labDue ? 'disabled' : 'not_due' });

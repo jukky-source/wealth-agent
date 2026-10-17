@@ -563,6 +563,9 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
         const lab = await import('./income/lab.js');
         const sub = url.pathname.replace('/api/lab', '').replace(/^\//, '');
         if (url.searchParams.get('help') === '1') return json({ ok: true, help: lab.labHelp() });
+        if (request.method === 'GET' && url.searchParams.get('view') === 'auto') {
+          return json({ ok: true, auto: await lab.labAutoStatus(deps.store) });
+        }
         if (request.method === 'GET' && sub === 'catalog') return json({ ok: true, catalog: lab.labCatalog(env) });
         if (request.method === 'GET' && sub === 'board') {
           const mode = url.searchParams.get('mode') === 'e8' ? 'e8' : 'own';
@@ -599,6 +602,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
           return json({ ok: true, projects: await lab.labProjects(deps.store) });
         }
         if (sub === 'tick') return json({ ok: true, ...(await lab.labTick({ store: deps.store, env })) });
+        if (sub === 'auto') return json({ ok: true, ...(await lab.labAuto({ store: deps.store, env })) });
         const st = await lab.labStatus(deps.store, env);
         if (url.searchParams.get('format') === 'text') {
           return new Response(lab.labText(st), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
