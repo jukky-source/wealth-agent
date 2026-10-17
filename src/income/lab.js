@@ -720,6 +720,9 @@ export async function labSearch({
       p75: round(quantile(scores, 0.75), 4), max: round(Math.max(...scores), 4), min: round(Math.min(...scores), 4),
     } : null,
     objective: LAB_OBJECTIVES[mode] || null,
+    refined: rows.filter((r) => r.refined).length,
+    refineTried: refinements,
+    revisited: specs.filter((s) => s.__revisit).length,
     ms: Date.now() - t0,
   };
   return { summary, rows, heatmap: labHeatmap(rows), settings, opts };
@@ -1131,11 +1134,24 @@ export async function labEvolveSeeds(store, env = {}) {
     for (const mode of ['own', 'e8']) {
       const board = await labBoard(store, { mode, limit: 12 }).catch(() => []);
       const champ = pickChampion(board, mode);
-      if (!champ || !champ.spec) continue;
+      // 門を通った個体がまだ1本も無いと、勾配がゼロのまま無作為探索で止まる（実測でE8はこれだった）。
+      // そこで「門で止まったが上位の個体」を親にして変異させ、合格率とDDを詰める方向へ進める。
+      const top = board.filter((r) => r && r.spec).sort((a, b) => num(b.fitness, 0) - num(a.fitness, 0))[0] || null;
+      const parent = champ || top;
+      if (!parent || !parent.spec) continue;
+      // 王者が居ないときは、その惜しい個体そのものも次のtickで走らせ直す。
+      // 同じ論理でも出口を振り直せば門を通ることがある（取引回数が2本足りない、など）。
+      if (!champ && top) {
+        out[mode].push({ ...top.spec, __seed: true, __revisit: true, __from: top.key });
+      }
       for (let i = 0; i < count; i++) {
         try {
-          const g = mutateGenome(rnd, { spec: champ.spec, key: champ.key }, SYMBOLS);
-          if (g && g.spec) { g.spec.__seed = true; g.spec.__from = champ.key; out[mode].push(g.spec); }
+          const g = mutateGenome(rnd, { spec: parent.spec, key: parent.key }, SYMBOLS);
+          if (g && g.spec) {
+            g.spec.__seed = true; g.spec.__from = parent.key;
+            g.spec.__parent = champ ? 'champion' : 'near_miss';
+            out[mode].push(g.spec);
+          }
         } catch (e) { /* 変異できない形なら種なしで進む（探索自体は回す） */ }
       }
     }
