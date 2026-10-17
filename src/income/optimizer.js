@@ -432,6 +432,7 @@ export async function buildCollection({ store, env = {}, pop = [], ctx = {}, at 
   const cands = (passers.length >= 2 ? passers : sorted).slice(0, 12);
 
   const prepared = [];
+  const errors = [];
   for (const g of cands) {
     try {
       const sym = g.spec.symbol;
@@ -443,7 +444,6 @@ export async function buildCollection({ store, env = {}, pop = [], ctx = {}, at 
       if (fx) cost.fx = fx;
       const key = materialize(g.spec);
       const bt = backtest(md.bars, { strategyKey: key, params: { ...exitParams(g.spec), logic: g.spec, symbol: sym }, cost });
-      const rets = (bt.equity || []).map((e, i, arr) => (i === 0 ? null : { date: e.date, r: (Number(e.equityMtm ?? e.equity) - Number(arr[i - 1].equityMtm ?? arr[i - 1].equity)) / Number(arr[i - 1].equityMtm ?? arr[i - 1].equity) })).filter((x) => x && isFinite(x.r) && Number(arr0(arr, x)) );
       const clean = (bt.equity || []).slice(1).map((e, i) => {
         const prev = bt.equity[i];
         const a = Number(prev.equityMtm ?? prev.equity); const b = Number(e.equityMtm ?? e.equity);
@@ -454,9 +454,11 @@ export async function buildCollection({ store, env = {}, pop = [], ctx = {}, at 
         symbol: sym, key, params: { ...exitParams(g.spec), logic: g.spec, symbol: sym },
         label: `${sym} / ${describeLogic(g.spec).base.slice(0, 46)} / ${g.spec.tf} / ${g.spec.exit}`,
         score: g.score, gates: g.gates, metrics: g.metrics, origin: g.origin,
-        rets: clean, retsUnused: rets.length,
+        rets: clean,
       });
-    } catch { /* 1個失敗しても集合づくりは続ける */ }
+    } catch (e) {
+      errors.push({ key: g.key, symbol: g.spec?.symbol, error: String((e && e.message) || e).slice(0, 160) });
+    }
   }
 
   const { selected, skipped } = pickUncorrelated(prepared, { maxMembers, maxCorr });
@@ -476,7 +478,7 @@ export async function buildCollection({ store, env = {}, pop = [], ctx = {}, at 
   const stats = portfolioStats(members.map((m, i) => ({ weight: m.weight, rets: selected[i].rets })));
   const out = {
     v: OPT_VERSION, builtAt: now, gen, maxCorr, members, stats,
-    skipped, candidates: prepared.length,
+    skipped, errors, candidates: prepared.length,
     note: 'スコア上位から、互いの日次損益率の相関が閾値未満のものを貪欲に選んだ集合（＝有料ツールの「ポートフォリオ／コレクション」相当）。重みは逆ボラ。この集合がE8実行部のロジックになる。',
   };
   await store.run(`INSERT INTO settings (key,value,updated_at) VALUES (?,?,?)
@@ -484,6 +486,7 @@ export async function buildCollection({ store, env = {}, pop = [], ctx = {}, at 
   return out;
 }
 function arr0() { return 0; }
+void arr0;
 
 // ---------------------------------------------------------------------------
 // 集計: どの通貨・どの時間足・どの論理が良かったか（D1の蓄積から）

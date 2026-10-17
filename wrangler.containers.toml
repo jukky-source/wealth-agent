@@ -75,7 +75,7 @@ E8_EVERY_MINUTES = "15"
 E8_PROFILE = "p10"
 E8_SCALE = "0.75"
 E8_ACCOUNT = "100000"
-E8_DAYS = "700"
+E8_DAYS = "2600"
 E8_BACKFILL_DAYS = "120"
 E8_AUTO_RESTART = "true"
 # 最適ロジック探索（有料バックテスターの機能水準: 無作為生成→変異・交叉→IS/OOS→WF→MC→コスト増し→フル検証）。
