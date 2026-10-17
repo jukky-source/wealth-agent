@@ -62,6 +62,11 @@ export const SEED_PERKS = [
     outlay_note: 'ギフトカードの購入額は自分の買い物。払った額の最大10%が戻る形（元手は要る）',
     expires_at: '2026-11-02T23:59:00+09:00',
     deadline_note: '購入は 2026-10-19 23:59 まで / 応募は 2026-10-26 23:59 まで / 特典取得は 2026-11-02 23:59 まで',
+    deadlines: [
+      { label: '店頭で購入', at: '2026-10-19T23:59:00+09:00' },
+      { label: 'コースへの応募', at: '2026-10-26T23:59:00+09:00' },
+      { label: '特典の受け取り', at: '2026-11-02T23:59:00+09:00' },
+    ],
     verified_at: '2026-10-18',
     source_quality: 'primary',
     evidence: '「対象期間中、ローソンアプリでエントリーの上、会員カードを提示して、Google Play ギフトカード…を合計1,000円購入するごとに1スタンプ」「もれなく購入金額の最大10％分のGoogle Playギフトコード」「おひとり様最大5,000円分相当まで」',
@@ -89,6 +94,11 @@ export const SEED_PERKS = [
     outlay_note: '上のギフトカード購入の副産物なので追加の出費は0（抽選）',
     expires_at: '2026-11-23T23:59:00+09:00',
     deadline_note: '抽選期間 2026-11-10 10:00 〜 11-16 23:59 / 引換 11-10 〜 11-23 23:59',
+    deadlines: [
+      { label: '50スタンプ分の購入', at: '2026-10-19T23:59:00+09:00' },
+      { label: '抽選への応募', at: '2026-11-16T23:59:00+09:00' },
+      { label: 'コードの引き換え', at: '2026-11-23T23:59:00+09:00' },
+    ],
     verified_at: '2026-10-18',
     source_quality: 'primary',
     evidence: '「50スタンプためて3,000円分コース応募者限定で、後日抽選でGoogle AI Pro 3か月無料コードが1,000名様に当たる！」',
@@ -267,6 +277,14 @@ export const SEED_PERKS = [
   },
 ];
 
+/**
+ * 種の期限はコード側を正とする（DBの expires_at は「特典そのものの期限」1本しか持たないため）。
+ * key は kind|site|url|title から決まるので、行を読み戻すときに同じ期限表を引ける。
+ */
+const SEED_DEADLINES = new Map(
+  SEED_PERKS.filter((p) => Array.isArray(p.deadlines) && p.deadlines.length).map((p) => [perkKey(p), p.deadlines]),
+);
+
 // ---------------------------------------------------------------------------
 // 判定 — 有益情報かどうか
 // ---------------------------------------------------------------------------
@@ -332,6 +350,7 @@ export function perkFrom(item = {}, { now = null } = {}) {
     outlay_note: item.outlay_note || '',
     expires_at: item.expires_at || null,
     deadline_note: item.deadline_note || '',
+    deadlines: Array.isArray(item.deadlines) ? item.deadlines : [],
     verified_at: item.verified_at || null,
     source_quality: item.source_quality || 'secondary',
     evidence: (item.evidence || '').slice(0, 900),
@@ -344,6 +363,30 @@ export function perkFrom(item = {}, { now = null } = {}) {
   };
 }
 
+const hasDeadline = (perk = {}) => (Array.isArray(perk.deadlines) && perk.deadlines.some((d) => d && d.at)) || !!perk.expires_at;
+
+/**
+ * 次に人間が動くべき期限。1件の有益情報は期限を複数持つ
+ * （ローソン: 店頭で購入 10-19 → 応募 10-26 → 受け取り 11-02）。
+ * 「まだ来ていない」中で一番近いものを返す。全部過ぎていたら null。
+ */
+export function nextDeadline(perk = {}, now = null) {
+  const n = now ? Date.parse(now) : Date.now();
+  let best = null;
+  for (const d of (Array.isArray(perk.deadlines) ? perk.deadlines : [])) {
+    if (!d || !d.at) continue;
+    const t = Date.parse(d.at);
+    if (!Number.isFinite(t) || t < n) continue;
+    if (!best || t < best.t) best = { label: d.label || '期限', at: d.at, t };
+  }
+  if (best) return { label: best.label, at: best.at, days_left: Math.floor((best.t - n) / 86400000) };
+  if (perk.expires_at) {
+    const t = Date.parse(perk.expires_at);
+    if (Number.isFinite(t)) return { label: '期限', at: perk.expires_at, days_left: Math.floor((t - n) / 86400000) };
+  }
+  return null;
+}
+
 export function daysLeft(expiresAt, now = null) {
   if (!expiresAt) return null;
   const t = Date.parse(expiresAt);
@@ -353,20 +396,27 @@ export function daysLeft(expiresAt, now = null) {
 }
 
 export function expiryState(perk = {}, now = null) {
-  const d = daysLeft(perk.expires_at, now);
-  if (d === null) return 'unknown';
-  if (d < 0) return 'expired';
-  if (d <= 7) return 'soon';
+  const nd = nextDeadline(perk, now);
+  if (!nd) return hasDeadline(perk) ? 'expired' : 'unknown';
+  if (nd.days_left < 0) return 'expired';
+  if (nd.days_left <= 7) return 'soon';
   return 'active';
 }
 
-/** 期限が近い × 実額 が大きい順のスコア。今日動くべきものだけ上に来るようにする。 */
+/**
+ * 期限が近い × 「貰える額 − 先に払う額」 のスコア。
+ * 期限切れは 0（金額が大きくても、もう動けないので沈める）。
+ */
 export function perkScore(perk = {}, now = null) {
   const st = expiryState(perk, now);
+  if (st === 'expired') return 0;
   const money = Number.isFinite(perk.benefit_jpy) ? perk.benefit_jpy : 0;
-  // 期限切れは 0（金額が大きくても、もう動けないので沈める）
-  const urgency = st === 'soon' ? 3 : st === 'active' ? 1.5 : st === 'unknown' ? 1 : 0;
-  return Math.round(money * urgency);
+  const outlay = Number.isFinite(perk.outlay_jpy) ? perk.outlay_jpy : 0;
+  const net = Math.max(0, money - outlay);
+  const nd = nextDeadline(perk, now);
+  const d = nd ? nd.days_left : null;
+  const urgency = d === null ? 1 : d <= 1 ? 4 : d <= 7 ? 3 : st === 'active' ? 1.5 : 1;
+  return Math.round(net * urgency);
 }
 
 export function rankPerks(rows = [], { now = null } = {}) {
@@ -433,6 +483,7 @@ function rowToPerk(r = {}) {
     conditions: safeJson(r.conditions_json, []), steps: safeJson(r.steps_json, []), human: safeJson(r.human_json, []),
     outlay_jpy: r.outlay_jpy || 0, outlay_note: r.outlay_note || '',
     expires_at: r.expires_at || null, deadline_note: r.deadline_note || '',
+    deadlines: SEED_DEADLINES.get(r.key) || [],
     verified_at: r.verified_at || null, source_quality: r.source_quality || 'secondary',
     evidence: r.evidence || '', needs_official_recheck: r.needs_recheck || null,
     source: r.source || null, status: r.status || 'new', tries: r.tries || 0,
@@ -515,15 +566,23 @@ export async function tryPerks(store, { limit = 3, fetchImpl = fetch, now = null
 export async function perkSummary(store, { now = null } = {}) {
   const byKind = await store.all(`SELECT kind, COUNT(*) AS n FROM ${T} GROUP BY kind`);
   const total = await store.first(`SELECT COUNT(*) AS n FROM ${T}`);
-  const soon = await store.first(`SELECT COUNT(*) AS n FROM ${T} WHERE expires_at IS NOT NULL AND expires_at >= ? AND expires_at < ?`,
-    now || nowIso(), new Date(Date.parse(now || nowIso()) + 7 * 86400000).toISOString());
   const primary = await store.first(`SELECT COUNT(*) AS n FROM ${T} WHERE source_quality = 'primary'`);
+  const allRows = await store.all(`SELECT * FROM ${T}`).catch(() => []);
+  const live = (allRows || []).map(rowToPerk).filter((p) => expiryState(p, now) !== 'expired');
+  const nds = live.map((p) => nextDeadline(p, now));
+  const actionNow = nds.filter((d) => d && d.days_left <= 1).length;
+  const due7 = nds.filter((d) => d && d.days_left <= 7).length;
+  const nextAction = live
+    .map((p, i) => (nds[i] ? { title: p.title, label: nds[i].label, at: nds[i].at, days_left: nds[i].days_left, url: p.url } : null))
+    .filter(Boolean).sort((a, b) => a.days_left - b.days_left).slice(0, 5);
   const cells = {};
   for (const r of byKind || []) cells[r.kind] = r.n;
   return {
     total: total ? total.n : 0,
     primary: primary ? primary.n : 0,
-    due_within_7d: soon ? soon.n : 0,
+    due_within_7d: due7,
+    action_now: actionNow,
+    next_action: nextAction,
     by_kind: cells,
     note: '実額・条件・期限は出典（公式ページ優先）付き。受け取る操作は人が行う（自動応募・自動クリックは規約違反になるため実装しない）。',
   };
@@ -533,16 +592,23 @@ export async function perkSummary(store, { now = null } = {}) {
 export function perkText(rows = [], { now = null } = {}) {
   const L = [];
   const ranked = rankPerks(rows, { now });
-  const soon = ranked.filter((p) => expiryState(p, now) === 'soon');
+  const live = ranked.map((p) => ({ p, nd: nextDeadline(p, now), st: expiryState(p, now) })).filter((x) => x.st !== 'expired');
+  const today = live.filter((x) => x.nd && x.nd.days_left <= 1);
+  const soon = live.filter((x) => x.nd && x.nd.days_left <= 7);
   L.push('有益情報（契約・購入・応募で貰えるもの。実額と期限つき）');
   if (!ranked.length) { L.push('  まだ無い。POST /api/perks/seed で種を入れる。'); return L.join('\n'); }
+  if (today.length) {
+    L.push('');
+    L.push(`■ 今日動くべきもの: ${today.length}件`);
+    for (const x of today) L.push(`  - [${x.nd.label} / 残${x.nd.days_left}日] ${x.p.title}  → ${x.p.url || ''}`);
+  }
   if (soon.length) {
     L.push('');
     L.push(`■ 期限が近い（7日以内）: ${soon.length}件`);
-    for (const p of soon) L.push(`  - [残${daysLeft(p.expires_at, now)}日] ${p.title}  → ${p.url || ''}`);
+    for (const x of soon) L.push(`  - [${x.nd.label} / 残${x.nd.days_left}日] ${x.p.title}  → ${x.p.url || ''}`);
   }
   L.push('');
-  L.push(`■ 一覧（${ranked.length}件）`);
+  L.push(`■ 一覧（${ranked.length}件・順位は「貰える額 − 先に払う額」× 期限の近さ）`);
   for (const p of ranked) {
     const st = expiryState(p, now);
     const mark = st === 'soon' ? '期限近' : st === 'expired' ? '期限切れ' : st === 'active' ? '有効' : '期限不明';
@@ -551,8 +617,10 @@ export function perkText(rows = [], { now = null } = {}) {
     if (p.site) L.push(`  出典: ${p.site} (${p.source_quality === 'primary' ? '一次情報' : '二次情報'}) ${p.url || ''}`);
     if (p.benefit) L.push(`  貰えるもの: ${p.benefit}${Number.isFinite(p.benefit_jpy) ? `  ≈${p.benefit_jpy.toLocaleString()}円` : ''}`);
     if (p.benefit_note) L.push(`  補足: ${p.benefit_note}`);
-    if (p.deadline_note) L.push(`  期限: ${p.deadline_note}`);
-    else if (p.expires_at) L.push(`  期限: ${p.expires_at.slice(0, 10)}${st === 'expired' ? '（過ぎている）' : ''}`);
+    const nd = nextDeadline(p, now);
+    if (nd) L.push(`  次に動く期限: ${nd.label} ${nd.at.slice(0, 10)}（残${nd.days_left}日）`);
+    else if (p.expires_at) L.push(`  期限: ${p.expires_at.slice(0, 10)}（過ぎている）`);
+    if (p.deadline_note) L.push(`  期限の内訳: ${p.deadline_note}`);
     if (p.outlay_jpy > 0) L.push(`  先に払う: ${p.outlay_jpy.toLocaleString()}円 ${p.outlay_note || ''}`);
     if ((p.conditions || []).length) L.push(`  条件: ${p.conditions.join(' / ')}`);
     if ((p.human || []).length) L.push(`  人の操作: ${p.human.join(' / ')}`);
@@ -574,7 +642,9 @@ export function perkHelp() {
     'POST /api/perks/ingest           : 外で拾った有益情報を取り込む（Reddit など。本文は title/url/excerpt）',
     '',
     '種類: ' + PERK_KINDS.map((k) => `${k.id}(${k.label})`).join(' / '),
-    '期限の見方: 7日以内=期限近 / 過ぎた=期限切れ（次回開催の監視に切り替える）',
+    '期限の見方: 1件が複数の期限を持つ（購入 → 応募 → 受け取り）。一番近い「まだ来ていない」期限で判定する。',
+    '  1日以内=今日動くべきもの / 7日以内=期限近 / 全部過ぎた=期限切れ（次回開催の監視に切り替える）',
+    '順位: 「貰える額 − 先に払う額」× 期限の近さ。先に払う額が大きいものは、その分だけ下がる。',
     '取り込みの選別: 金額の記載があるか、強いシグナルが2つ以上あるものだけ残す（質問・愚痴・誇大な儲け話は落とす）',
     '',
     '守っていること: 出典（公式ページ優先）を必ず持つ。実額は出典の文言をそのまま残す。',

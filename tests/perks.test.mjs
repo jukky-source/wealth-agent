@@ -1,7 +1,7 @@
 // 有益情報 (perks) のテスト — 出典・実額・期限・原価0の約束を壊していないか
 import {
   T, PERK_KINDS, SEED_PERKS, perkKey, classifyPerk, isBeneficial, perkSignals,
-  perkFrom, daysLeft, expiryState, perkScore, rankPerks, runPerkProbe,
+  perkFrom, daysLeft, nextDeadline, expiryState, perkScore, rankPerks, runPerkProbe,
   ensurePerkTable, savePerk, seedPerks, ingestPerks, listPerks, perkSummary, perkText, perkHelp,
 } from '../src/agent/perks.js';
 
@@ -172,6 +172,40 @@ await t('保存と一覧（実ストアで使う口が揃っている）', async
   await listPerks(st, { limit: 5 });
   await perkSummary(st, { now: NOW });
   eq(T, 'perks');
+});
+
+await t('1件が複数の期限を持ち、一番近い「まだ来ていない」期限で判定する', async () => {
+  const lawson = SEED_PERKS.find((p) => p.deadlines && p.deadlines.length);
+  ok(lawson, '複数期限を持つ種がある');
+  ok(lawson.deadlines.length >= 3, '購入・応募・受け取りが分かれている');
+  const nd = nextDeadline(lawson, '2026-10-18T00:00:00+09:00');
+  eq(nd.label, '店頭で購入', '今日動くべき期限は購入');
+  eq(nd.days_left, 1, '購入期限は残り1日');
+  eq(expiryState(lawson, '2026-10-18T00:00:00+09:00'), 'soon', '期限が近い扱いになる');
+  const later = nextDeadline(lawson, '2026-10-20T00:00:00+09:00');
+  eq(later.label, 'コースへの応募', '購入が過ぎたら次は応募');
+  eq(expiryState(lawson, '2026-11-03T00:00:00+09:00'), 'expired', '全部過ぎたら期限切れ');
+});
+
+await t('順位は「貰える額 − 先に払う額」× 期限の近さ', async () => {
+  const soon = { benefit_jpy: 5000, outlay_jpy: 1000, deadlines: [{ label: '購入', at: '2026-10-19T23:59:00+09:00' }] };
+  const far = { benefit_jpy: 5000, outlay_jpy: 1000, expires_at: '2027-10-31T23:59:00+09:00' };
+  const dead = { benefit_jpy: 99999, outlay_jpy: 0, expires_at: '2026-09-01T00:00:00+09:00' };
+  const n = '2026-10-18T00:00:00+09:00';
+  ok(perkScore(soon, n) > perkScore(far, n), '期限が近いほうが上');
+  eq(perkScore(dead, n), 0, '期限切れは金額が大きくても0');
+  eq(perkScore({ benefit_jpy: 500, outlay_jpy: 5000 }, n), 0, '先に払う額が上回るなら0');
+  const ranked = rankPerks([far, soon, dead], { now: n });
+  eq(ranked[0].benefit_jpy, 5000, '先頭は期限が近いもの');
+  eq(ranked[ranked.length - 1].expires_at, '2026-09-01T00:00:00+09:00', '末尾は期限切れ');
+});
+
+await t('一覧の先頭に「今日動くべきもの」が出る', async () => {
+  const lawson = SEED_PERKS.find((p) => p.deadlines && p.deadlines.length);
+  const txt = perkText([lawson], { now: '2026-10-18T00:00:00+09:00' });
+  ok(txt.includes('今日動くべきもの'), '見出しが出る');
+  ok(txt.includes('店頭で購入'), '何をすべきかが出る');
+  ok(txt.includes('次に動く期限: 店頭で購入'), '各件にも次の期限が出る');
 });
 
 if (fails.length) { console.log(`perks: ${pass} passed, ${fails.length} FAILED`); for (const f of fails) console.log('  FAIL ' + f); process.exit(1); }

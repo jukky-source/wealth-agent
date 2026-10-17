@@ -33,6 +33,7 @@
     "test:e8": "node tests/e8.test.mjs",
     "test:opt": "node tests/opt.test.mjs",
     "test:lab": "node tests/lab.test.mjs",
+    "test:labdiv": "node tests/labdiv.test.mjs",
     "test:labgen": "node tests/lab-gen.test.mjs",
     "test:playbook": "node tests/playbook.test.mjs",
     "test:perks": "node tests/perks.test.mjs",
