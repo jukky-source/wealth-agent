@@ -2,7 +2,7 @@
 // Auth: Bearer token (OWNER_TOKEN secret). Never returns secrets to the client.
 
 import { safeJson, j, truncate, nowIso, utcDay, round } from './util.js';
-import { summarizeLedger, MEASUREMENT_LABEL, BASIS_LABEL } from './truth.js';
+import { summarizeLedger, summarizeLedgerAgg, MEASUREMENT_LABEL, BASIS_LABEL } from './truth.js';
 import { STARTER_WORKFLOWS, evalExpr } from './workflow/workflow.js';
 import { runPeerReview } from './engine/peer.js';
 import { verifyMission } from './engine/verifier.js';
@@ -13,6 +13,9 @@ import { STRATEGIES } from './income/backtest.js';
 import { parseTable, toCsv, statColumns, qualityCheck } from './data/analyze.js';
 import { POLICY, reworkTask } from './agent/judge.js';
 import { activeMode, allModes, builtinModes, defaultChips, setActiveMode, upsertCustomMode } from './agent/modes.js';
+import { STREAMS, ensureStreams, streamProgress } from './agent/streams.js';
+import { setupChecklist } from './agent/setup.js';
+import { convene, saveDecision, pickTopic, SEATS, DEFAULT_SEATS } from './agent/council.js';
 import { getEnvelope, setEnvelope, envelopeCard, checkEnvelope } from './agent/envelope.js';
 import { createJob, advanceJob, revenueSummary, jobCard, jobListItems, recordReceipt } from './agent/revenue.js';
 import { catalog as x402Catalog, x402Enabled, receiptFromCallback } from './agent/x402.js';
@@ -35,7 +38,27 @@ export function createApi(deps) {
   const fleetApi = deps.fleet || null;
   const imgApi = deps.imagegen || null;
   const runnerApi = deps.runner || null;
-  const on = (method, pattern, handler) => routes.push({ method, pattern, handler });
+  // タップの反応が鈍い最大の原因は /api/dashboard：毎回 D1 を十数回叩いて約75KBを組み立てる。
+  // 20秒ごとの自動更新に対して、同一 isolate 内で15秒だけ結果を使い回す（認証はこの前段で済んでいる）。
+  const dashCache = new Map();
+  const DASH_TTL_MS = 15000;
+  let streamsEnsuredAt = 0;
+  const withDashCache = (method, pattern, handler) => {
+    if (method !== 'GET') {
+      // 状態を変える操作（収支の記録・設定変更など）の後は使い回しを捨てる。
+      // 捨てないと「保存したのに数字が変わらない」が最大15秒続く。
+      return async (...args) => { const out = await handler(...args); dashCache.clear(); return out; };
+    }
+    if (pattern !== '/api/dashboard') return handler;
+    return async (...args) => {
+      const hit = dashCache.get('v1');
+      if (hit && Date.now() - hit.at < DASH_TTL_MS) return hit.value;
+      const value = await handler(...args);
+      dashCache.set('v1', { at: Date.now(), value });
+      return value;
+    };
+  };
+  const on = (method, pattern, handler) => routes.push({ method, pattern, handler: withDashCache(method, pattern, handler) });
 
   // ---------------------------------------------------------------- health
   on('GET', '/api/health', async () => ({
@@ -48,9 +71,18 @@ export function createApi(deps) {
 
   // ---------------------------------------------------------------- dashboard
   on('GET', '/api/dashboard', async () => {
-    const character = await engine.getCharacter();
-    const state = await engine.engineState();
-    const missions = await store.all(`SELECT * FROM missions ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, priority DESC LIMIT 20`);
+    // 稼ぎ方ストリームを先に保証する（整理後のミッション一覧で表示・選択するため）
+    // ensureStreams は数十回の読み書きをする。画面更新のたびに走らせず、60秒に1回で足りる。
+    if (Date.now() - streamsEnsuredAt > 60000) {
+      await ensureStreams({ store, router, memory, engine }).catch(() => null);
+      streamsEnsuredAt = Date.now();
+    }
+    // 独立した3つは同時に取る（直列 await は往復ぶん遅くなる）
+    const [character, state, missions] = await Promise.all([
+      engine.getCharacter(),
+      engine.engineState(),
+      store.all(`SELECT * FROM missions ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, priority DESC LIMIT 20`),
+    ]);
     const activeMission = missions.find((m) => m.status === 'active') || missions[0] || null;
 
     const [running, queued, completed, failed, waiting] = await Promise.all([
@@ -61,39 +93,47 @@ export function createApi(deps) {
       store.all(`SELECT * FROM tasks WHERE state IN ('waiting_for_quota','waiting_for_approval','waiting_for_user') LIMIT 10`),
     ]);
 
-    const nextSel = activeMission ? await (async () => {
-      const memos = await memory.digest(`${activeMission.title}`, { scope: `mission:${activeMission.id}`, limit: 8 });
-      const selMod = await import('./engine/executor.js');
-      return selMod.selectNextTask(store, { character, mission: activeMission, memories: memos });
-    })() : null;
-
-    const ledgerRows = await store.all(`SELECT * FROM ledger ORDER BY occurred_on DESC LIMIT 500`);
-    const ledger = summarizeLedger(ledgerRows);
-
-    const [aiStatus, notifications, memStats, approvals] = await Promise.all([
+    // ここから先は互いに依存しないので、ひとつの Promise.all でまとめて走らせる。
+    const { activeGoal } = await import('./agent/watch.js');
+    const execMod = await import('./engine/executor.js');
+    const [
+      ledgerRows, aiStatus, notifications, memStats, approvals, lastSuccess, opportunities,
+      missionVerification, watchesActive, mode, goal, revenue, envelope, jobsOpen, nextSel, streams,
+    ] = await Promise.all([
+      // 500行を運ぶ代わりに kind×basis の集計だけ取る（20秒ごとに叩かれる経路なので効く）。
+      store.all(`SELECT kind, basis, currency, SUM(amount) AS total FROM ledger GROUP BY kind, basis, currency`),
       router.status(), engine.notifications(), memory.stats(),
       store.all(`SELECT * FROM approvals WHERE status='pending' ORDER BY requested_at DESC LIMIT 20`),
+      store.all(`SELECT t.title, t.last_success_step, t.finished_at FROM tasks t WHERE t.state='completed' ORDER BY t.finished_at DESC LIMIT 1`),
+      store.all(`SELECT domain, COUNT(*) AS count, MAX(score) AS best, SUM(CASE WHEN status='candidate' THEN 1 ELSE 0 END) AS candidates FROM opportunities GROUP BY domain`),
+      activeMission ? verifyMission(store, activeMission).catch(() => null) : Promise.resolve(null),
+      store.first(`SELECT COUNT(*) AS c FROM watch_rules WHERE status IN ('active','triggered','achieved')`).catch(() => null),
+      activeMode(store).catch(() => null),
+      activeGoal(store).catch(() => null),
+      revenueSummary(store).catch(() => null),
+      getEnvelope(store).catch(() => null),
+      store.all(`SELECT * FROM jobs WHERE state NOT IN ('settled','abandoned') ORDER BY updated_at DESC LIMIT 5`).catch(() => []),
+      (async () => {
+        // 次の一手は、稼働中の全ミッションの中から選ぶ（1つ目のミッションが空でも空欄にしない）。
+        const act = await store.all(`SELECT * FROM missions WHERE status='active' ORDER BY priority DESC`).catch(() => []);
+        // 全ミッションを回すと memory.digest と selectNextTask がミッション数だけ走る（実測で最大の遅延源）。
+        const pool = (act.length ? act : (activeMission ? [activeMission] : [])).slice(0, 2);
+        let best = null;
+        for (const m of pool) {
+          const memos = await memory.digest(`${m.title}`, { scope: `mission:${m.id}`, limit: 8 }).catch(() => []);
+          const sel = await execMod.selectNextTask(store, { character, mission: m, memories: memos }).catch(() => null);
+          if (sel?.chosen && (!best?.chosen || sel.chosen.score + (m.priority || 0) / 10 > best.chosen.score + (best.m.priority || 0) / 10)) best = { ...sel, m };
+        }
+        return best;
+      })(),
+      streamProgress(store).catch(() => []),
     ]);
-
-    const lastSuccess = await store.all(
-      `SELECT t.title, t.last_success_step, t.finished_at FROM tasks t WHERE t.state='completed' ORDER BY t.finished_at DESC LIMIT 1`);
-
-    const opportunities = await store.all(
-      `SELECT domain, COUNT(*) AS count, MAX(score) AS best, SUM(CASE WHEN status='candidate' THEN 1 ELSE 0 END) AS candidates FROM opportunities GROUP BY domain`);
-
-    const missionVerification = activeMission ? await verifyMission(store, activeMission) : null;
-    const watchesActive = await store.first(`SELECT COUNT(*) AS c FROM watch_rules WHERE status IN ('active','triggered','achieved')`).catch(() => null);
-    const mode = await activeMode(store).catch(() => null);
-    const { activeGoal } = await import('./agent/watch.js');
-    const goal = await activeGoal(store).catch(() => null);
-    const revenue = await revenueSummary(store).catch(() => null);
-    const envelope = await getEnvelope(store).catch(() => null);
-    const jobsOpen = await store.all(`SELECT * FROM jobs WHERE state NOT IN ('settled','abandoned') ORDER BY updated_at DESC LIMIT 5`).catch(() => []);
+    const ledger = summarizeLedgerAgg(ledgerRows);
 
     return {
       character: character ? {
         id: character.id, name: character.name, avatar: character.avatar, preset: character.preset,
-        avatar_url: character.avatar_url || null, avatar_source: character.avatar_source || null,
+        avatar_url: character.avatar_url ? '/api/character/avatar-image' : null, avatar_source: character.avatar_source || null,
         description: character.description, tone: character.tone, autonomy_level: character.autonomy_level,
         report_frequency: character.report_frequency, risk_tolerance: character.risk_tolerance,
         caution: character.caution, creativity: character.creativity, weights: character.priority_weights,
@@ -115,11 +155,16 @@ export function createApi(deps) {
       memory: memStats,
       pending_approvals: approvals,
       watches_active: Number(watchesActive?.c || 0),
-      mode: mode ? {
-        id: mode.id, label: mode.label, blurb: mode.blurb || '', goal: mode.goal || '',
-        chips: defaultChips(mode), placeholder: mode.placeholder || 'エージェントに指示する',
-        outcome_label: mode.outcome_label || '終わったこと', kpi_title: mode.kpi_title || '', custom: !!mode.custom,
-      } : null,
+      streams,
+      setup: setupChecklist(env),
+      council: await store.first('SELECT COUNT(*) AS c FROM decisions').catch(() => null),
+      // モード切替は廃止。稼ぐ専用の固定表示だけを返す。
+      mode: {
+        id: 'money', label: '稼ぐ', blurb: '稼ぎ方を並列に進めて、実測で確かめる', goal: '',
+        chips: ['いまの進みぐあいは？', '稼ぎ方は？', '収益はいくら？', '足あとを見せて', '止まってない？'],
+        placeholder: 'エージェントに指示する', outcome_label: '実測収益', kpi_title: '収支', custom: false,
+      },
+      earn_only: true,
       goal,
       ledger,
       revenue,
@@ -136,6 +181,7 @@ export function createApi(deps) {
   });
 
   // ---------------------------------------------------------------- engine control
+  on('GET', '/api/ai/models', async () => ({ ok: true, models: await router.discoveredForAll() }));
   on('GET', '/api/engine', async () => ({ ...(await engine.engineState()), notifications: await engine.notifications() }));
   on('POST', '/api/engine/start', async () => engine.control('start'));
   on('POST', '/api/engine/pause', async (req, body) => engine.control('pause', { note: body.reason }));
@@ -390,23 +436,24 @@ export function createApi(deps) {
 
   // ---------------------------------------------------------------- opportunities
   on('GET', '/api/opportunities', async (req) => {
+    const RETIRED_DOMAINS = ['fx', 'rewards', 'side_hustle', 'monitoring', 'micro_saas', 'agent_service'];
     const domain = req.query.get('domain');
     const rows = domain
-      ? await store.all(`SELECT * FROM opportunities WHERE domain=? ORDER BY score DESC LIMIT 200`, domain)
-      : await store.all(`SELECT * FROM opportunities ORDER BY score DESC LIMIT 300`);
+      ? (RETIRED_DOMAINS.includes(domain) ? [] : await store.all(`SELECT * FROM opportunities WHERE domain=? ORDER BY score DESC LIMIT 200`, domain))
+      : await store.all(`SELECT * FROM opportunities WHERE domain NOT IN ('fx','rewards','side_hustle') ORDER BY score DESC LIMIT 300`);
     return { opportunities: rows.map((o) => ({ ...o, evidence_urls: safeJson(o.evidence_urls, []), score_breakdown: safeJson(o.score_breakdown, null) })) };
   });
   on('POST', '/api/opportunities/research', async (req, body) => {
-    const domain = body.domain || 'rewards';
-    const topic = body.topic || (domain === 'fx' ? 'USDJPY 自動売買 戦略' : domain === 'rewards' ? 'ポイ活 高還元 換金' : '個人開発 副業 収益');
-    const mission = body.mission_id ? await store.get('missions', body.mission_id) : (await store.first(`SELECT * FROM missions WHERE status='active' LIMIT 1`));
-    const character = await engine.getCharacter();
-    let result;
-    if (domain === 'rewards') result = await rewards.research({ store, router, memory, research, mission, character, topic, limit: body.limit || 6 });
-    else if (domain === 'side_hustle') result = await sidehustle.research({ store, router, memory, research, mission, character, topic, limit: body.limit || 6 });
-    else result = { candidates: [], note: 'FXは /api/fx/* を使用してください' };
-    const ranked = await ranking.rank(store, { domain, persist: true, character });
-    return { ok: true, ...result, ranking: ranked };
+    // 稼ぎ方は x402直販API / API・自動化ツール出品 / AI代行サービス の3本に一本化済み。
+    // 廃止済みの稼ぎ方（FX・ポイ活・副業 等）のリサーチは受け付けない。
+    const RETIRED_DOMAINS = ['fx', 'rewards', 'side_hustle', 'monitoring', 'micro_saas', 'agent_service'];
+    const domain = String(body.domain || '');
+    if (RETIRED_DOMAINS.includes(domain)) {
+      return { ok: false, error: 'retired_domain',
+        note: `「${domain}」は廃止した稼ぎ方です。いまは x402直販API・API・自動化ツール出品・AI代行サービス の3本に一本化しています。` };
+    }
+    return { ok: false, error: 'unsupported_domain',
+      note: '候補リサーチは稼ぎ方ストリーム（x402直販API／API・自動化ツール出品／AI代行サービス）の計画から自動で走ります。' };
   });
   on('POST', '/api/opportunities/:id/reject', async (req, body, p) => {
     const o = await store.get('opportunities', p.id);
@@ -473,6 +520,36 @@ export function createApi(deps) {
     const bts = await store.all(`SELECT * FROM fx_backtests WHERE strategy_id=? ORDER BY created_at DESC LIMIT 5`, p.id);
     return { strategy: { ...s, lint: safeJson(s.lint_json, {}), params: safeJson(s.params_json, {}) },
       backtests: bts.map((b) => ({ ...b, metrics: safeJson(b.metrics_json, {}), walkforward: safeJson(b.walkforward_json, {}), overfit: safeJson(b.overfit_json, {}), losers: null })) };
+  });
+
+  // ---------------------------------------------------------------- FX Lab（試行錯誤ループ）
+  // FXはここで完成させない。少数の実験を Cron から回し続け、負けも残して次に活かす。
+  on('GET', '/api/fx/lab', async () => {
+    const { fxLabSummary } = await import('./income/fxLab.js');
+    return await fxLabSummary(store);
+  });
+  on('POST', '/api/fx/lab/tick', async (req, body) => {
+    const { fxLabTick } = await import('./income/fxLab.js');
+    const b = body || {};
+    return await fxLabTick({ store, n: b.n || 2, seed: b.seed || null, symbols: b.symbols || null });
+  });
+
+  // ---------------------------------------------------------------- 端末の再ペアリング
+  // トークンそのものは画面に出さない。期限つき・1回だけのコードを経由して端末へ渡す。
+  on('GET', '/api/owner/whoami', async () => ({ ok: true, owner: true, at: nowIso() }));
+  on('GET', '/api/owner/pair', async () => {
+    const { pairState, pairingHelp } = await import('./agent/pairing.js');
+    return { ok: true, ...(await pairState(store)), help: pairingHelp() };
+  });
+  on('POST', '/api/owner/pair-code', async () => {
+    const { mintPairing } = await import('./agent/pairing.js');
+    const m = await mintPairing(store);
+    return { ok: true, ...m, note: '1回だけ有効なコードです。アプリの「設定」→「この端末をつなぐ」に入れてください。' };
+  });
+  // 認証の外に置く唯一の口（コードを持っている人がトークンを受け取る）。
+  on('POST', '/api/pair', async (req, body) => {
+    const { redeemPairing } = await import('./agent/pairing.js');
+    return await redeemPairing(store, (body || {}).code, { token: boundEnv.OWNER_TOKEN || null });
   });
 
   // ---------------------------------------------------------------- research
@@ -625,6 +702,7 @@ export function createApi(deps) {
       engine: state.status, next: (await store.first(`SELECT title, state FROM tasks WHERE state='queued' ORDER BY priority DESC LIMIT 1`)) || null,
       running: await store.first(`SELECT COUNT(*) AS c FROM tasks WHERE state='running'`),
       ledger: summarizeLedger(await store.all(`SELECT * FROM ledger ORDER BY occurred_on DESC LIMIT 300`)),
+      receipts: (await store.first('SELECT COUNT(*) AS c FROM receipts').catch(() => null))?.c || 0,
     };
     const r = await router.complete({
       role: 'chat',
@@ -634,12 +712,17 @@ export function createApi(deps) {
 実行中タスク: ${context.running?.c || 0}
 次のタスク: ${context.next?.title || 'なし'}
 実測収益: ${context.ledger.revenue.measured} / 推定: ${context.ledger.revenue.total_estimated}
+# 直販API（x402）の稼働状況（実測）
+- 方式: HTTP 402 で値付けし、決済の検証と同時に自動納品する
+- 公開カタログ: /api/x402/catalog.json（3品目: brief 0.25 / data-clean 0.50 / code-review 0.75 USDC・いずれも $1 未満＝買い手SDKの既定上限内）
+- 受金: Base メインネット（eip155:8453）/ scheme=exact
+- 入金実績: ${context.receipts} 件
 # 長期記憶
 ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（なし）'}`,
       user: body.message, maxTokens: 1200, temperature: 0.6,
     });
     await memory.write({ kind: 'experience', key: `chat:${Date.now()}`, text: `オーナーとの対話: ${truncate(body.message, 200)}`, evidence: 'measured', importance: 30 });
-    return { ok: true, reply: r.text, provider: r.provider, fallback: !!r.fallback, note: r.note || null };
+    return { ok: true, reply: r.text, provider: r.provider, model: r.model || null, fallback: !!r.fallback, note: r.note || null };
   });
 
   // ---------------------------------------------------------------- threads
@@ -706,6 +789,13 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   }
 
   on('POST', '/api/chat/act', async (req, body) => {
+    // モードは廃止。目標や次の一手を聞かず、稼ぐ専用として自律で進む。
+    if (/モード/.test(String(body?.message || ''))) {
+      const stx = await streamProgress(store).catch(() => []);
+      return { ok: true, kind: 'notice', events: [],
+        reply: `モードの切り替えは廃止しました。このエージェントは「稼ぐ」専用です。いまは ${stx.map((x) => `${x.label} ${x.progress}%`).join(' / ')} を同時に進めています。` };
+    }
+
     const images = chatImages(body?.images);
     if (Array.isArray(body?.images) && body.images.length && !images.length) {
       return { ok: false, error: 'image_rejected', reply: '画像を受け取れませんでした（PNG / JPEG / WebP・1枚1.5MBまで・3枚まで）。' };
@@ -836,35 +926,86 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   }));
   on('POST', '/api/runner/jobs/:id/cancel', async (req, body, p) => runnerApi.cancel(p.id));
 
-  // ---------------------------------------------------------------- modes (用途)
-  // 「たまに金稼ぎ以外にも使いたい」— 用途を切り替えると、提案・成果の数え方・
-  // 承認の範囲が変わる。自分のモードもここから追加できる。
-  on('GET', '/api/mode', async () => {
-    const current = await activeMode(store);
-    return { ok: true, current, modes: await allModes(store), builtin: builtinModes(), chips: defaultChips(current) };
+  // ---------------------------------------------------------------- 稼ぎ方（並列ストリーム）
+  on('GET', '/api/setup/checklist', async () => ({ ...setupChecklist(env) }));
+
+  // 議会（チーム制）— 異なる立場のAI同士を議論させ、合意点へ収束させる。
+  on('GET', '/api/council', async () => {
+    const recent = await store.all('SELECT * FROM decisions ORDER BY created_at DESC LIMIT 20').catch(() => []);
+    return { ok: true, seats: Object.entries(SEATS).map(([id, v]) => ({ id, label: v.label, mission: v.mission })),
+      default_seats: DEFAULT_SEATS,
+      decisions: recent.map((d) => ({ ...d, dissent: safeJson(d.dissent_json, []), blockers: safeJson(d.blockers_json, []) })) };
   });
-  on('POST', '/api/mode', async (req, body) => {
-    const action = body?.action || 'switch';
-    if (action === 'create') {
-      const created = await upsertCustomMode(store, { label: body?.label, goal: body?.goal || '' });
-      if (!created) return { ok: false, error: 'label_required' };
-      await setActiveMode(store, created.id);
-      return { ok: true, mode: created, modes: await allModes(store), chips: defaultChips(created) };
-    }
-    if (action === 'goal') {
-      if (!body?.goal) return { ok: false, error: 'goal_required' };
-      const cur = await activeMode(store);
-      const upd = cur.custom ? await upsertCustomMode(store, { id: cur.id, label: cur.label, goal: body.goal }) : null;
-      return { ok: true, mode: upd || cur, note: upd ? 'updated' : 'builtin_mode_uses_goal_watch' };
-    }
-    const { parseModeRequest } = await import('./agent/modes.js');
-    const wanted = String(body?.id || parseModeRequest(body?.text || '').label || '');
-    const modes = await allModes(store);
-    const target = modes.find((m) => m.id === wanted || m.label === wanted || (wanted && m.label.includes(wanted)));
-    if (!target) return { ok: false, error: 'mode_not_found', modes };
-    await setActiveMode(store, target.id);
-    return { ok: true, mode: target, modes, chips: defaultChips(target) };
+  on('POST', '/api/council/convene', async (req, body) => {
+    const topic = body.topic || (await pickTopic(store))?.topic;
+    if (!topic) return { ok: false, error: 'no_topic', note: '議題がありません（ミッションが未作成です）' };
+    const character = await engine.getCharacter().catch(() => null);
+    const ev = await Promise.all([
+      store.all("SELECT kind,amount,currency,occurred_on FROM ledger ORDER BY occurred_on DESC LIMIT 10").catch(() => []),
+      store.all("SELECT title,severity,source_url FROM memories WHERE kind='evidence' ORDER BY created_at DESC LIMIT 10").catch(() => []),
+    ]);
+    const evidenceBlock = `# 台帳(直近)
+${JSON.stringify(ev[0])}
+# 証拠メモ(直近)
+${JSON.stringify(ev[1])}`;
+    const r = await convene({ router, character, topic, evidenceBlock, seats: body.seats || DEFAULT_SEATS });
+    const saved = await saveDecision(store, r.decision, { source: 'api' });
+    return { ok: true, decision: r.decision, opinions: r.opinions, cost: r.cost, saved_id: saved.id };
   });
+
+
+  on('GET', '/api/streams', async () => {
+    await ensureStreams({ store, router, memory, engine }).catch(() => null);
+    return { ok: true, streams: await streamProgress(store), earn_only: true };
+  });
+
+  // ---------------------------------------------------------------- 通知（承認が必要なとき）
+  on('GET', '/api/notifications', async () => {
+    const { setting } = await import('./db.js');
+    const lastSeen = Number((await setting(store, 'notify:last_seen', 0)) || 0);
+    const approvals = await store.all("SELECT * FROM approvals WHERE status='pending' ORDER BY requested_at DESC LIMIT 50").catch(() => []);
+    const items = approvals.map((a) => {
+      const at = Date.parse(a.requested_at || a.created_at || 0) || 0;
+      return { id: a.id, kind: 'approval', approval_id: a.id, task_id: a.task_id || null,
+        title: `承認が必要: ${a.action || '操作'}`, body: a.note || '', at: a.requested_at || a.created_at, is_new: at > lastSeen };
+    });
+    const unread = items.filter((i) => i.is_new).length;
+    const st = await streamProgress(store).catch(() => []);
+    return { ok: true, unread, new_count: unread, total: items.length, items, last_seen: lastSeen,
+      engine: (await engine.engineState()).status, streams: st.map((x) => ({ id: x.id, label: x.label, status: x.status, progress: x.progress })) };
+  });
+  on('POST', '/api/notifications/seen', async () => {
+    const { setSetting } = await import('./db.js');
+    await setSetting(store, 'notify:last_seen', Date.now());
+    return { ok: true, seen_at: Date.now() };
+  });
+
+  // ---------------------------------------------------------------- content（AIコンテンツ販売）
+  on('GET', '/api/content/destinations', async () => {
+    const { contentReport } = await import('./agent/content.js');
+    const report = await contentReport(store).catch(() => null);
+    return report || { ok: false, error: 'unavailable' };
+  });
+  on('POST', '/api/content/assess', async (req, body) => {
+    const { assessContent, preflightDestination, publishPlanFor } = await import('./agent/content.js');
+    const destination = String(body.destination || '');
+    const verdict = assessContent(
+      { kind: body.kind || null, title: body.title || '', body: body.body || body.text || '' },
+      { destination, history: body.history || [], rows: body.rows || [] },
+    );
+    return { ok: verdict.ok, destination, plan: publishPlanFor(destination), verdict };
+  });
+
+  // ---------------------------------------------------------------- modes（廃止）
+  // 稼ぐ専用に特化したため、用途の切り替えは廃止した。互換のため固定値を返す。
+  on('GET', '/api/mode', async () => ({
+    ok: true, removed: true, current: { id: 'money', label: '稼ぐ' }, modes: [], chips: [],
+    note: 'モードの切り替えは廃止しました。このエージェントは「稼ぐ」専用です。',
+  }));
+  on('POST', '/api/mode', async () => ({
+    ok: true, removed: true,
+    note: 'モードの切り替えは廃止しました。x402直販API・API・自動化ツール出品・AI代行サービスの3本を同時に進めています。',
+  }));
 
   // ---------------------------------------------------------------- watches (先回り報告)
   on('GET', '/api/watches', async () => {
@@ -1031,6 +1172,40 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
     return r.ok ? { ok: true, receipt_id: r.receipt.id, amount: r.receipt.amount } : { ok: false, error: r.error };
   });
 
+  // ------------------------------------------------ 売り場（RapidAPI 等）の入金報告 → 入金
+  // 売り場は手数料を引いてから報告してくるので、gross を渡し fee_rate（既定25%）で
+  // 手数料を差し戻して記録する。source は 'platform'（決済事業者=売り場）。
+  // external_id で重複を弾くので、同じ報告を何度投げても二重計上しない。
+  // 台帳の実測は「検証済みの通知」だけ。ここも secret 一致が必須。
+  on('POST', '/api/webhooks/rapidapi', async (req, body) => {
+    const secret = env.RAPIDAPI_WEBHOOK_SECRET || null;
+    const u = new URL(req.url);
+    const provided = req.headers.get('x-webhook-secret') || u.searchParams.get('secret') || '';
+    if (!secret || provided !== secret) {
+      return { ok: false, error: 'unverified', note: 'RAPIDAPI_WEBHOOK_SECRET が未設定、または一致しません。検証できない入金は記録しません。' };
+    }
+    const b = body || {};
+    const events = Array.isArray(b.events) ? b.events : (Array.isArray(b) ? b : [b]);
+    const feeRate = Number.isFinite(Number(b.fee_rate)) ? Number(b.fee_rate) : 0.25;
+    const results = [];
+    for (const e of events) {
+      const gross = Number(e && (e.amount_usd ?? e.amount) || 0);
+      if (!(gross > 0)) { results.push({ ok: false, error: 'bad_amount', id: (e && e.id) || null }); continue; }
+      const r = await recordReceipt(store, {
+        source: 'platform',
+        external_id: String((e && (e.id || e.transaction_id)) || ''),
+        amount: gross,
+        currency: String((e && e.currency) || 'USD').toUpperCase(),
+        fee: Math.round(gross * feeRate * 1e6) / 1e6,
+        payer: (e && (e.user || e.buyer)) || null,
+        occurred_on: (e && e.occurred_at) ? String(e.occurred_at).slice(0, 10) : null,
+        raw: e, signature_verified: true,
+      });
+      results.push(r.ok ? { ok: true, receipt_id: r.receipt.id, amount: r.receipt.amount } : { ok: false, error: r.error, id: (e && e.id) || null });
+    }
+    return { ok: results.some((x) => x.ok), recorded: results.filter((x) => x.ok).length, results };
+  });
+
   on('GET', '/api/providers', async () => {
     const card = providerCard();
     return { ...card, help: providerHelp() };
@@ -1056,6 +1231,61 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
     help: autoLaneHelp(),
   }));
 
+  // スカウト（無料巡回で拾った候補と「試す計画」）— 「集めている」ことを画面から見えるようにする
+  on('GET', '/api/scout', async () => {
+    const m = await import('./agent/scout.js');
+    const { outcomeBoard } = await import('./agent/social.js');
+    const summary = await m.scoutSummary(store);
+    const findings = await m.scoutFindings(store, { limit: 20 });
+    const board = await outcomeBoard(store).catch(() => ({ recorded: 0 }));
+    return {
+      ok: true, ...summary, findings, count: findings.length,
+      sources: m.SOURCES.map((x) => ({ id: x.id, label: x.label || x.name || x.id })),
+      source_count: m.SOURCES.length,
+      cards: m.scoutCards(summary), help: m.scoutHelp(),
+      loop: {
+        tour: 'auto', score: 'auto', plan: 'auto', execute: 'human_tap',
+        measured_outcomes: board.recorded || 0, auto_loop_closed: 'fx_lab',
+        note: m.scoutLoopNote(),
+      },
+    };
+  });
+  // 結果の書き戻しの別名（/api/social/* が別ハンドラに食われる環境があるため、衝突しない場所にも置く）
+  on('POST', '/api/outcome', async (req, body) => {
+    const { recordOutcome } = await import('./agent/social.js');
+    const b = body || {};
+    return await recordOutcome(store, { draft_id: b.draft_id || b.id || null, channel: b.channel || null, outcome: b.outcome || null, note: b.note || null });
+  });
+  on('GET', '/api/outcome', async () => {
+    const { outcomeBoard } = await import('./agent/social.js');
+    return { ok: true, ...(await outcomeBoard(store)) };
+  });
+  // 結果の書き戻し（試行錯誤の輪）— 記録した結果が次の選別に効く
+  on('POST', '/api/social/outcome', async (req, body) => {
+    const { recordOutcome } = await import('./agent/social.js');
+    const b = body || {};
+    return await recordOutcome(store, { draft_id: b.draft_id || b.id || null, channel: b.channel || null, outcome: b.outcome || null, note: b.note || null });
+  });
+  on('GET', '/api/social/outcomes', async () => {
+    const { outcomeBoard } = await import('./agent/social.js');
+    return { ok: true, ...(await outcomeBoard(store)) };
+  });
+  // 決めた価格（980円）を、既に作った下書きにも反映する（冪等）
+  on('POST', '/api/social/price-sweep', async (req, body) => {
+    const { applyDecidedPrice } = await import('./agent/social.js');
+    return await applyDecidedPrice(store, { jpy: Number((body || {}).jpy) || 980 });
+  });
+  // EA（MQL5）— 昇格した王者を「検証で終わらせない」ための出口
+  on('GET', '/api/fx/ea', async () => {
+    const { listEaExports, eaHelp, eaStrategyKeys } = await import('./income/ea.js');
+    return { ok: true, exports: await listEaExports(store, { limit: 20 }), strategies: eaStrategyKeys(), help: eaHelp() };
+  });
+  on('POST', '/api/fx/ea', async (req, body) => {
+    const { buildEa } = await import('./income/ea.js');
+    const b = body || {};
+    return await buildEa(store, { strategyId: b.strategy_id || null, timeframe: b.timeframe || null });
+  });
+
   // 投稿キュー（下書きまでは全自動、最後の1タップだけ人が持つ）
   on('GET', '/api/publish', async () => {
     const st = await publishState(store);
@@ -1065,6 +1295,22 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
   on('POST', '/api/publish/drafts', async (req, body) => queueDraft(store, body || {}));
   on('POST', '/api/publish/approve', async (req, body) => approveDraft(store, (body || {}).id));
   on('POST', '/api/publish/posted', async (req, body) => markPosted(store, (body || {}).id, (body || {}).url || null));
+
+  // SNS（X / note / YouTube）— 人の操作を「押すだけ・貼るだけ」に寄せる層。
+  on('GET', '/api/social', async () => {
+    const { socialReport } = await import('./agent/social.js');
+    return await socialReport(store);
+  });
+  on('POST', '/api/social/refill', async (req, body) => {
+    const { refillQueue } = await import('./agent/social.js');
+    const b = body || {};
+    return await refillQueue({ store, limit: b.limit || 2, minScore: b.min_score || 30, channels: b.channels || null });
+  });
+  on('POST', '/api/social/approve-all', async (req, body) => {
+    const { approveAll } = await import('./agent/social.js');
+    const b = body || {};
+    return await approveAll(store, { channels: b.channels || null });
+  });
 
   // 実行環境（手足）— 音声と動画の合成だけがWorkersの外に出る
   on('GET', '/api/runner/status', async (req, env) => {

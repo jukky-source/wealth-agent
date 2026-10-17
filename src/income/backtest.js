@@ -10,12 +10,14 @@
 
 import { mean, stdev, round, safeJson } from '../util.js';
 
+// units = 1取引あたりの通貨量（リスク量を決める）。quote = 損益が建つ通貨。
+// quote が JPY 以外のときは、決済日レートで円に換算する（換算表はコストモデルの fx として渡す）。
 export const PAIRS = {
-  USDJPY: { pip: 0.01, quote: 'JPY', usdBase: true },
-  EURUSD: { pip: 0.0001, quote: 'USD', usdBase: false },
-  GBPUSD: { pip: 0.0001, quote: 'USD', usdBase: false },
-  USDCAD: { pip: 0.0001, quote: 'CAD', usdBase: true },
-  GOLD: { pip: 0.1, quote: 'USD', usdBase: true },
+  USDJPY: { pip: 0.01, quote: 'JPY', units: 10000, label: '米ドル/円' },
+  EURUSD: { pip: 0.0001, quote: 'USD', units: 10000, label: 'ユーロ/米ドル' },
+  GBPUSD: { pip: 0.0001, quote: 'USD', units: 10000, label: '英ポンド/米ドル' },
+  USDCAD: { pip: 0.0001, quote: 'CAD', units: 10000, label: '米ドル/カナダドル' },
+  GOLD: { pip: 0.1, quote: 'USD', units: 1, label: '金（1オンス）' },
 };
 
 export const DEFAULT_COST_MODEL = {
@@ -80,16 +82,153 @@ export function stdevRolling(values, period) {
   return out;
 }
 
+// 単調デックで O(n)。件数が増えても実験1回の費用が増えないようにしてある。
 export function highest(values, period) {
   const out = new Array(values.length).fill(null);
-  for (let i = period - 1; i < values.length; i++) out[i] = Math.max(...values.slice(i - period + 1, i + 1));
+  const dq = []; let head = 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (v == null) { dq.length = 0; head = 0; continue; }
+    while (dq.length > head && values[dq[dq.length - 1]] <= v) dq.pop();
+    dq.push(i);
+    while (dq[head] <= i - period) head++;
+    if (i >= period - 1) out[i] = values[dq[head]];
+  }
   return out;
 }
 export function lowest(values, period) {
   const out = new Array(values.length).fill(null);
-  for (let i = period - 1; i < values.length; i++) out[i] = Math.min(...values.slice(i - period + 1, i + 1));
+  const dq = []; let head = 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (v == null) { dq.length = 0; head = 0; continue; }
+    while (dq.length > head && values[dq[dq.length - 1]] >= v) dq.pop();
+    dq.push(i);
+    while (dq[head] <= i - period) head++;
+    if (i >= period - 1) out[i] = values[dq[head]];
+  }
   return out;
 }
+
+// --- 追加インジケータ（すべて因果的: 添字 i は i 以前のデータのみ） ---
+
+/** MACD — 速いEMAと遅いEMAの差、シグナル線、ヒストグラム */
+export function macd(values, fast = 12, slow = 26, signalPeriod = 9) {
+  const ef = ema(values, fast); const es = ema(values, slow);
+  const line = values.map((_, i) => (ef[i] == null || es[i] == null ? null : ef[i] - es[i]));
+  const sig = ema(line.map((v) => (v == null ? 0 : v)), signalPeriod);
+  return { line, signal: sig, hist: line.map((v, i) => (v == null || sig[i] == null ? null : v - sig[i])) };
+}
+
+/** ワイルダーの ADX / +DI / -DI（平滑化は Wilder の方法） */
+export function wilderADX(bars, period = 14) {
+  const n = bars.length;
+  const plusDI = new Array(n).fill(null); const minusDI = new Array(n).fill(null); const adxOut = new Array(n).fill(null);
+  let trS = 0; let pS = 0; let mS = 0;
+  const dxQueue = [];
+  for (let i = 1; i < n; i++) {
+    const up = bars[i].high - bars[i - 1].high;
+    const dn = bars[i - 1].low - bars[i].low;
+    const plusDM = up > dn && up > 0 ? up : 0;
+    const minusDM = dn > up && dn > 0 ? dn : 0;
+    const tr = Math.max(bars[i].high - bars[i].low, Math.abs(bars[i].high - bars[i - 1].close), Math.abs(bars[i].low - bars[i - 1].close));
+    if (i <= period) { trS += tr; pS += plusDM; mS += minusDM; }
+    else { trS = trS - trS / period + tr; pS = pS - pS / period + plusDM; mS = mS - mS / period + minusDM; }
+    if (i >= period) {
+      const pdi = trS > 0 ? (pS / trS) * 100 : 0;
+      const mdi = trS > 0 ? (mS / trS) * 100 : 0;
+      plusDI[i] = pdi; minusDI[i] = mdi;
+      const dx = (pdi + mdi) > 0 ? (Math.abs(pdi - mdi) / (pdi + mdi)) * 100 : 0;
+      if (adxOut[i - 1] == null) {
+        dxQueue.push(dx);
+        if (dxQueue.length >= period) adxOut[i] = dxQueue.slice(-period).reduce((a, b) => a + b, 0) / period;
+      } else {
+        adxOut[i] = ((adxOut[i - 1] * (period - 1)) + dx) / period;
+      }
+    }
+  }
+  return { adx: adxOut, plusDI, minusDI };
+}
+
+/** ストキャスティクス %K / %D */
+export function stoch(bars, period = 14, smoothK = 3, smoothD = 3) {
+  const hh = highest(bars.map((b) => b.high), period);
+  const ll = lowest(bars.map((b) => b.low), period);
+  const raw = bars.map((b, i) => (hh[i] == null || ll[i] == null || hh[i] === ll[i] ? null : ((b.close - ll[i]) / (hh[i] - ll[i])) * 100));
+  const filled = raw.map((v) => (v == null ? 50 : v));   // ウォームアップ中は中立（信号は出さない）
+  const k = sma(filled, smoothK);
+  const d = sma(k, smoothD);
+  return { k: raw.map((v, i) => (v == null ? null : k[i])), d: raw.map((v, i) => (v == null ? null : d[i])) };
+}
+
+/** CCI（平均偏差からの乖離） */
+export function cci(bars, period = 20) {
+  const tp = bars.map((b) => (b.high + b.low + b.close) / 3);
+  const m = sma(tp, period);
+  return bars.map((_, i) => {
+    if (i < period - 1 || m[i] == null) return null;
+    let dev = 0;
+    for (let k2 = i - period + 1; k2 <= i; k2++) dev += Math.abs(tp[k2] - m[i]);
+    const md = dev / period;
+    return md === 0 ? 0 : (tp[i] - m[i]) / (0.015 * md);
+  });
+}
+
+/** 変化率（%） */
+export function roc(values, period = 20) {
+  return values.map((v, i) => (i < period || !values[i - period] ? null : ((v - values[i - period]) / values[i - period]) * 100));
+}
+
+/** 終値のzスコア（移動平均と標準偏差からの乖離） */
+export function zscore(values, period = 20) {
+  const m = sma(values, period); const sd = stdevRolling(values, period);
+  return values.map((_, i) => (m[i] == null || sd[i] == null || sd[i] === 0 ? null : (values[i] - m[i]) / sd[i]));
+}
+
+/** ケルトナーチャネル（EMA ± ATR×倍率） */
+export function keltner(bars, period = 20, mult = 2, atrPeriod = 14) {
+  const close = bars.map((b) => b.close);
+  const mid = ema(close, period); const a = atr(bars, atrPeriod);
+  return {
+    mid,
+    upper: close.map((_, i) => (mid[i] == null || a[i] == null ? null : mid[i] + mult * a[i])),
+    lower: close.map((_, i) => (mid[i] == null || a[i] == null ? null : mid[i] - mult * a[i])),
+  };
+}
+
+/** スーパートレンド（ATRのトレーリングで方向を決める。代表的な実装のひとつ） */
+export function supertrend(bars, period = 10, mult = 3) {
+  const n = bars.length; const a = atr(bars, period);
+  const dir = new Array(n).fill(0); const line = new Array(n).fill(null);
+  let prevUpper = null; let prevLower = null; let prevDir = 1;
+  for (let i = 0; i < n; i++) {
+    if (a[i] == null) { dir[i] = 0; continue; }
+    const mid = (bars[i].high + bars[i].low) / 2;
+    let upper = mid + mult * a[i];
+    let lower = mid - mult * a[i];
+    if (prevUpper != null) {
+      upper = (upper < prevUpper || bars[i - 1].close > prevUpper) ? upper : prevUpper;
+      lower = (lower > prevLower || bars[i - 1].close < prevLower) ? lower : prevLower;
+    }
+    let d = prevDir;
+    if (bars[i].close > prevUpper) d = 1; else if (bars[i].close < prevLower) d = -1;
+    dir[i] = d; line[i] = d === 1 ? lower : upper;
+    prevUpper = upper; prevLower = lower; prevDir = d;
+  }
+  return { dir, line };
+}
+
+/** 一目均衡表の中点（基準線・転換線）。(最高値+最安値)/2 */
+export function midpoint(bars, period) {
+  const hh = highest(bars.map((b) => b.high), period);
+  const ll = lowest(bars.map((b) => b.low), period);
+  return hh.map((h, i) => (h == null || ll[i] == null ? null : (h + ll[i]) / 2));
+}
+
+/** 曜日（0=日曜 ... 6=土曜, UTC基準） */
+export function weekdayOf(dateStr) { return new Date(`${dateStr}T00:00:00Z`).getUTCDay(); }
+/** 月内の日（1-31, UTC基準） */
+export function dayOfMonth(dateStr) { return new Date(`${dateStr}T00:00:00Z`).getUTCDate(); }
 
 // ---------------------------------------------------------------------------
 // Strategy catalog — each returns an intent per bar: +1 long, -1 short, 0 flat
@@ -149,34 +288,276 @@ export const STRATEGIES = {
     grid: { entry: [20, 40, 55], exit: [10, 20, 30], atrStopMult: [1.5, 2.0, 3.0] },
     intent(bars, p) {
       const high = bars.map((b) => b.high); const low = bars.map((b) => b.low);
-      const hh = highest(high.map((v, i) => (i >= 1 ? Math.max(...high.slice(Math.max(0, i - 1), i)) : v)), p.entry);
-      const ll = lowest(low, p.exit);
-      const hhPrev = highest(high, p.entry);
+      // 直前までの高値/安値（シグナルバーを含めない＝未来参照なし・非リペイント）
+      const hiPrev = highest(high, p.entry);
+      const loPrev = lowest(low, p.entry);
       return bars.map((_, i) => {
         if (i < p.entry + 2) return 0;
-        // previous N-bar extreme, excluding the signal bar (causal, non-repainting)
-        const hiN = Math.max(...high.slice(i - p.entry, i));
-        const loN = Math.min(...low.slice(i - p.entry, i));
+        const hiN = hiPrev[i - 1]; const loN = loPrev[i - 1];
+        if (hiN == null || loN == null) return 0;
         if (bars[i].close > hiN) return 1;
         if (p.allowShort && bars[i].close < loN) return -1;
         return 0;
       });
     },
   },
+
+  // ===== ここから追加ロジック（FXで公開されている手法の主要な型を網羅する） =====
+
+  macd_trend: {
+    label: 'MACDトレンド',
+    defaultParams: { fast: 12, slow: 26, signal: 9, trendFilter: 200, atrStopMult: 2.5, atrTargetMult: 3.0, allowShort: true },
+    grid: { fast: [8, 12, 16], slow: [21, 26, 34], signal: [7, 9] },
+    intent(bars, p) {
+      const close = bars.map((b) => b.close);
+      const m = macd(close, p.fast, p.slow, p.signal);
+      const tf = Number(p.trendFilter) > 0 ? sma(close, p.trendFilter) : null;
+      const warm = Math.max(Number(p.slow) + Number(p.signal), Number(p.trendFilter) || 0) + 1;
+      return bars.map((_, i) => {
+        if (i < warm || m.hist[i] == null) return 0;
+        const ok = (dir) => !tf || tf[i] == null || (dir > 0 ? close[i] > tf[i] : close[i] < tf[i]);
+        if (m.hist[i] > 0 && m.line[i] > m.signal[i] && ok(1)) return 1;
+        if (p.allowShort && m.hist[i] < 0 && m.line[i] < m.signal[i] && ok(-1)) return -1;
+        return 0;
+      });
+    },
+  },
+  adx_di_trend: {
+    label: 'ADX/DIトレンド',
+    defaultParams: { period: 14, threshold: 20, atrStopMult: 3.0, atrTargetMult: 4.0, maxHoldBars: 120, allowShort: true },
+    grid: { period: [10, 14, 21], threshold: [18, 25, 32] },
+    intent(bars, p) {
+      const { adx: adxArr, plusDI, minusDI } = wilderADX(bars, p.period);
+      const warm = Number(p.period) * 3;
+      return bars.map((_, i) => {
+        if (i < warm) return 0;
+        const a = adxArr[i];
+        if (a == null || plusDI[i] == null || minusDI[i] == null || a < p.threshold) return 0;
+        if (plusDI[i] > minusDI[i]) return 1;
+        if (p.allowShort && minusDI[i] > plusDI[i]) return -1;
+        return 0;
+      });
+    },
+  },
+  stoch_reversal: {
+    label: 'ストキャス逆張り',
+    defaultParams: { period: 14, smoothK: 3, smoothD: 3, oversold: 20, overbought: 80, atrStopMult: 2.5, allowShort: true },
+    grid: { period: [9, 14, 21], oversold: [15, 20, 25], overbought: [75, 80, 85] },
+    intent(bars, p) {
+      const s = stoch(bars, p.period, p.smoothK, p.smoothD);
+      const warm = Number(p.period) + Number(p.smoothK) + 2;
+      return bars.map((_, i) => {
+        if (i < warm) return 0;
+        const k1 = s.k[i - 1]; const k0 = s.k[i];
+        if (k1 == null || k0 == null) return 0;
+        if (k1 <= p.oversold && k0 > p.oversold) return 1;
+        if (p.allowShort && k1 >= p.overbought && k0 < p.overbought) return -1;
+        return 0;
+      });
+    },
+  },
+  cci_reversal: {
+    label: 'CCI逆張り',
+    defaultParams: { period: 20, threshold: 100, atrStopMult: 2.5, allowShort: true },
+    grid: { period: [14, 20, 30], threshold: [80, 100, 150] },
+    intent(bars, p) {
+      const c = cci(bars, p.period);
+      return bars.map((_, i) => {
+        if (i < Number(p.period) + 1 || c[i] == null) return 0;
+        if (c[i] < -Math.abs(p.threshold)) return 1;
+        if (p.allowShort && c[i] > Math.abs(p.threshold)) return -1;
+        return 0;
+      });
+    },
+  },
+  keltner_breakout: {
+    label: 'ケルトナーブレイクアウト',
+    defaultParams: { period: 20, mult: 2.0, atrPeriod: 14, atrStopMult: 2.0, atrTargetMult: 3.0, allowShort: true },
+    grid: { period: [15, 20, 30], mult: [1.5, 2.0, 2.5] },
+    intent(bars, p) {
+      const k = keltner(bars, p.period, p.mult, p.atrPeriod);
+      const warm = Number(p.period) + Number(p.atrPeriod) + 1;
+      return bars.map((b, i) => {
+        if (i < warm || k.upper[i] == null) return 0;
+        if (b.close > k.upper[i]) return 1;
+        if (p.allowShort && b.close < k.lower[i]) return -1;
+        return 0;
+      });
+    },
+  },
+  squeeze_breakout: {
+    label: 'スクイーズ・ブレイクアウト',
+    defaultParams: { period: 20, mult: 2.0, squeezeLookback: 120, squeezePct: 0.35, breakoutBars: 20, atrStopMult: 2.5, allowShort: true },
+    grid: { period: [15, 20, 30], squeezePct: [0.25, 0.35, 0.5], breakoutBars: [10, 20, 40] },
+    intent(bars, p) {
+      const close = bars.map((b) => b.close);
+      const mid = sma(close, p.period); const sd = stdevRolling(close, p.period);
+      const bw = close.map((_, i) => (mid[i] == null || sd[i] == null || mid[i] === 0 ? null : (2 * p.mult * sd[i]) / mid[i]));
+      const bwSma = sma(bw.map((v) => (v == null ? 0 : v)), p.squeezeLookback);
+      const squeeze = bw.map((v, i) => (v == null || bwSma[i] == null ? false : v <= bwSma[i] * p.squeezePct));
+      const hi = highest(close, p.breakoutBars); const lo = lowest(close, p.breakoutBars);
+      const warm = Math.max(Number(p.period), Number(p.squeezeLookback), Number(p.breakoutBars)) + 3;
+      return bars.map((_, i) => {
+        if (i < warm) return 0;
+        const wasSqueezed = squeeze[i - 1] || squeeze[i - 2] || squeeze[i - 3];
+        if (!wasSqueezed) return 0;
+        if (hi[i - 1] != null && close[i] > hi[i - 1]) return 1;
+        if (p.allowShort && lo[i - 1] != null && close[i] < lo[i - 1]) return -1;
+        return 0;
+      });
+    },
+  },
+  supertrend_atr: {
+    label: 'スーパートレンド（ATRトレーリング）',
+    defaultParams: { period: 10, mult: 3.0, atrStopMult: 0.0, allowShort: true },
+    grid: { period: [7, 10, 14, 20], mult: [2.0, 3.0, 4.0] },
+    intent(bars, p) {
+      const st = supertrend(bars, p.period, p.mult);
+      const warm = Number(p.period) * 2 + 1;
+      return bars.map((_, i) => {
+        if (i < warm || st.dir[i] === 0) return 0;
+        if (st.dir[i] === 1) return 1;
+        return p.allowShort ? -1 : 0;
+      });
+    },
+  },
+  roc_momentum: {
+    label: 'モメンタム（変化率）',
+    defaultParams: { period: 20, threshold: 1.5, maFilter: 100, atrStopMult: 2.5, atrTargetMult: 3.0, allowShort: true },
+    grid: { period: [10, 20, 60], threshold: [0.5, 1.5, 3.0] },
+    intent(bars, p) {
+      const close = bars.map((b) => b.close);
+      const r = roc(close, p.period);
+      const maf = Number(p.maFilter) > 0 ? sma(close, p.maFilter) : null;
+      const warm = Number(p.period) + (Number(p.maFilter) || 0) + 1;
+      return bars.map((_, i) => {
+        if (i < warm || r[i] == null) return 0;
+        const okUp = !maf || maf[i] == null || close[i] > maf[i];
+        const okDn = !maf || maf[i] == null || close[i] < maf[i];
+        if (r[i] > Math.abs(p.threshold) && okUp) return 1;
+        if (p.allowShort && r[i] < -Math.abs(p.threshold) && okDn) return -1;
+        return 0;
+      });
+    },
+  },
+  zscore_meanrev: {
+    label: 'zスコア平均回帰',
+    defaultParams: { period: 20, entryZ: 2.0, exitZ: 0.5, atrStopMult: 2.5, allowShort: true },
+    grid: { period: [15, 20, 50], entryZ: [1.5, 2.0, 2.5] },
+    intent(bars, p) {
+      const close = bars.map((b) => b.close);
+      const z = zscore(close, p.period);
+      return bars.map((_, i) => {
+        if (i < Number(p.period) + 1 || z[i] == null) return 0;
+        if (z[i] < -Math.abs(p.entryZ)) return 1;
+        if (p.allowShort && z[i] > Math.abs(p.entryZ)) return -1;
+        return 0;
+      });
+    },
+  },
+  ichimoku_trend: {
+    label: '一目均衡表トレンド',
+    defaultParams: { tenkan: 9, kijun: 26, atrStopMult: 2.5, atrTargetMult: 3.0, allowShort: true },
+    grid: { tenkan: [9, 12], kijun: [26, 52] },
+    intent(bars, p) {
+      const close = bars.map((b) => b.close);
+      const ten = midpoint(bars, p.tenkan); const kij = midpoint(bars, p.kijun);
+      const warm = Number(p.kijun) + 2;
+      return bars.map((_, i) => {
+        if (i < warm || ten[i] == null || kij[i] == null) return 0;
+        if (close[i] > kij[i] && ten[i] > kij[i]) return 1;
+        if (p.allowShort && close[i] < kij[i] && ten[i] < kij[i]) return -1;
+        return 0;
+      });
+    },
+  },
+  dual_thrust: {
+    label: 'デュアルスラスト（レンジブレイク）',
+    defaultParams: { lookback: 5, k1: 0.5, k2: 0.5, atrStopMult: 2.0, maxHoldBars: 6, allowShort: true },
+    grid: { lookback: [3, 5, 10], k1: [0.4, 0.5, 0.7], k2: [0.4, 0.5, 0.7] },
+    intent(bars, p) {
+      const n = bars.length;
+      const hh = highest(bars.map((b) => b.high), p.lookback);
+      const ll = lowest(bars.map((b) => b.low), p.lookback);
+      const hc = highest(bars.map((b) => b.close), p.lookback);
+      const lc = lowest(bars.map((b) => b.close), p.lookback);
+      return bars.map((b, i) => {
+        if (i < Number(p.lookback) + 1) return 0;
+        const a = hh[i - 1]; const b2 = lc[i - 1]; const c = hc[i - 1]; const d = ll[i - 1];
+        if ([a, b2, c, d].some((v) => v == null)) return 0;
+        const range = Math.max(a - b2, c - d);
+        if (!(range > 0)) return 0;
+        const upper = b.open + p.k1 * range;
+        const lower = b.open - p.k2 * range;
+        if (b.close > upper) return 1;
+        if (p.allowShort && b.close < lower) return -1;
+        return 0;
+      });
+    },
+  },
+  weekday_seasonality: {
+    label: '曜日効果（カレンダー）',
+    defaultParams: { weekday: 1, side: 1, hold: 2, atrStopMult: 3.0, atrTargetMult: 0, allowShort: false },
+    grid: { weekday: [1, 2, 3, 4], side: [1, -1], hold: [1, 2, 3] },
+    normalize: (p) => ({ ...p, maxHoldBars: Math.max(1, Math.min(5, Number(p.hold) || 2)) }),
+    intent(bars, p) {
+      const d = Number(p.weekday);
+      const side = Number(p.side) < 0 ? -1 : 1;
+      return bars.map((b) => (weekdayOf(b.date) === d ? side : 0));
+    },
+  },
+  turn_of_month: {
+    label: '月末・月初効果（カレンダー）',
+    defaultParams: { before: 2, after: 3, side: 1, atrStopMult: 3.0, atrTargetMult: 0, allowShort: false },
+    grid: { before: [1, 2, 3], after: [1, 3, 5], side: [1, -1] },
+    normalize: (p) => ({ ...p, maxHoldBars: Math.max(2, Math.min(10, (Number(p.before) || 2) + (Number(p.after) || 3))) }),
+    intent(bars, p) {
+      const side = Number(p.side) < 0 ? -1 : 1;
+      const dim = bars.map((b) => new Date(`${b.date}T00:00:00Z`).getUTCDate());
+      const lastDom = bars.map((b) => {
+        const y = Number(String(b.date).slice(0, 4)); const m = Number(String(b.date).slice(5, 7));
+        return new Date(Date.UTC(y, m, 0)).getUTCDate();
+      });
+      return bars.map((_, i) => {
+        const dom = dim[i]; const last = lastDom[i];
+        const inWindow = dom > last - (Number(p.before) || 2) || dom <= (Number(p.after) || 3);
+        return inWindow ? side : 0;
+      });
+    },
+  },
 };
+
+/** 戦略のパラメータを既定値で埋め、戦略固有の正規化（時間ストップ等）を適用する。 */
+export function normalizeParams(strategyKey, params = {}) {
+  const s = STRATEGIES[strategyKey];
+  const p = { ...(s?.defaultParams || {}), ...(params || {}) };
+  return s?.normalize ? s.normalize(p) : p;
+}
 
 // ---------------------------------------------------------------------------
 // Simulator
 // ---------------------------------------------------------------------------
-export function backtest(bars, { strategyKey, params, cost = {} } = {}) {
-  const strat = STRATEGIES[strategyKey];
-  if (!strat) throw new Error(`unknown strategy: ${strategyKey}`);
-  const p = { ...strat.defaultParams, ...(params || {}) };
+/**
+ * 意図（+1買い/-1売り/0待ち）の配列を受け取って約定を再現する中核。
+ * 戦略の判定（intent）と約定・費用の計算を分けておくことで、
+ * 「入口だけランダム」などの検定でもまったく同じ約定ルールを使える。
+ */
+/**
+ * 意図（+1買い/-1売り/0待ち）の配列を受け取って約定を再現する中核。
+ * 戦略の判定（intent）と約定・費用・通貨換算を分けておくことで、
+ * 「入口だけランダム」などの検定でもまったく同じ約定ルールを使える。
+ *
+ * 通貨: 損益は quote 通貨で計算し、コストモデルの fx.rateAt(日付) で円に換算する
+ *       （未指定なら1＝円建て通貨ペアとして扱う。誤った換算を無言でしないこと）。
+ */
+export function simulateFromIntent(bars, intent, { params = {}, cost = {}, symbol = 'USDJPY' } = {}) {
+  const p = { ...(params || {}) };
   const C = { ...DEFAULT_COST_MODEL, ...cost };
-  const intent = strat.intent(bars, p);
   const a = atr(bars, 14);
-  const meta = PAIRS[params?.symbol] || PAIRS.USDJPY;
+  const meta = PAIRS[symbol] || PAIRS.USDJPY;
+  const units = Number(meta.units || C.units);
   const costPrice = (C.spreadPips + C.slippagePips) * meta.pip;
+  const cvAt = (d) => (C.fx && typeof C.fx.rateAt === 'function' ? (Number(C.fx.rateAt(d)) || 1) : 1);
 
   const trades = [];
   const equity = [];
@@ -198,17 +579,18 @@ export function backtest(bars, { strategyKey, params, cost = {} } = {}) {
       // signal flip → exit at this bar's close
       const flipped = intent[i] !== 0 && intent[i] !== pos.dir;
       if (!exitPrice && flipped) { exitPrice = bar.close; exitReason = 'flip'; }
-      if (!exitPrice && pos.barsHeld >= p.maxHoldBars) { exitPrice = bar.close; exitReason = 'time'; }
+      if (!exitPrice && p.maxHoldBars != null && pos.barsHeld >= p.maxHoldBars) { exitPrice = bar.close; exitReason = 'time'; }
 
       if (exitPrice !== null) {
+        const cv = cvAt(bar.date);
         const pnlPrice = (exitPrice - pos.entryPrice) * pos.dir;
-        const pnlJPY = pnlPrice * C.units - pos.entryCostJPY - costPrice * C.units - C.commissionJPY;
+        const pnlJPY = (pnlPrice - pos.entryCostPrice - costPrice) * units * cv - C.commissionJPY;
         cum += pnlJPY;
         trades.push({
           entryDate: pos.entryDate, exitDate: bar.date, dir: pos.dir,
           entryPrice: round(pos.entryPrice, 5), exitPrice: round(exitPrice, 5),
           pnlJPY: round(pnlJPY, 1), reason: exitReason, barsHeld: pos.barsHeld + 1,
-          signalContext: pos.context,
+          fxRate: round(cv, 4), signalContext: pos.context,
         });
         pos = null;
       } else {
@@ -228,7 +610,7 @@ export function backtest(bars, { strategyKey, params, cost = {} } = {}) {
           dir: sig, entryPrice, entryDate: next.date, barsHeld: 0,
           stop: sig === 1 ? entryPrice - stopDist : entryPrice + stopDist,
           target: sig === 1 ? entryPrice + targetDist : entryPrice - targetDist,
-          entryCostJPY: costPrice * C.units,
+          entryCostPrice: costPrice,
           context: { signalBar: bars[i].date, atr: round(a[i] || 0, 5), params: p },
         };
       }
@@ -240,17 +622,26 @@ export function backtest(bars, { strategyKey, params, cost = {} } = {}) {
   // close any dangling position at the last close (marked, not hidden)
   if (pos) {
     const last = bars[bars.length - 1];
+    const cv = cvAt(last.date);
     const pnlPrice = (last.close - pos.entryPrice) * pos.dir;
-    const pnlJPY = pnlPrice * C.units - pos.entryCostJPY - costPrice * C.units - C.commissionJPY;
+    const pnlJPY = (pnlPrice - pos.entryCostPrice - costPrice) * units * cv - C.commissionJPY;
     cum += pnlJPY;
     trades.push({ entryDate: pos.entryDate, exitDate: last.date, dir: pos.dir,
       entryPrice: round(pos.entryPrice, 5), exitPrice: round(last.close, 5), pnlJPY: round(pnlJPY, 1),
-      reason: 'open_at_end', barsHeld: pos.barsHeld, signalContext: pos.context });
+      reason: 'open_at_end', barsHeld: pos.barsHeld, fxRate: round(cv, 4), signalContext: pos.context });
     equity.push({ date: last.date, equity: round(equityStart + cum, 1), pnl: round(cum, 1) });
   }
 
   const metrics = computeMetrics(trades, equity, C.initialCapitalJPY, bars);
-  return { trades, equity, metrics, params: p, cost: C, strategyKey, symbol: p.symbol || 'USDJPY' };
+  return { trades, equity, metrics, params: p, cost: C, symbol };
+}
+
+export function backtest(bars, { strategyKey, params, cost = {} } = {}) {
+  const strat = STRATEGIES[strategyKey];
+  if (!strat) throw new Error(`unknown strategy: ${strategyKey}`);
+  const p = normalizeParams(strategyKey, params);
+  const intent = strat.intent(bars, p);
+  return { ...simulateFromIntent(bars, intent, { params: p, cost, symbol: p.symbol || 'USDJPY' }), strategyKey };
 }
 
 export function computeMetrics(trades, equity, initialCapital, bars = []) {

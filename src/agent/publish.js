@@ -158,7 +158,6 @@ export function createDraft(input = {}) {
     title: input.title || '',
     body,
     lang: input.lang || 'ja',
-    hash: null,
     ai_disclosure: input.ai_disclosure ? 1 : 0,
     unique_commentary: input.unique_commentary ? 1 : 0,
     linked,

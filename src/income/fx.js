@@ -32,6 +32,7 @@ export async function fetchMarketData(store, symbol, { days = 1500, force = fals
 
   let bars = [];
   let source = null;
+  let repairedOhlc = 0;
 
   // 1) Yahoo Finance chart API (free, no key)
   try {
@@ -48,6 +49,14 @@ export async function fetchMarketData(store, symbol, { days = 1500, force = fals
         out.push({ date: new Date(ts[i] * 1000).toISOString().slice(0, 10), open: o, high: h, low: l, close: c });
       }
       if (out.length > 100) { bars = out.slice(-days); source = 'yahoo_finance_daily_ohlc'; }
+      // 無料データのOHLC不整合（高値が終値より低い等）を修復する。
+      // 放置すると「安値に触れた」判定が誤って成立し、損切りが実際より多く刺さる。
+      repairedOhlc = 0;
+      for (const b of bars) {
+        const hi = Math.max(b.high, b.open, b.close);
+        const lo = Math.min(b.low, b.open, b.close);
+        if (hi !== b.high || lo !== b.low) { b.high = hi; b.low = lo; repairedOhlc++; }
+      }
     }
   } catch { /* fall through */ }
 
@@ -71,13 +80,52 @@ export async function fetchMarketData(store, symbol, { days = 1500, force = fals
     } catch { /* fall through */ }
   }
 
-  const payload = { symbol, source, bars, fetchedAt: nowIso(),
-    quality: source?.startsWith('yahoo') ? 'high (real OHLC)' : 'medium (close-only, synthetic H/L)' };
+  const payload = { symbol, source, bars, fetchedAt: nowIso(), repairedOhlc,
+    quality: (source?.startsWith('yahoo') ? 'high (real OHLC)' : 'medium (close-only, synthetic H/L)')
+      + (repairedOhlc ? ` / OHLC不整合を${repairedOhlc}本修復（無料データの既知の癖）` : '') };
   if (bars.length) {
     await store.run(`INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
       cacheKey, j(payload), nowIso());
   }
   return { ...payload, cached: false };
+}
+
+/**
+ * 円換算器 — quote通貨建ての損益を円にする。
+ *   JPY建て → 換算不要（1）
+ *   USD建て → USDJPY の終値
+ *   CAD建て → USDJPY / USDCAD
+ * レートは決済日の終値（過去のデータのみ）。取れなければ 1 を返し、利用側で「換算できていない」と分かる形にする。
+ * D1にキャッシュ済みの市場データを使うので、追加の通信は発生しない（原価0）。
+ */
+export async function buildCurrencyConverter(store, symbol) {
+  const meta = PAIRS[symbol] || PAIRS.USDJPY;
+  if (meta.quote === 'JPY') return { quote: 'JPY', rateAt: () => 1, source: 'not_needed', note: '円建て通貨ペア。換算は不要。' };
+  const resolver = (bars) => {
+    const rows = (bars || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+    return (dateISO) => {
+      const d = String(dateISO || '');
+      let lo = 0; let hi = rows.length - 1; let found = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (String(rows[mid].date) <= d) { found = rows[mid].close; lo = mid + 1; } else hi = mid - 1;
+      }
+      return found ?? (rows.length ? rows[0].close : 1);
+    };
+  };
+  try {
+    const jpy = await fetchMarketData(store, 'USDJPY', { days: 2600 });
+    const usdjpy = resolver(jpy.bars);
+    if (meta.quote === 'USD') return { quote: 'USD', rateAt: usdjpy, source: 'yahoo_usdjpy_close', note: 'USD建ての損益を決済日のUSDJPY終値で円換算。' };
+    if (meta.quote === 'CAD') {
+      const cad = await fetchMarketData(store, 'USDCAD', { days: 2600 });
+      const usdcad = resolver(cad.bars);
+      return { quote: 'CAD', rateAt: (d) => { const a = usdjpy(d); const b = usdcad(d) || 1; return b > 0 ? a / b : 1; }, source: 'yahoo_usdjpy_over_usdcad_close', note: 'CAD建ての損益を USDJPY/USDCAD で円換算。' };
+    }
+    return { quote: meta.quote, rateAt: usdjpy, source: 'yahoo_usdjpy_close', note: `${meta.quote}建てをUSDJPY終値で近似換算。` };
+  } catch (e) {
+    return { quote: meta.quote || '?', rateAt: () => 1, source: 'fallback_1', note: `換算レートを取得できず1で計算（誤差あり）: ${e.message}` };
+  }
 }
 
 async function fetchWithTimeout(url, ms, headers = {}) {

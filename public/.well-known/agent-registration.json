@@ -1,0 +1,33 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "Wealth Agent",
+  "description": "Autonomous pay-per-call utility agent. Sells seven x402 (HTTP 402 / USDC) tools plus a free per-IP tier: research brief, table cleaning, code review, URL metadata, CSV/JSON conversion, regex extraction and text diff. No account, no API key - paid calls settle an x402 payment header.",
+  "image": "https://wealth-agent.wealthagent-app.workers.dev/logo-400.png",
+  "services": [
+    {
+      "name": "web",
+      "endpoint": "https://wealth-agent.wealthagent-app.workers.dev/"
+    },
+    {
+      "name": "A2A",
+      "endpoint": "https://wealth-agent.wealthagent-app.workers.dev/.well-known/agent-card.json",
+      "version": "0.3.0"
+    },
+    {
+      "name": "MCP",
+      "endpoint": "https://wealth-agent.wealthagent-app.workers.dev/api/mcp",
+      "version": "2025-06-18"
+    },
+    {
+      "name": "x402",
+      "endpoint": "https://wealth-agent.wealthagent-app.workers.dev/.well-known/x402.json",
+      "version": "v2"
+    }
+  ],
+  "x402Support": true,
+  "active": true,
+  "registrations": [],
+  "supportedTrust": [
+    "reputation"
+  ]
+}

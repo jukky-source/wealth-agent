@@ -23,6 +23,8 @@ import * as fxModule from './income/fx.js';
 import { createImageGen } from './ai/imagegen.js';
 import { createFleet } from './engine/fleet.js';
 import { createRunner } from './runner/queue.js';
+import { marketSnapshot } from './agent/markets.js';
+import { freeInference, laneStatus } from './agent/inference.js';
 
 const wiredByEnv = new WeakMap();
 const schemaDone = new WeakSet();
@@ -73,6 +75,13 @@ function wire(env) {
   return w;
 }
 
+// ブラウザで動く買い手エージェントが値札とレシートを読めるように、支払いヘッダを CORS で見せる。
+const PAY_CORS = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-headers': 'authorization,content-type,payment-signature,x-payment',
+  'access-control-expose-headers': 'PAYMENT-REQUIRED,PAYMENT-RESPONSE,X-PAYMENT-RESPONSE,WWW-Authenticate',
+};
+
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
@@ -80,8 +89,9 @@ function json(data, status = 200, extraHeaders = {}) {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store',
       'access-control-allow-origin': '*',
-      'access-control-allow-headers': 'authorization,content-type',
+      'access-control-allow-headers': 'authorization,content-type,payment-signature,x-payment',
       'access-control-allow-methods': 'GET,POST,OPTIONS',
+      'access-control-expose-headers': 'PAYMENT-REQUIRED,PAYMENT-RESPONSE,X-PAYMENT-RESPONSE,WWW-Authenticate',
       ...extraHeaders,
     },
   });
@@ -122,11 +132,215 @@ function matchRoute(routes, method, pathname) {
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
+    // テスト専用: /api/x402-testnet/<品目> はテスト網(Base Sepolia)+金額0で決済経路だけを実測する。
+    // X402_TESTNET_ENABLED=1 のときだけ開く（本番は 0 で 404）。本番の /api/x402/ は一切変わらない。
+    if (url.pathname.startsWith('/api/x402-testnet/')) {
+      if (env.X402_TESTNET_ENABLED !== '1') return json({ ok: false, error: 'testnet_disabled' }, 404);
+      env = { ...env, X402_NETWORK: env.X402_TEST_NETWORK || 'base-sepolia', X402_MULTICHAIN: '0',
+        X402_FACILITATOR_URL: env.X402_TESTNET_FACILITATOR || 'https://facilitator.payai.network',
+        X402_TESTNET: '1', X402_TEST_AMOUNT: String(env.X402_TEST_AMOUNT ?? '0') };
+    }
 
     // CORS preflight
     if (request.method === 'OPTIONS') return json({ ok: true }, 204);
 
-    if (!url.pathname.startsWith('/api/')) {
+    // 買い手（不特定のエージェント）向けの公開カタログ。秘密は含めない。
+    if (url.pathname === '/.well-known/agent.json' || url.pathname === '/.well-known/agent-card.json' || url.pathname === '/.well-known/agents.json') {
+      try {
+        const { agentCard, agentsIndex } = await import('./agent/a2a.js');
+        const card = agentCard(env, url.origin);
+        const body = url.pathname === '/.well-known/agents.json' ? agentsIndex(card) : card;
+        return new Response(JSON.stringify(body, null, 2), { status: 200, headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ ok: false, error: 'card_error', detail: String(e && e.message || e) }), { status: 500, headers: { 'content-type': 'application/json' } });
+      }
+    }
+    // 発見面（機械が読む入口）。中身は discovery.js に集約し、値段は必ずカタログから読む。
+    if (url.pathname === '/api/markets' && request.method === 'GET') {
+      const _env = typeof env !== 'undefined' ? env : {};
+      const snap = await marketSnapshot(_env);
+      return new Response(JSON.stringify(snap, null, 2), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+      });
+    }
+
+    if (url.pathname === '/.well-known/x402' || url.pathname === '/.well-known/x402.json' || url.pathname === '/api/x402/catalog.json') {
+      // 外部クローラ（x402scan）は /.well-known/x402 を「発見の入口」として読む。
+      // 仕様の形（version / resources / ownershipProofs）で返し、詳細は .json に残す。
+      if (url.pathname === '/.well-known/x402') {
+        const { discoveryFeed } = await import('./agent/x402.js');
+        const feed = discoveryFeed(env, url.origin);
+        const body = { ...feed, provider: env.AGENT_NAME || 'Wealth Agent', catalog: `${url.origin}/.well-known/x402.json`, openapi: `${url.origin}/openapi.json` };
+        return new Response(JSON.stringify(body, null, 2), { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
+      }
+      const { discoveryManifest } = await import('./agent/discovery.js');
+      return json(discoveryManifest(env, url.origin), 200, { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=300' });
+    }
+    // 有料ルートの機械可読な契約（x402scan / @agentcash/discovery はここを読む）。
+    if (url.pathname === '/openapi.json') {
+      const { openapi } = await import('./agent/discovery.js');
+      return json(openapi(env, url.origin), 200, { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=300' });
+    }
+
+    // AI クローラ向けの説明。人手を介さずに「見つけてもらう」ための面。
+    if (url.pathname === '/llms.txt') {
+      const origin = url.origin;
+      // 品目の一覧はカタログから作る。値札を変えても品目を足しても、ここが古くならない。
+      const { X402_CATALOG, LISTING, INPUT_EXAMPLES } = await import('./agent/x402.js');
+      const menu = X402_CATALOG.map((it) => {
+        const usd = (it.price_usdc / 1e6).toFixed(2);
+        const body = JSON.stringify(INPUT_EXAMPLES[it.resource] || {});
+        return `- POST ${origin}/api/x402/${it.resource} — ${usd} USDC. ${it.description} body: ${body}`;
+      }).join('\n');
+      // 無料枠（決定的4品目）。そのまま叩けるURLを例つきで出す＝読んだ側が即呼べる。
+      const freeMenu = X402_CATALOG.filter((it) => it.free_tier).map((it) => {
+        const ex = Object.entries(INPUT_EXAMPLES[it.resource] || {}).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&');
+        return `- GET ${origin}/api/free/${it.resource}?${ex} — 無料。${it.description}`;
+      }).join('\n');
+      const txt = `# ${env.AGENT_NAME || 'Wealth Agent'}
+
+> 自律収益エージェント。x402（HTTP 402 / USDC）で API を売ります。アカウント登録も API キーも不要。
+
+## 無料で試せるもの（支払い不要・アカウント不要。IPごと・UTC日ごとに上限あり）
+- GET ${origin}/api/free — 無料枠の一覧（そのまま叩ける例つき）
+${freeMenu}
+
+## 買えるもの（POST・USDC 建て・${X402_CATALOG.length} 品目）
+${menu}
+
+無料枠はモデルを使わない決定的な品目だけです（原価がゼロだから成立します）。上限に達したら、同じ品目を
+/api/x402/ に PAYMENT-SIGNATURE（x402 v2 / USDC）を添えて呼ぶと回数制限なしで使えます。
+url-meta は公開ページのみ（内部アドレスは取得しません）。
+
+支払いは PAYMENT-SIGNATURE ヘッダ（x402 v2・exact スキーム）。対応チェーン: Base / Arbitrum / Polygon / Avalanche / Sei / X Layer（USDC）。
+
+## 発見（Discovery）
+- ${origin}/.well-known/x402 — カタログ（価格・受取先・チェーン）
+- ${origin}/.well-known/agent-registration.json — ERC-8004 エージェント登録ファイル
+- ${origin}/.well-known/ai-tool/wealth-agent-<resource>.json — ERC-8257 ツールマニフェスト（7品目。価格・受取先を CAIP-19/CAIP-10 で宣言）
+- ${origin}/.well-known/mcp/server-card.json — MCP サーバーカード（8ツール）
+- ${origin}/api/x402/discovery/resources — 一覧
+- ${origin}/.well-known/agent-card.json — A2A エージェントカード
+- ${origin}/api/a2a , ${origin}/api/mcp — エージェント間プロトコル
+`;
+      return new Response(txt, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
+    }
+    // MCP の登録所（公式レジストリ・集約サイト）が読むメタデータ。SPA の index.html を
+    // 返してしまうと誤登録されるので、専用の JSON を返す。
+    if (url.pathname === '/server.json') {
+      // このブロックは origin を自分で束縛する。外側のスコープの origin は null のままなので、
+      // 拾うと remotes[].url が "null/mcp" になり、集約サイトが壊れた入口を登録してしまう。
+      const origin = url.origin;
+      const body = {
+        // 公式レジストリに公開済みの名前空間と一致させる（GitHub 認証で検証済みの名前）。
+        // ここで別名を名乗ると、集約サイトが「どの登録が本物か」を判断できなくなる。
+        name: 'io.github.jukky-source/wealth-agent',
+        title: 'Wealth Agent — paid research, data cleaning and code review for agents',
+        description: 'Remote MCP server selling agent-native services over x402 (USDC): a sourced research brief, CSV/TSV table cleaning, static code review, plus cheap deterministic tools (regex extract, text diff, CSV<->JSON, URL metadata). Payment is per call; no account or API key is required.',
+        version: '1.0.0',
+        websiteUrl: origin,
+        remotes: [{ type: 'streamable-http', url: `${origin}/mcp` }],
+        _meta: { publishedBy: 'the service operator', payment: 'x402 v2 (USDC, scheme exact)', freeTools: ['list_services'] },
+      };
+      return new Response(JSON.stringify(body, null, 2), { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=3600', 'access-control-allow-origin': '*' } });
+    }
+    if (url.pathname === '/sitemap.xml') {
+      const origin = url.origin;
+      const { X402_CATALOG: CAT_S} = await import('./agent/x402.js');
+      const urls = ['/', '/llms.txt', '/.well-known/x402', '/openapi.json', ...CAT_S.map((it) => `/api/x402/${it.resource}`)];
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${origin}${u}</loc></url>`).join('\n')}\n</urlset>\n`;
+      return new Response(xml, { status: 200, headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+    }
+    if (url.pathname === '/robots.txt') {
+      return new Response('User-agent: *\nAllow: /\n\n# AI agents / buyers: /llms.txt, /openapi.json, /.well-known/x402.json describe the paid endpoints\n', { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+    }
+
+    // /mcp と /a2a は「プロトコルの入口」なので、SPA のフォールバックより先に通す。
+    // ここを後ろに置くと、GET は index.html・POST は 405 が返り、自分で宣伝している
+    // エンドポイントが永久に到達不能になる（実際にそうなっていた）。
+    // ------------------------------------------------ /v1 — マーケット出品用の入口
+    // ねらい: RapidAPI など「集客を任せられる売り場」からそのまま呼べる形にする。
+    //   ① 売り場経由 : X-RapidAPI-Proxy-Secret を照合（課金は売り場側が完了している）
+    //   ② 直販       : PAYMENT-SIGNATURE ヘッダ（既存の /api/x402/<品目> と同じ値札・同じ決済）
+    //   ③ 自分の確認 : OWNER_TOKEN
+    // 入金は売り場の報告（/api/webhooks/rapidapi）で記録する。ここでは台帳に二重計上しない。
+    if (url.pathname === '/v1/openapi.json' || url.pathname === '/v1/openapi') {
+      // 売り場（RapidAPI 等）に読み込ませる spec。
+      // ここだけ paths を `/v1/<品目>` に張り替える（/openapi.json は x402 の発見用に
+      // `/api/x402/<品目>` のまま残す。役割が違うので同じ形にはしない）。
+      const { openapi } = await import('./agent/discovery.js');
+      const spec = openapi(env, url.origin);
+      const paths = {};
+      for (const [k, v] of Object.entries(spec.paths || {})) paths[`/${k.replace(/^\/api\/x402\//, '')}`] = v;
+      return json({
+        ...spec,
+        servers: [{ url: `${url.origin}/v1` }],
+        paths,
+        components: {
+          ...(spec.components || {}),
+          securitySchemes: { RapidApiProxySecret: { type: 'apiKey', in: 'header', name: 'X-RapidAPI-Proxy-Secret' } },
+        },
+      });
+    }
+    if (url.pathname.startsWith('/v1/')) {
+      const x = await import('./agent/x402.js');
+      const resource = url.pathname.slice(4).replace(/\/+$/, '');
+      const item = x.X402_CATALOG.find((i) => i.resource === resource);
+      if (!item) return json({ ok: false, error: 'unknown_resource', available: x.X402_CATALOG.map((i) => i.resource) }, 404);
+      const secret = env.RAPIDAPI_PROXY_SECRET || null;
+      const provided = request.headers.get('X-RapidAPI-Proxy-Secret') || '';
+      const viaMarket = !!secret && provided === secret;
+      const bearer = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '');
+      const viaOwner = !!env.OWNER_TOKEN && bearer === env.OWNER_TOKEN;
+      const body = (request.method === 'POST' || request.method === 'PUT') ? await request.json().catch(() => ({})) : {};
+      const fm = await import('./agent/fulfill.js');
+      const fulfill = fm.fulfillOrder;
+      // code-review / brief は AI と保存領域を使う。{} を渡すと決定的な4品目しか動かず、
+      // いちばん高い2品目（$0.75 / $0.25）が落ちる。本体と同じ配線を渡す。
+      let vdeps = {};
+      try { vdeps = wire(env); } catch { vdeps = {}; }
+      if (!viaMarket && !viaOwner) {
+        const pay = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
+        if (pay) {
+          const pf = await x.preflight(env).catch(() => ({ ok: false }));
+          const settled = await x.verifyAndSettle({ env, resource, paymentHeader: pay, feePayer: pf?.feePayer || null });
+          if (!settled.ok) return json({ ok: false, error: settled.error, detail: settled.detail || null }, 402);
+          let paidDone = { ok: false, error: 'fulfill_missing' };
+          if (typeof fulfill === 'function') {
+            try { paidDone = await fulfill(resource, body, vdeps); } catch (e) { paidDone = { ok: false, error: 'fulfill_failed', reason: String((e && e.message) || e) }; }
+          }
+          const paidInner = paidDone && paidDone.deliverable && typeof paidDone.deliverable === 'object' ? paidDone.deliverable : paidDone;
+          return json({ ok: !!paidDone.ok, resource, paid: true, tx: settled.tx || null, result: paidInner, error: (paidDone && paidDone.error) || undefined });
+        }
+        const pf = await x.preflight(env).catch(() => ({ ok: false }));
+        const ch = x.challenge(resource, env, { origin: url.origin, feePayer: pf?.feePayer || null, solanaFeePayer: pf?.solanaFeePayer || null });
+        return json({ ok: false, error: 'payment_required', price_usdc: item.price_usdc, how: 'POST with X-RapidAPI-Proxy-Secret header (marketplace) or PAYMENT-SIGNATURE header (x402/USDC)', price: ch?.body || null }, 402);
+      }
+      if (request.method !== 'POST') return json({ ok: false, error: 'method_not_allowed', use: 'POST' }, 405);
+      if (typeof fulfill !== 'function') return json({ ok: false, error: 'fulfill_missing' }, 500);
+      let done;
+      try { done = await fulfill(resource, body, vdeps); }
+      catch (e) { done = { ok: false, error: 'fulfill_failed', reason: String((e && e.message) || e) }; }
+      // 売り場には1階層で返す（入れ子の ok は読み手が誤解する）。
+      const inner = done && done.deliverable && typeof done.deliverable === 'object' ? done.deliverable : done;
+      return json({
+        ok: !!done.ok, resource, price_usdc: item.price_usdc,
+        via: viaMarket ? 'rapidapi' : 'owner',
+        buyer: request.headers.get('X-RapidAPI-User') || null,
+        result: inner, error: (done && done.error) || undefined,
+      });
+    }
+    // 無料枠（フリーミアム）— 決定的で原価ゼロの4品目だけを、支払いなしで試せる入口。
+    // 有料の /api/x402/ はそのまま。上限に達したら 402 に切り替わり、有料の入口になる。
+    if (url.pathname === '/api/free' || url.pathname.startsWith('/api/free/')) {
+      const { handleFree } = await import('./agent/freemium.js');
+      let fdeps = {};
+      try { fdeps = wire(env); } catch { fdeps = {}; }
+      return handleFree(request, env, url, fdeps);
+    }
+
+    if (!url.pathname.startsWith('/api/') && url.pathname !== '/mcp' && url.pathname !== '/a2a') {
       // Static PWA assets (Cloudflare): fall back to the index for SPA routes.
       if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
         const res = await env.ASSETS.fetch(request);
@@ -140,9 +354,24 @@ export default {
     }
 
     const deps = wire(env);
+
+    // --- エージェント間販売（AIがAIに売る）の公開エンドポイント。認証不要 ---
+    if (url.pathname === '/a2a' || url.pathname === '/api/a2a') { const { handleA2a } = await import('./agent/a2a.js'); return handleA2a(request, env, url, deps); }
+    if (url.pathname === '/mcp' || url.pathname === '/api/mcp') { const { handleMcp } = await import('./agent/mcp.js'); return handleMcp(request, env, url, deps); }
+    if (url.pathname === '/api/x402/discovery/resources') {
+      const { discoveryFeed } = await import('./agent/x402.js');
+      return new Response(JSON.stringify(discoveryFeed(env, url.origin)), { status: 200, headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
+    }
     try {
       if (!schemaDone.has(env)) {
-        await ensureSchema(deps.store);
+        // 冷えた isolate ごとに全 DDL（約35文）を流すと 13〜15 秒かかる。
+        // 既存テーブルの有無だけを 1 往復で安く確かめ、無いときだけ DDL を流す。
+        let ready = false;
+        try {
+          const probe = await deps.store.first('SELECT COUNT(*) AS n FROM missions');
+          ready = !!probe;
+        } catch { ready = false; }
+        if (!ready) await ensureSchema(deps.store);
         schemaDone.add(env);
       }
     } catch (e) {
@@ -154,17 +383,132 @@ export default {
     const isWebhook = url.pathname.startsWith('/api/webhooks/');
     // 売り物（/api/x402/<資源>）は、決済そのものが入場資格なのでトークンでは塞がない。
     // 買い手は不特定のエージェントなので、ここを塞ぐと誰も買えなくなる。カタログは塞ぐ。
-    const isPaywall = url.pathname.startsWith('/api/x402/') && !url.pathname.startsWith('/api/x402/catalog');
-    if (!isWebhook && !isPaywall && !authorized(request, env)) {
+    const isPaywall = url.pathname.startsWith('/api/x402-testnet/') || url.pathname.startsWith('/api/x402/') && !url.pathname.startsWith('/api/x402/catalog');
+    // 端末の再ペアリング: 期限つき・1回だけのコードを持っている人にトークンを渡す口。
+    // トークンを知らない端末が入る唯一の経路なので、コード側で失効・回数制限を持つ。
+    const isPairing = url.pathname === '/api/pair';
+    // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
+    const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
+    if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
       return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
+    }
+
+    // 自己診断: この実行環境（Cloudflare の egress）から検索経路が実際に何を返すかを測る。
+    // 出典0件＝中身のない brief を納品してしまう不具合を切り分けるための計器。オーナートークン必須。
+    // 停滞回収をその場で走らせる（オーナー専用）。周期を待たずに結果を確認するための計器。
+    if (url.pathname === '/api/diag/free-inference') {
+      const _env = typeof env !== 'undefined' ? env : {};
+      const _h = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+      if (request.method === 'GET') {
+        return new Response(JSON.stringify({ lanes: laneStatus(_env) }, null, 2), { status: 200, headers: _h });
+      }
+      let _p = {};
+      try { _p = await request.json(); } catch {}
+      const _out = await freeInference(String(_p.prompt || ''), _env, _p);
+      return new Response(JSON.stringify(_out, null, 2), { status: _out.ok ? 200 : 503, headers: _h });
+    }
+
+    if (url.pathname === '/api/diag/reap' && (request.method === 'GET' || request.method === 'POST')) {
+      try {
+        const { reapStaleTasks } = await import('./engine/reaper.js');
+        return json({ ok: true, ...(await reapStaleTasks(deps.store, env)) });
+      } catch (e) {
+        return json({ ok: false, error: 'reap_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
+    // 計画を立て直して、稼ぎ方の採点結果が実行タスクに繋がることをその場で確かめる計器（オーナー専用）。
+    if (url.pathname === '/api/diag/plan' && (request.method === 'GET' || request.method === 'POST')) {
+      try {
+        const noAi = { availableProviders: () => [], complete: async () => ({ ok: false }) };
+        const id = url.searchParams.get('id') || 'msn_stream_x402';
+        const mission = await deps.store.get('missions', id);
+        if (!mission) return json({ ok: false, error: 'mission_not_found', id }, 404);
+        const existingTasks = await deps.store.all(`SELECT id,title,state FROM tasks WHERE mission_id=?`, mission.id);
+        const { planMission } = await import('./engine/planner.js');
+        const character = deps.engine && deps.engine.getCharacter ? await deps.engine.getCharacter().catch(() => null) : null;
+        const out = await planMission({ store: deps.store, router: noAi, memory: deps.memory, character, mission, existingTasks });
+        return json({ ok: true, mission: { id: mission.id, title: mission.title }, created: (out.created || []).map((t) => ({ id: t.id, title: t.title, tool: t.tool_name, category: t.category })), note: out.note || null });
+      } catch (e) {
+        return json({ ok: false, error: 'plan_diag_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
+    // 稼ぎ方が候補として採点されているかをその場で見る計器（オーナー専用）。
+    if (url.pathname === '/api/diag/rank' && (request.method === 'GET' || request.method === 'POST')) {
+      try {
+        const { ensureLaneOpportunities } = await import('./income/lanes.js');
+        const seeded = await ensureLaneOpportunities({ store: deps.store, origin: url.origin });
+        // 素性を入れただけでなく、実際に採点まで通した結果を見せる。
+        let ranked = null;
+        let recalibrated = null;
+        try {
+          let rk = deps.ranking;
+          if (!rk || typeof rk.rank !== 'function') {
+            const { createRanking } = await import('./income/ranking.js');
+            rk = createRanking({ store: deps.store, memory: deps.memory || { guardrails: async () => [] } });
+          }
+          // 実測の入金（実際に売れた事実）を先に反映してから採点する。
+          if (typeof rk.recalibrate === 'function') { try { recalibrated = await rk.recalibrate(deps.store, {}); } catch { recalibrated = null; } }
+          ranked = await rk.rank(deps.store, { persist: true });
+        } catch { ranked = null; }
+        const rows = await deps.store.all("SELECT id,domain,name,score,revenue_basis,est_monthly_revenue FROM opportunities ORDER BY score DESC LIMIT 20");
+        const last = await deps.store.first("SELECT value FROM settings WHERE key='ranking:last'").catch(() => null);
+        return json({ ok: true, seeded, ranked: rows.length, rows, ranking: ranked ? { total: ranked.total, allocation: ranked.allocation } : null, recalibrated, last: last && last.value ? JSON.parse(last.value) : null });
+      } catch (e) {
+        return json({ ok: false, error: 'rank_diag_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
+    if (url.pathname === '/api/diag/research' && request.method === 'GET') {
+      try {
+        const { createResearch } = await import('./research/web.js');
+        const q = url.searchParams.get('q') || 'x402 facilitator comparison';
+        const p = await createResearch(env).probe(q);
+        return json({ ok: true, ...p });
+      } catch (e) {
+        return json({ ok: false, error: 'diag_failed', detail: String(e && e.message || e).slice(0, 300) }, 500);
+      }
+    }
+
+    // 活動報告: 「いま何をしているか」をタスク・台帳・売り物から実測して返す。
+    // ?format=text で人が読む形、?live=1 で外部（自分の402・Bazaar 掲載）も実測する。オーナー専用。
+    if (url.pathname === '/api/report' && request.method === 'GET') {
+      try {
+        const { activityReport } = await import('./agent/report.js');
+        const rep = await activityReport(deps, { live: url.searchParams.get('live') === '1', origin: url.origin, env });
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(rep.text, { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+        }
+        return json({ ok: true, ...rep });
+      } catch (e) {
+        return json({ ok: false, error: 'report_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
+    // アバターは 70KB 超の base64 文字列として /api/dashboard に混ぜず、
+    // ブラウザがキャッシュできる生画像として別エンドポイントで返す。
+    if (url.pathname === '/api/character/avatar-image') {
+      try {
+        const ch = deps.engine && deps.engine.getCharacter ? await deps.engine.getCharacter() : null;
+        const av = ch && ch.avatar_url ? String(ch.avatar_url) : '';
+        const mm = /^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i.exec(av);
+        if (!mm) return new Response('no avatar', { status: 404, headers: { 'cache-control': 'no-store' } });
+        const bin = atob(mm[2]);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+        return new Response(bytes, { headers: { 'content-type': mm[1], 'cache-control': 'public, max-age=86400, immutable' } });
+      } catch {
+        return new Response('avatar error', { status: 500, headers: { 'cache-control': 'no-store' } });
+      }
     }
 
     // x402 — 値札（402）を出し、facilitator が検証・決済した支払いだけを受け取って
     // 中身を返す。クライアントが付けたヘッダは一切信用しない。
-    if (url.pathname.startsWith('/api/x402/') && !url.pathname.startsWith('/api/x402/catalog')) {
+    if ((url.pathname.startsWith('/api/x402-testnet/') || url.pathname.startsWith('/api/x402/')) && !url.pathname.startsWith('/api/x402/catalog')) {
       const { challenge, preflight, requiredHeader, responseHeader, verifyAndSettle, X402_CATALOG } = await import('./agent/x402.js');
       const { createJob, recordReceipt } = await import('./agent/revenue.js');
-      const resource = url.pathname.replace('/api/x402/', '');
+      const resource = url.pathname.replace('/api/x402-testnet/', '').replace('/api/x402/', '');
       const notFound = () => new Response(JSON.stringify({ ok: false, error: 'not_found', path: url.pathname }), { status: 404, headers: { 'content-type': 'application/json' } });
       if (!X402_CATALOG.some((i) => i.resource === resource)) return notFound();
       // 売りに出してよいかを先に確認する（受け取り先の形式・ネットワーク・facilitator の対応・
@@ -173,40 +517,81 @@ export default {
       if (!pf.ok) {
         return new Response(JSON.stringify({ ok: false, enabled: false, error: pf.error, reason: pf.reason }), { status: 503, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
       }
-      const ch = challenge(resource, env, { origin: url.origin, feePayer: pf.feePayer });
+      const ch = challenge(resource, env, { origin: url.origin, feePayer: pf.feePayer, solanaFeePayer: pf.solanaFeePayer, method: request.method });
       if (!ch || !ch.configured) {
         return new Response(JSON.stringify({ ok: false, enabled: false, error: 'not_configured', reason: ch?.reason || pf.reason }), { status: 503, headers: { 'content-type': 'application/json' } });
       }
       const header = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
+      const { validateOrder, fulfillOrder, ORDER_SPECS } = await import('./agent/fulfill.js');
       if (!header) {
-        return new Response(JSON.stringify(ch.body), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body.accepts[0]), 'cache-control': 'no-store' } });
+        // 値札には注文書（入力仕様）も添える。買い手はこれを見て本文を組み立てる。
+        // 無料枠がある品目は、値札の中でもその入口を案内する（試してから買える）。
+        const { freeTierResources, freeQuotaFor: freeLimitFor } = await import('./agent/freemium.js');
+        const priced = { ...ch.body, order_spec: ORDER_SPECS[resource] || null,
+          free_option: freeTierResources().includes(resource)
+            ? { url: `${url.origin}/api/free/${resource}`, daily_limit_per_ip: freeLimitFor(env, resource), note: 'No payment needed up to the daily limit (per IP, per UTC day). Pay here only if you need the limit removed.' }
+            : null };
+        return new Response(JSON.stringify(priced), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
+      }
+      // 決済「前」に注文内容を検査する。満たさないものは請求せずに断る（払わせてから失敗しない）。
+      let body = {};
+      try { const t = await request.text(); body = t ? JSON.parse(t) : {}; } catch { body = {}; }
+      if (request.method === 'GET') for (const [k, v] of url.searchParams) if (!(k in body)) body[k] = v;
+      const order = validateOrder(resource, body);
+      if (!order.ok) {
+        return new Response(JSON.stringify({ ok: false, charged: false, ...order }), { status: 400, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
       }
       const settled = await verifyAndSettle({ env, resource, paymentHeader: header, feePayer: pf.feePayer });
       if (!settled.ok) {
         // 保留は決済が確定していない状態。中身は渡さず、入金としても記録しない。
         const status = settled.error === 'facilitator_unreachable' ? 503 : 402;
-        return new Response(JSON.stringify({ ...ch.body, error: settled.error, detail: settled.detail || null, note: settled.note }), { status, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body.accepts[0]), 'cache-control': 'no-store' } });
+        return new Response(JSON.stringify({ ...ch.body, error: settled.error, detail: settled.detail || null, note: settled.note }), { status, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
       }
-      let body = {};
-      try { const t = await request.text(); body = t ? JSON.parse(t) : {}; } catch { body = {}; }
       const item = X402_CATALOG.find((i) => i.resource === resource);
+      // 買い手の住所が自分の受取先と同じなら、それは自己購入（動作確認）。
+      // 外部の売上と混ぜない印を付けて記録する。
+      const ownAddrs = [env.X402_PAY_TO, env.X402_SOLANA_PAY_TO].filter(Boolean).map((a) => String(a).toLowerCase());
+      const selfTest = !!settled.payer && ownAddrs.includes(String(settled.payer).toLowerCase());
       const receipt = await recordReceipt(deps.store, {
+        self_test: selfTest,
         source: 'x402', external_id: settled.tx || `x402_${Date.now().toString(36)}`,
         // USDC は最小単位（6桁）で届くので、人が読める単位に直してから記録する。
         amount: Number(((Number(settled.amount) || 0) / 1e6).toFixed(6)), currency: 'USDC', fee: settled.fee || 0, payer: settled.payer,
         job_id: body.job_id || null, thread_id: body.thread_id || null,
-        signature_verified: true, raw: settled,
-      }).catch(() => null);
+        signature_verified: true, testnet: env.X402_TESTNET === '1', raw: settled,
+      }).catch((e) => ({ ok: false, error: 'receipt_failed', detail: String(e?.message || e).slice(0, 160) }));
+      // 入金は確定したのに台帳に載らなかった場合は、黙って流さず必ず人の判断を仰ぐ
+      // （売上の取りこぼしが無言で起きるのが一番まずい）。テスト網の 0 円決済は対象外。
+      if (!receipt?.ok && env.X402_TESTNET !== '1') {
+        await deps.store.insert('approvals', {
+          id: `apr_rcpt_${Date.now().toString(36)}`, task_id: null, action: 'x402_receipt_not_recorded', risk_level: 'high',
+          payload: JSON.stringify({ resource, tx: settled.tx, payer: settled.payer, amount: settled.amount, error: receipt?.error || null, detail: receipt?.detail || null }),
+          status: 'pending', requested_at: new Date().toISOString(), decided_at: null,
+          note: '決済は成立しましたが台帳に記録できませんでした。売上の取りこぼしなので内容を確認してください。',
+        }).catch(() => {});
+      }
+      // 確定した注文は、その場で作って同じ応答で渡す（買い手を待たせない・取りこぼさない）。
+      const done = await fulfillOrder(resource, order.input, { router: deps.router, research: deps.research, store: deps.store });
       const job = await createJob(deps.store, {
         title: `${item?.description || resource}（x402 受注）`, price: settled.amount,
-        state: 'approved', thread_id: body.thread_id || null,
-        note: `x402 で受注: ${settled.payer || 'unknown payer'}`,
+        state: done.ok ? 'delivered' : 'in_progress', thread_id: body.thread_id || null,
+        note: done.ok ? `x402 で受注し即納品: ${settled.payer || 'unknown payer'}`
+          : `x402 で受注・納品失敗（${done.error}）。返金か再納品の判断が必要: ${settled.payer || 'unknown payer'} / tx ${settled.tx || '-'}`,
       }).catch(() => null);
+      if (!done.ok) {
+        await deps.store.insert('approvals', {
+          id: `apr_x402_${Date.now().toString(36)}`, task_id: null, action: 'x402_refund_or_redeliver', risk_level: 'high',
+          payload: JSON.stringify({ resource, tx: settled.tx, payer: settled.payer, amount: settled.amount, error: done.error, job_id: job?.id || null }),
+          status: 'pending', requested_at: new Date().toISOString(), decided_at: null, note: '支払い済みの注文を納品できませんでした。返金か再納品を決めてください。',
+        }).catch(() => {});
+      }
       return new Response(JSON.stringify({
-        ok: true, resource, status: 'accepted', job_id: job?.id || null,
-        receipt_id: receipt?.receipt?.id || null,
-        note: '支払いを確認しました。納品は案件として実行されます。',
-      }), { status: 200, headers: { 'content-type': 'application/json', 'PAYMENT-RESPONSE': responseHeader(settled.response) } });
+        ok: done.ok, resource, status: done.ok ? 'delivered' : 'paid_not_delivered', job_id: job?.id || null,
+        receipt_id: receipt?.receipt?.id || null, tx: settled.tx || null,
+        deliverable: done.ok ? done.deliverable : null,
+        error: done.ok ? null : done.error,
+        note: done.ok ? '支払いを確認し、納品しました。' : '支払いは確認しましたが納品に失敗しました。担当者が返金か再納品を行います。',
+      }), { status: done.ok ? 200 : 502, headers: { 'content-type': 'application/json', 'PAYMENT-RESPONSE': responseHeader(settled.response), ...PAY_CORS } });
     }
 
     const m = matchRoute(deps.api.routes, request.method, url.pathname);
@@ -249,8 +634,16 @@ export default {
     const deps = wire(env);
     try {
       await ensureSchema(deps.store);
+      // 動きっぱなしに見えるだけの作業を先に回収してから周期を回す。
+      let reaped = null;
+      try { const { reapStaleTasks } = await import('./engine/reaper.js'); reaped = await reapStaleTasks(deps.store, env); } catch (e) { reaped = { error: String((e && e.message) || e) }; }
       const report = await deps.scheduler.scheduledTick({ source: 'cron' });
-      console.log('scheduled tick', JSON.stringify(report).slice(0, 1500));
+      // IndexNow: 口座不要の検索面への自動通知（1日1回・settings で抑止）
+      try {
+        const { pingIndexNow } = await import('./agent/indexnow.js');
+        report.indexnow = await pingIndexNow(env, deps);
+      } catch (e) { report.indexnow = { ok: false, error: String((e && e.message) || e) }; }
+      console.log('scheduled tick', JSON.stringify(report).slice(0, 1200), 'reaped', JSON.stringify(reaped || {}).slice(0, 300));
     } catch (e) {
       console.error('scheduled tick failed', e.message);
       try {

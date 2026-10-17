@@ -34,6 +34,26 @@ binding = "AI"
 crons = ["*/5 * * * *"]
 
 [vars]
+
+# FX Lab（試行錯誤ループ）— 少数の実験を回し続け、王者が更新されたら昇格する。
+FX_LAB_ENABLED = "true"
+INDEXNOW_KEY = "bb1344d428f592a2d266748b143b0fb1"
+# 無料枠（フリーミアム）: 決定的で原価ゼロの4品目だけを支払いなしで試せる。
+# 上限は IPごと・UTC日ごと。url-meta だけは外向き取得があるので別枠で小さくする。
+FREE_TIER_ENABLED = "1"
+FREE_DAILY_LIMIT = "25"
+FREE_URL_META_DAILY_LIMIT = "5"
+PUBLIC_HOST = "wealth-agent.wealthagent-app.workers.dev"
+FX_LAB_EVERY_MINUTES = "15"
+FX_LAB_EXPERIMENTS_PER_TICK = "4"
+FX_LAB_CPU_BUDGET_MS = "20000"
+FX_LAB_DEEP_PER_TICK = "1"
+FX_LAB_DEEP_BUDGET_MS = "12000"
+# SNS下書きの自動補充（X / note / YouTube）。投稿はしない（承認制のまま）。
+SOCIAL_ENABLED = "true"
+SOCIAL_EVERY_MINUTES = "720"
+SOCIAL_DRAFTS_PER_TICK = "2"
+
 # Non-secret configuration. Secrets (OWNER_TOKEN, API keys) go through:
 #   wrangler secret put OWNER_TOKEN
 #   wrangler secret put GEMINI_API_KEY

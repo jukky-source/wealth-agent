@@ -13,6 +13,7 @@
 
 import { nowIso } from '../util.js';
 import { summarizeLedger } from '../truth.js';
+import { laneForSource } from '../income/lanes.js';
 
 const rid = (p) => `${p}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
 const yen = (n) => `¥${Math.round(Number(n) || 0).toLocaleString('ja-JP')}`;
@@ -30,7 +31,7 @@ const AUTO_NEXT = { candidate: 'proposed', proposed: 'approved', approved: 'in_p
 const HUMAN_ONLY = new Set(['paid', 'settled']);
 
 /** webhook 以外から receipts を作れないようにするための許可元。 */
-export const RECEIPT_SOURCES = ['stripe', 'x402', 'platform', 'bank'];
+export const RECEIPT_SOURCES = ['stripe', 'x402', 'platform', 'bank', 'self_test'];
 
 export async function createJob(store, { title, opportunity_id = null, platform = null, price = 0, cost_est = 0, due_on = null, thread_id = null, state = 'candidate', note = '' } = {}) {
   if (!title) return null;
@@ -75,33 +76,56 @@ export function jobCard(job) {
  */
 export async function recordReceipt(store, {
   source, external_id, amount, currency = 'USDC', fee = 0, job_id = null, thread_id = null,
-  occurred_on = null, raw = null, signature_verified = false, payer = null,
+  occurred_on = null, raw = null, signature_verified = false, payer = null, testnet = false,
+  self_test = false,
 } = {}) {
+  // 自己購入（自分の財布で自分のAPIを買う動作確認）は「売上」ではない。
+  // basis='measured' のまま台帳に入れると、稼ぎ方の採点と画面の実測収益が
+  // 実力より高く出る（＝台帳が嘘になる）。basis='self_test' で必ず別枠にする。
+  const isSelf = self_test === true;
   if (!signature_verified) return { ok: false, error: 'unverified', note: '検証済みの決済通知だけが入金として記録できます' };
   if (!RECEIPT_SOURCES.includes(String(source))) return { ok: false, error: 'bad_source', allowed: RECEIPT_SOURCES };
   const gross = Number(amount) || 0;
-  if (!(gross > 0)) return { ok: false, error: 'bad_amount' };
+  // 実額の入金は 0 を認めない。テスト網（金額0）だけ例外にし、external_id に test_ を付けて
+  // 本番の売上集計から必ず除外する（テストが台帳を汚さない）。
+  if (!(gross > 0) && !testnet) return { ok: false, error: 'bad_amount' };
   const ext = String(external_id || '');
   if (!ext) return { ok: false, error: 'missing_external_id' };
+  const finalExt = testnet && !ext.startsWith('test_') ? `test_${ext}` : ext;
   const dupe = await store.first(`SELECT id FROM receipts WHERE source=? AND external_id=?`, source, ext).catch(() => null);
   if (dupe) return { ok: false, error: 'duplicate', id: dupe.id };
   const f = Number(fee) || 0;
   const row = {
-    id: rid('rcp'), source: String(source), external_id: ext, amount: gross, currency,
+    id: rid('rcp'), source: String(source), external_id: finalExt, amount: gross, currency,
     fee: f, net_amount: gross - f, job_id, thread_id, payer,
     occurred_on: occurred_on || String(nowIso()).slice(0, 10),
     verified: 1, signature_verified: 1, raw_json: raw ? JSON.stringify(raw).slice(0, 4000) : null,
     created_at: nowIso(),
   };
   await store.insert('receipts', row);
+  // 台帳（ledger）にも同じ事実を1行だけ書く。receipts は「決済事業者の通知」、
+  // ledger は「現金が動いた記録」。x402 の売上が ledger に入らないと、画面の
+  // 実測収益が 0 のままで、稼ぎ方の採点も売れ行きを学習できない。
+  // テスト網（金額0・test_ 付き）は台帳に書かない — 台帳を汚さないため。
+  if (!testnet && gross > 0) {
+    await store.insert('ledger', {
+      id: rid('led'), kind: 'revenue', amount: gross,
+      currency: String(currency || 'USDC').toUpperCase(),
+      basis: isSelf ? 'self_test' : 'measured', source: isSelf ? 'self_test' : String(source),
+      opportunity_id: isSelf ? null : laneForSource(source),
+      occurred_on: row.occurred_on,
+      note: `${source} 入金 ${finalExt}${payer ? ` / payer ${payer}` : ''}${job_id ? ` / job ${job_id}` : ''}`,
+      created_at: nowIso(),
+    }).catch(() => {});
+  }
   return { ok: true, receipt: row };
 }
 
 /** 収益・原価・純益・AMR を一箇所で数える。数字は必ずここから出す。 */
 export async function revenueSummary(store) {
   const [ledgerRows, receiptRows, jobRows] = await Promise.all([
-    store.all(`SELECT kind, amount, basis FROM ledger`).catch(() => []),
-    store.all(`SELECT currency, amount, fee, net_amount FROM receipts`).catch(() => []),
+    store.all(`SELECT kind, amount, basis, currency FROM ledger`).catch(() => []),
+    store.all(`SELECT currency, amount, fee, net_amount FROM receipts WHERE external_id NOT LIKE 'test\_%' ESCAPE '\\'`).catch(() => []),
     store.all(`SELECT state, COUNT(*) AS c, COALESCE(SUM(price),0) AS amount FROM jobs GROUP BY state`).catch(() => []),
   ]);
   const led = summarizeLedger(ledgerRows);
@@ -133,6 +157,7 @@ export async function revenueSummary(store) {
     receipts: { count: receiptRows.length, count_jpy: base.count, gross, fee, verified, by_currency: byCurrency, unconverted },
     cost, net, amr,
     measured_revenue: Number(led.revenue.measured || 0),
+    measured_by_currency: led.revenue.measured_by_currency || {},
     estimated_revenue: Number(led.revenue.total_estimated || 0),
     jobs, open_jobs: open,
     basis: 'receipts は決済プロバイダの検証済み通知のみ。ledger の推定は純益に算入しません。',

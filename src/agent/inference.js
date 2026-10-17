@@ -186,3 +186,195 @@ export function inferenceHelp() {
     'クォータ（枠）から上限まで回した額は「推定」として別に表示し、実測とは混ぜません。',
   ].join('\n');
 }
+
+
+/* ================= free inference lanes (appended) ================= */
+
+/**
+ * Free inference lanes — the agent's own cognition budget.
+ *
+ * SCOPE (important): this is NOT used to fulfil paid orders. Paid products stay
+ * deterministic and model-free so that one call always yields one identical,
+ * verifiable answer. These lanes exist so the agent can think, draft listing
+ * copy, triage opportunities and summarise research at zero marginal cost.
+ *
+ * Determinism rule: a dead or missing provider is skipped, never guessed. The
+ * chain returns the first lane that answers, and reports the whole attempt trail
+ * so a failure is auditable rather than silent.
+ */
+
+export const FREE_LANES = [
+  {
+    id: 'cloudflare-workers-ai',
+    label: 'Cloudflare Workers AI',
+    base_url: 'https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions',
+    model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    models: ['@cf/meta/llama-3.3-70b-instruct-fp8-fast', '@cf/openai/gpt-oss-120b'],
+    key_env: ['CF_ACCOUNT_ID', 'CF_AI_TOKEN'],
+    notes: '10,000 Neurons/day free, 60+ models, no credit card. Same vendor as the Worker itself.',
+  },
+  {
+    id: 'llm7-anonymous',
+    label: 'LLM7.io (anonymous, no key)',
+    base_url: 'https://api.llm7.io/v1/chat/completions',
+    model: 'gpt-oss:20b',
+    models: ['gpt-oss:20b', 'mistral-Nemo-Instruct-2407'],
+    key_env: [],
+    notes: 'Anonymous access needs no key and reaches the turbo models.',
+  },
+  {
+    id: 'groq',
+    label: 'Groq',
+    base_url: 'https://api.groq.com/openai/v1/chat/completions',
+    model: 'llama-3.3-70b-versatile',
+    models: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+    key_env: ['GROQ_API_KEY'],
+    notes: '30 RPM, 1,000 RPD, no card. LPU hardware, fastest free tier.',
+  },
+  {
+    id: 'cerebras',
+    label: 'Cerebras',
+    base_url: 'https://api.cerebras.ai/v1/chat/completions',
+    model: 'llama-3.3-70b',
+    key_env: ['CEREBRAS_API_KEY'],
+    notes: '~1M tokens/day, 30 RPM, no card.',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    base_url: 'https://openrouter.ai/api/v1/chat/completions',
+    model: 'meta-llama/llama-3.3-70b-instruct:free',
+    models: ['meta-llama/llama-3.3-70b-instruct:free', 'openai/gpt-oss-120b:free'],
+    key_env: ['OPENROUTER_API_KEY'],
+    notes: '20+ free models, 20 RPM / 50 RPD; 1,000/day after a $10 top-up.',
+  },
+  {
+    id: 'mistral',
+    label: 'Mistral',
+    base_url: 'https://api.mistral.ai/v1/chat/completions',
+    model: 'mistral-small-latest',
+    key_env: ['MISTRAL_API_KEY'],
+    notes: 'Experiment tier ~1B tokens/month, but requires opting into data training.',
+  },
+  {
+    id: 'nvidia-nim',
+    label: 'NVIDIA NIM',
+    base_url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    model: 'nvidia/nemotron-3-super-120b-a12b',
+    key_env: ['NVIDIA_API_KEY'],
+    notes: 'Free with Developer Program membership; 40 RPM, 10,000 RPD, 100+ models.',
+  },
+];
+
+function renderBase(lane, env) {
+  if (!lane.base_url.includes('{account_id}')) return lane.base_url;
+  const acct = env && env.CF_ACCOUNT_ID;
+  return acct ? lane.base_url.replace('{account_id}', acct) : null;
+}
+
+function laneKey(lane, env) {
+  if (lane.key_env.length === 0) return { ok: true, headers: {} };
+  const missing = lane.key_env.filter((k) => !(env && env[k]));
+  if (missing.length) return { ok: false, missing };
+  const h = {};
+  // Cloudflare Workers AI uses the same bearer slot; every lane here is OpenAI-compatible.
+  const token = lane.key_env.map((k) => env[k]).join('');
+  h.authorization = `Bearer ${env[lane.key_env[0]]}`;
+  if (lane.key_env.length > 1) h.authorization = `Bearer ${env.CF_AI_TOKEN}`;
+  void token;
+  return { ok: true, headers: h };
+}
+
+export function laneStatus(env) {
+  return FREE_LANES.map((l) => {
+    const k = laneKey(l, env || {});
+    return {
+      id: l.id,
+      label: l.label,
+      model: l.model,
+      key_env: l.key_env,
+      notes: l.notes,
+      ready: k.ok && Boolean(renderBase(l, env || {})),
+      missing: k.ok ? [] : k.missing,
+    };
+  });
+}
+
+async function callLane(lane, prompt, env, opts, modelId) {
+  const model = modelId || lane.model;
+  const url = renderBase(lane, env);
+  const key = laneKey(lane, env);
+  if (!url || !key.ok) return { lane: lane.id, skipped: true, missing: key.missing ?? ['account_id'] };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), opts.timeoutMs);
+  const started = Date.now();
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { ...key.headers, 'content-type': 'application/json' },
+      signal: ctl.signal,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: opts.system },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: opts.maxTokens,
+        temperature: 0,
+      }),
+    });
+    const text = await res.text();
+    let body = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    if (!res.ok || !body) return { lane: lane.id, model: modelId, http: res.status, error: 'non_ok_or_non_json', snippet: text.slice(0, 200), ms: Date.now() - started };
+    const msg = body?.choices?.[0]?.message ?? null;
+    // Reasoning models (gpt-oss, deepseek-r1) put the visible answer in `reasoning`
+    // when the token budget is spent on the hidden trace, so accept either field.
+    const out =
+      (msg && typeof msg.content === 'string' && msg.content.trim()) ||
+      (msg && typeof msg.reasoning === 'string' && msg.reasoning.trim()) ||
+      (typeof body?.result?.response === 'string' && body.result.response) ||
+      (typeof body?.response === 'string' && body.response) ||
+      null;
+    if (typeof out !== 'string' || !out.length) return { lane: lane.id, model: modelId, http: res.status, error: 'empty_completion', snippet: JSON.stringify(body).slice(0, 200), ms: Date.now() - started };
+    return { lane: lane.id, http: res.status, ms: Date.now() - started, text: out, model: body.model ?? model };
+  } catch (err) {
+    return { lane: lane.id, error: String(err && err.message ? err.message : err), ms: Date.now() - started };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Ask the free chain. Returns the first answer, plus every attempt made.
+ * Never throws — an empty chain is a normal, reportable outcome.
+ */
+export async function freeInference(prompt, env, opts = {}) {
+  const o = {
+    system: opts.system ?? 'You are a concise, factual assistant. Answer plainly and never invent data.',
+    maxTokens: Number(opts.max_tokens ?? opts.maxTokens ?? 1200),
+    timeoutMs: Number(opts.timeout_ms ?? opts.timeoutMs ?? 20000),
+    lanes: opts.lanes ?? null,
+  };
+  if (!prompt || typeof prompt !== 'string') {
+    return { ok: false, error: 'prompt_required', trails: [] };
+  }
+  const chain = FREE_LANES.filter((l) => !o.lanes || o.lanes.includes(l.id));
+  const trails = [];
+  for (const lane of chain) {
+    const candidates = lane.models && lane.models.length ? lane.models : [lane.model];
+    for (const modelId of candidates) {
+      const r = await callLane(lane, prompt, env || {}, o, modelId);
+      trails.push(r);
+      if (r.text) {
+        return { ok: true, lane: r.lane, model: r.model, ms: r.ms, text: r.text, trails };
+      }
+      if (r.skipped) break;
+    }
+  }
+  return { ok: false, error: 'all_lanes_failed', trails };
+}

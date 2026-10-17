@@ -135,9 +135,21 @@ export function createEngine(deps) {
       return { ran: false, reason: 'no_character', note: 'キャラクターが未設定です。Character Studio で作成してください。' };
     }
 
+    // 1ティックでAIに聞く回数を絞る（使い切ったら決定的処理へ。止めない）
+    const aiPerTick = Number((typeof env !== 'undefined' && env && env.AI_CALLS_PER_TICK) || 3);
+    router.beginTick(aiPerTick);
+
     const missions = agentId
       ? await store.all(`SELECT * FROM missions WHERE status='active' AND (agent_id=? OR agent_id IS NULL) ORDER BY priority DESC LIMIT ?`, agentId, cfg.maxMissionsPerTick)
-      : await store.all(`SELECT * FROM missions WHERE status='active' ORDER BY priority DESC LIMIT ?`, cfg.maxMissionsPerTick);
+      : await (async () => {
+        // 全ミッションを公平に回す。優先度順に並べたうえで、ティックごとに開始位置をずらす
+        // （上位2つだけが動いて3つ目が永遠に待つ「飢餓」を防ぐ）。
+        const all = await store.all(`SELECT * FROM missions WHERE status='active' ORDER BY priority DESC`);
+        if (all.length <= cfg.maxMissionsPerTick) return all;
+        const rot = Number(await setting(store, 'engine:mission_rot', 0)) || 0;
+        await setSetting(store, 'engine:mission_rot', (rot + 1) % all.length).catch(() => {});
+        return Array.from({ length: cfg.maxMissionsPerTick }, (_, i) => all[(rot + i) % all.length]);
+      })();
     if (!missions.length) {
       await setEngineState({ last_tick: nowIso(), last_result: 'no_active_mission' });
       return { ran: false, reason: 'no_active_mission', note: 'アクティブなミッションがありません（作成してください）' };
@@ -161,6 +173,7 @@ export function createEngine(deps) {
       try { await store.run(`UPDATE runs SET agent_id=? WHERE agent_id IS NULL AND created_at >= ?`, agentId, agentStartedAt); } catch { /* column may not exist yet */ }
     }
 
+    router.endTick();
     return {
       ran: true, durationMs: Date.now() - started, source, agent_id: agentId || null,
       missions: results,
@@ -182,14 +195,14 @@ export function createEngine(deps) {
         const planKey = `mission:${mission.id}:replans`;
         const replans = (await setting(store, planKey, 0)) || 0;
         if (replans >= 5) {
-          await store.update('missions', mission.id, { status: 'paused', updated_at: nowIso() });
-          await setEngineState({ status: 'paused', reason: `ミッション「${mission.title}」で再計画が5回に達したため要人手介入` });
+          // 「止めずに回す」方針: エンジンもミッションも停止させない。
+          // カウンタを戻してこのティックは他へ譲り、冷却後に別角度で再開する。
+          await setSetting(store, planKey, 0);
           await memory.write({
-            kind: 'checkpoint', scope: `mission:${mission.id}`,
-            text: `ミッション「${mission.title}」は再計画を5回行っても進展がないため、オーナーの介入待ちにしました。`,
-            evidence: 'measured', importance: 85,
+            kind: 'checkpoint', scope: `mission:${mission.id}`, importance: 85, evidence: 'measured',
+            text: `ミッション「${mission.title}」: 再計画を5回行っても新規タスクが出ないため、いったん冷却し別角度で再試行します（エンジンは稼働継続）。`,
           });
-          return { mission_id: mission.id, status: 'needs_human', note: '自動再計画の上限に達しました（オーナーの判断が必要です）', trace };
+          return { mission_id: mission.id, status: 'idle', note: '再計画の上限。冷却して別角度で再試行します（停止しません）', trace };
         }
         const planned = await planMission({ store, router, memory, character, mission, existingTasks: await allTasks(mission.id) });
         await setSetting(store, planKey, replans + 1);
@@ -252,14 +265,22 @@ export function createEngine(deps) {
           await replanAfterFailure({ store, router, memory, character, mission, failedTask: freshTask, diagnosis });
           trace.push({ action: 'strategy_switch', count: switches, diagnosis });
           if (switches >= cfg.maxStrategySwitches) {
-            await store.update('missions', mission.id, { status: 'paused', updated_at: nowIso() });
-            await setEngineState({ status: 'paused', reason: `ミッション「${mission.title}」で戦略切替が${switches}回に達しました。オーナーの判断が必要です。` });
+            // 「止めずに回す」方針: 停止せず、カウンタを戻して別戦略で続行する。
+            // 同じミッションで無限に粘って無料枠を焼かないよう、1日の回数だけ数える。
+            const autoKey = `mission:${mission.id}:autocontinue:${new Date().toISOString().slice(0, 10)}`;
+            const ac = ((await setting(store, autoKey, 0)) || 0) + 1;
+            await setSetting(store, autoKey, ac);
+            await setSetting(store, swKey, 0);
             await memory.write({
-              kind: 'checkpoint', scope: `mission:${mission.id}`, importance: 88,
-              text: `ミッション「${mission.title}」: ${switches}回の戦略切替でも進展なし。原因「${diagnosis}」。人手による方針決定が必要です。`,
-              evidence: 'measured',
+              kind: 'checkpoint', scope: `mission:${mission.id}`, importance: 88, evidence: 'measured',
+              text: `ミッション「${mission.title}」: ${switches}回の戦略切替でも進展なし（原因「${diagnosis}」）。停止せず別戦略で続行します（本日 ${ac} 回目）。`,
             });
-            return { mission_id: mission.id, status: 'needs_human', note: '戦略切替の上限に達しました', trace };
+            trace.push({ action: 'auto_continue', count: switches, diagnosis, today: ac });
+            if (ac > 8) {
+              // 1日8回を超えたら同じミッションで粘らず他へ回す（エンジンは稼働継続）
+              return { mission_id: mission.id, status: 'idle', note: '本日の戦略切替上限。冷却して他タスクへ（停止しません）', trace };
+            }
+            continue;
           }
         }
       } else if (outcome.outcome === 'waiting_quota') {
@@ -324,19 +345,34 @@ export function createEngine(deps) {
   /** Notification digest respecting the character's report frequency. */
   async function notifications({ limit = 20 } = {}) {
     const state = await engineState();
-    const [waitApproval, waitQuota, needsHuman, recentFailures] = await Promise.all([
+    const [waitApproval, waitQuota, needsHuman, recentFailures, provState] = await Promise.all([
       store.all(`SELECT COUNT(*) AS c FROM tasks WHERE state='waiting_for_approval'`),
       store.all(`SELECT COUNT(*) AS c FROM tasks WHERE state='waiting_for_quota'`),
       store.all(`SELECT * FROM missions WHERE status='paused'`),
       store.all(`SELECT * FROM runs WHERE state='failed' ORDER BY created_at DESC LIMIT ?`, limit),
+      // 外部の無料AIキーが失効・失効疑い・レート制限で使えなくなっていないか。
+      // 無料キーは期限で切れるのではなく「取り消し・上限・仕様変更」で死ぬので、
+      // 死んだことに気づけないまま回転数が落ちるのを防ぐ。
+      store.all(`SELECT provider, status, consecutive_failures, cooldown_until, last_error FROM ai_provider_state
+        WHERE provider <> 'workersai' AND (consecutive_failures > 0 OR status NOT IN ('ok','unknown'))`).catch(() => []),
     ]);
+    const providerIssues = (provState || []).map((p) => ({
+      provider: p.provider, status: p.status, failures: p.consecutive_failures || 0,
+      cooldown_until: p.cooldown_until || null, last_error: p.last_error || null,
+      advice: 'この無料キーは今は使えません（取り消し・上限・仕様変更のいずれか）。キーを再発行して同じ環境変数に入れ直すと復帰します。エージェントは残りの経路で動き続けます。',
+    }));
     return {
+      provider_issues: providerIssues,
       engine: state.status,
       engine_reason: state.reason,
       waiting_approval: waitApproval[0]?.c || 0,
       waiting_quota: waitQuota[0]?.c || 0,
       paused_missions: needsHuman.map((m) => ({ id: m.id, title: m.title })),
-      recent_failures: recentFailures.map((r) => ({ summary: r.summary, at: r.created_at })),
+      // 既存の通知欄にそのまま出る形でも渡す（UI変更なしで気づけるように）。
+      recent_failures: [
+        ...providerIssues.map((p) => ({ summary: `⚠ 無料AIキー異常: ${p.provider}（連続失敗 ${p.failures}回）— キーの再発行を検討してください`, at: p.cooldown_until || null })),
+        ...recentFailures.map((r) => ({ summary: r.summary, at: r.created_at })),
+      ].slice(0, limit + 5),
     };
   }
 

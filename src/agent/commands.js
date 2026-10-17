@@ -26,9 +26,11 @@ import { channelCard, channelHelp } from './channels.js';
 import { capacityValue, inferenceCards, inferenceHelp, readUsageBoard } from './inference.js';
 import { autoLaneCards, autoLaneHelp, laneCard, monitorHelp } from './autolanes.js';
 import { pipelineCards, publishCards, publishHelp, publishState } from './publish.js';
+import { contentCards, contentHelp, contentReport } from './content.js';
 import { dispatchJob, runnerCards, runnerHelp, runnerPlan, runnerState } from './runner.js';
+import { activityReport, reportCards } from './report.js';
 
-const AUDIT_KINDS = new Set(['status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference', 'autolanes', 'publish', 'runner']);
+const AUDIT_KINDS = new Set(['report', 'status', 'tick', 'money', 'ledger', 'opportunities', 'resume', 'watch', 'trace', 'mode', 'goal', 'rework', 'envelope', 'jobs', 'revenue', 'providers', 'channels', 'inference', 'autolanes', 'publish', 'runner', 'content']);
 const re = (s, rx) => rx.test(s);
 
 /** Parse "3万円" / "5,000円" / "30000" out of a Japanese sentence. */
@@ -58,7 +60,7 @@ async function boardMetrics(d) {
   const mode = await activeMode(d.store).catch(() => null);
   const [rows, ledgerRows, mission, lastSuccess] = await Promise.all([
     d.store.all(`SELECT state, COUNT(*) AS c FROM tasks GROUP BY state`),
-    d.store.all(`SELECT kind, amount, basis FROM ledger`),
+    d.store.all(`SELECT kind, amount, basis, currency FROM ledger`),
     d.store.first(`SELECT * FROM missions WHERE status='active' ORDER BY priority DESC LIMIT 1`)
       .catch(() => null),
     d.store.all(`SELECT title, finished_at FROM tasks WHERE state='completed' ORDER BY finished_at DESC LIMIT 1`).catch(() => []),
@@ -198,6 +200,20 @@ const RULES = [
       ].join('\n'),
       cards: [channelCard(19)],
     }),
+  },
+  {
+    id: 'content',
+    // AI生成コンテンツの販売。規約が禁じていない売り先だけを出す（BANで入金経路ごと失わないため）。
+    test: (s) => re(s, /AI.{0,8}(コンテンツ|記事|文章|画像|翻訳).{0,10}(売|販売|マネタイズ)|コンテンツ販売|記事を売|AIで稼|文章を売|画像を売/)
+      || has(s, 'AIコンテンツ', 'コンテンツ販売', 'AIで記事'),
+    run: async (s, d) => {
+      const report = await contentReport(d && d.store).catch(() => null);
+      return {
+        reply: contentHelp(),
+        cards: report ? contentCards(report) : [],
+        suggest: ['x402でコンテンツを売って', '次の一手を進めて', '今どうなってる？'],
+      };
+    },
   },
   {
     id: 'inference',
@@ -594,20 +610,32 @@ const RULES = [
     },
   },
   {
+    // 「いま何をしているか」を具体的に報告する。数字は report.js が DB から読み直す。
+    id: 'report',
+    test: (s) => has(s, '何をして', '何してる', 'なにして', '活動報告', '作業内容', '日報', '具体的に', '詳しく報告', '報告して', 'レポートして', 'ログ見せて', '何やって'),
+    run: async (s, d) => {
+      const live = has(s, '外から', '掲載', 'ライブ', '実測して', '売れてる');
+      const f = await activityReport(d, { live });
+      return {
+        reply: f.text,
+        cards: reportCards(f),
+        suggest: ['外からどう見えてる？', '次の一手を進めて', '承認まちを見せて'],
+      };
+    },
+  },
+  {
     id: 'status',
     test: (s) => has(s, '状況', '進捗', 'どうなって', 'うまくいって', '今どう', '報告', 'レポート', 'まとめ', '様子', '調子'),
     run: async (s, d) => {
-      const [st, m, tasks] = await Promise.all([d.engine.engineState(), boardMetrics(d), liveTasks(d)]);
-      const events = [];
-      const cards = [moneyCard(m.led, m.mode, m)];
-      if (tasks.length) cards.push(taskList(tasks, 'いま動いている作業'));
-      const progress = m.mission?.progress != null ? `（進捗 ${m.mission.progress}%）` : '';
-      const lines = [
-        `エンジンは${st.status === 'running' ? '稼働中' : st.status === 'paused' ? '一時停止中' : '停止中'}です。${m.mission ? `目標「${m.mission.title}」${progress}を進めています。` : 'まだ目標が設定されていません。'}`,
-        m.lastSuccess?.title ? `直近で終わったのは「${m.lastSuccess.title}」です。` : null,
-      ].filter(Boolean);
-      if (m.counts.waiting) events.push({ text: `あなたの判断待ちが ${m.counts.waiting} 件あります`, tone: 'warn' });
-      return { reply: lines.join('\n'), cards, events, suggest: ['次の一手を進めて', '収益はいくら？', '始めて'] };
+      // 「今どうなってる？」にも、数字の入った具体的な活動報告をそのまま返す。
+      // 数字は report.js が DB から読み直して組み立てるので、ここでは足さない。
+      const f = await activityReport(d, { live: false });
+      return {
+        reply: f.text,
+        cards: reportCards(f),
+        events: f.approvals.length ? [{ text: `あなたの判断待ちが ${f.approvals.length} 件あります`, tone: 'warn' }] : [],
+        suggest: ['外からどう見えてる？', '次の一手を進めて', '収益はいくら？'],
+      };
     },
   },
   {
@@ -774,7 +802,8 @@ const RULES = [
         const character = await d.engine.getCharacter();
         rank = await d.ranking.rank(d.store, { persist: true, character });
       } catch { rank = null; }
-      const alloc = rank?.allocation || rank?.candidates || [];
+      const RETIRED_DOMAINS = ['fx', 'rewards', 'side_hustle', 'monitoring', 'micro_saas', 'agent_service'];
+      const alloc = (rank?.allocation || rank?.candidates || []).filter((x) => !RETIRED_DOMAINS.includes(String(x.opportunity?.domain || x.domain || '')));
       const items = alloc.slice(0, 5).map((x) => ({
         title: x.opportunity?.name || x.name || '候補',
         sub: [x.opportunity?.domain || x.domain, x.weekly_revenue != null ? `見込み ${yen(x.weekly_revenue)}/週` : null].filter(Boolean).join(' · '),
@@ -782,9 +811,9 @@ const RULES = [
         tone: 'accent',
       }));
       return {
-        reply: rank
-          ? `${rank.total ?? items.length}件の候補を評価して、確度と実行しやすさで並べ直しました。上位から着手します。`
-          : '候補の評価に必要なデータがまだありません。「始めて」と言ってもらえれば調査から自分で進めます。',
+        reply: items.length
+          ? `${items.length}件の候補を評価して、確度と実行しやすさで並べ直しました。上位から着手します。`
+          : 'いま有望な候補はありません。稼ぎ方は「x402直販API」「API・自動化ツール出品」「AI代行サービス」の3本で自分から進めます。「始めて」と言えば次の一手を起こします。',
         cards: items.length ? [{ type: 'list', icon: 'trending', title: 'いま有望な順', items }] : [],
         suggest: ['次の一手を進めて', '収益はいくら？'],
       };

@@ -9,20 +9,7 @@ import { id as newId, nowIso, j, extractJson, truncate, hash } from '../util.js'
 import { characterSystemPrompt, memoryBlock } from '../ai/prompts.js';
 
 export const CATEGORY_BLUEPRINT = {
-  fx: [
-    { title: 'FX市場データを取得しデータ品質を確認', category: 'income_fx', tool: 'fx_market_data', args: { symbol: 'USDJPY', days: 1500 } },
-    { title: '戦略仮説を生成（既存の失敗手法を回避）', category: 'income_fx', tool: 'fx_generate_strategy', args: { symbol: 'USDJPY' } },
-    { title: '非リペイント検査を実行', category: 'income_fx', tool: 'fx_lint_pine', args: {} },
-    { title: 'バックテスト（スプレッド・手数料・スリッページ考慮）', category: 'income_fx', tool: 'fx_backtest', args: {} },
-  ],
-  rewards: [
-    { title: '日本のポイ活・報酬サービスを調査（公式情報で条件確認）', category: 'income_rewards', tool: 'rewards_research', args: {} },
-    { title: '換金条件・最低換金額・手数料を検証', category: 'verification', tool: 'deep_research', args: {} },
-  ],
-  side_hustle: [
-    { title: '副業・Web事業の候補を調査（需要と競合を確認）', category: 'income_sidehustle', tool: 'sidehustle_research', args: {} },
-    { title: '有望候補の実装可能性を検証', category: 'research', tool: 'deep_research', args: {} },
-  ],
+  // FX・ポイ活・副業の雛形は廃止（稼ぎ方は x402直販API / API・自動化ツール出品 / AI代行サービス の3本）。
   research: [
     { title: '目標に関連する情報を深層リサーチ', category: 'research', tool: 'deep_research', args: {} },
   ],
@@ -39,25 +26,22 @@ export const CATEGORY_BLUEPRINT = {
 
 /** Detect which blueprints a mission goal calls for. */
 export function classifyGoal(goalText) {
+  // 稼ぎ方は x402 直販 / API出品 / AI代行 の3本に一本化済み。FX・ポイ活・副業調査の
+  // 雛形は廃止した経路なので、目標文にその語が含まれていても選ばない（漏れ込み防止）。
   const g = String(goalText || '').toLowerCase();
   const cats = new Set();
-  if (/fx|為替|usdjpy|eurusd|トレード|pine|テクニカル|チャート/.test(g)) cats.add('fx');
-  if (/ポイ活|ポイント|報酬|換金|キャッシュバック|アンケート|放置|マイル|paypay|楽天/.test(g)) cats.add('rewards');
-  if (/副業|サイド|web事業|アフィリ|広告|saas|コンテンツ|ブログ|アプリ|ツール販売|ネット収益|せどり/.test(g)) cats.add('side_hustle');
-  if (/調査|リサーチ|比較|分析/.test(g)) cats.add('research');
-  if (cats.size === 0) cats.add('general');
-  // A broad "make money" mission should explore every income domain.
-  if (/収益|稼ぐ|マネタイズ|月.*円|収入/.test(g) && cats.size === 1 && (cats.has('research') || cats.has('general'))) {
-    cats.delete('general');
-    cats.add('fx'); cats.add('rewards'); cats.add('side_hustle');
-  }
+  if (/調査|リサーチ|比較|分析|需要|競合/.test(g)) cats.add('research');
+  cats.add('general');
   return [...cats];
 }
+
+/** 廃止した経路のカテゴリ（計画にも実行にも出さない）。 */
+export const RETIRED_CATEGORIES = new Set(['income_fx', 'income_rewards', 'income_sidehustle']);
 
 export function blueprintFor(categories) {
   const tasks = [];
   for (const c of categories) {
-    for (const t of (CATEGORY_BLUEPRINT[c] || [])) tasks.push({ ...t, domain: c });
+    for (const t of (CATEGORY_BLUEPRINT[c] || [])) if (!RETIRED_CATEGORIES.has(t.category)) tasks.push({ ...t, domain: c });
   }
   // Every mission ends with an evaluation + ranking pass.
   tasks.push({ title: '収益機会を横断比較しランキングを更新', category: 'analysis', tool: 'rank_opportunities', args: {}, domain: 'analysis' });
@@ -93,11 +77,11 @@ ${existingTasks.map((t) => `- [${t.state}] ${t.title}`).join('\n') || '（なし
 # 指示
 目標達成のために次に実行すべきタスクを 4〜8 件、依存関係つきで分解してください。
 各タスクは必ず「実行可能なツール」に紐づけます。利用可能なツール:
-${Object.keys(CATEGORY_BLUEPRINT).map((k) => `${k}: ${CATEGORY_BLUEPRINT[k].map((t) => t.tool).join(', ')}`).join('\n')}
+${Object.keys(CATEGORY_BLUEPRINT).filter((k) => !/^income_(fx|rewards|sidehustle)$/.test(k)).map((k) => `${k}: ${CATEGORY_BLUEPRINT[k].map((t) => t.tool).join(', ')}`).join('\n')}
 rank_opportunities, deep_research, web_search, data_analysis, code_generate, code_test, report_write
 
 JSONのみで返す:
-{"tasks":[{"title":"...","category":"research|analysis|coding|testing|income_fx|income_rewards|income_sidehustle|verification|writing","tool_name":"...","tool_args":{},"priority":0-100,"depends_on_titles":["..."],"rationale":"なぜ今これをやるか"}]}`;
+{"tasks":[{"title":"...","category":"research|analysis|coding|testing|verification|writing","tool_name":"...","tool_args":{},"priority":0-100,"depends_on_titles":["..."],"rationale":"なぜ今これをやるか"}]}`;
 
     const r = await router.complete({
       role: 'planner', system: characterSystemPrompt(character, { role: 'planner' }),
@@ -114,6 +98,10 @@ JSONのみで返す:
   // Drop tasks that duplicate an existing open task.
   const openTitles = new Set(existingTasks.filter((t) => !['completed', 'cancelled', 'failed'].includes(t.state)).map((t) => normTitle(t.title)));
   plan = plan.filter((t) => !openTitles.has(normTitle(t.title)));
+  // 稼ぎ方ミッションは、採点で最有力になった稼ぎ方の「次の一手」を実行タスクとして足す。
+  // これでランキングが表示用の数字で終わらず、実際に動く作業へ繋がる。
+  const follow = await laneFollowUpTasks({ store, mission, openTitles }).catch(() => []);
+  if (follow.length) plan = [...plan, ...follow];
 
   if (!plan.length) return { created: [], categories, note: '新規タスクなし（既存タスクが網羅済み）' };
 
@@ -156,8 +144,7 @@ JSONのみで返す:
 
 function normalizePlan(tasks, categories) {
   const allowedTools = new Set([
-    'web_search', 'web_fetch', 'deep_research', 'fx_market_data', 'fx_generate_strategy', 'fx_lint_pine', 'fx_backtest',
-    'rewards_research', 'sidehustle_research', 'rank_opportunities', 'data_analysis',
+    'web_search', 'web_fetch', 'deep_research', 'rank_opportunities', 'data_analysis',
     'code_generate', 'code_test', 'knowledge_ingest', 'knowledge_query', 'memory_write',
     'ledger_record', 'report_write', 'checkpoint', 'browser_extract',
   ]);
@@ -169,7 +156,7 @@ function normalizePlan(tasks, categories) {
     priority: Math.max(0, Math.min(100, Number(t.priority) || 50)),
     rationale: t.rationale || '',
     depends_on_titles: Array.isArray(t.depends_on_titles) ? t.depends_on_titles : [],
-  })).filter((t) => t.title);
+  })).filter((t) => t.title && !RETIRED_CATEGORIES.has(t.category) && !/^(fx_|rewards_|sidehustle_)/.test(String(t.tool_name || '')));
 }
 
 /**
@@ -269,6 +256,41 @@ const ALT_STRATEGY = {
 export function explainNext(task) {
   if (!task) return '実行可能なタスクがありません（再計画が必要）';
   return `${task.title} — ツール: ${task.tool_name || '未指定'} / 優先度 ${Math.round(task.priority)}`;
+}
+
+// 稼ぎ方ごとの「次の一手」を調べる質問（一次情報に当たる具体形）。
+const LANE_QUESTION = {
+  x402: 'x402 エンドポイントが公開ディレクトリ（x402scan / CDP Bazaar / Cleared Index / PayAI）に掲載される条件を一次情報で確認し、未掲載の理由と最短の掲載手順を特定する',
+  api_market: 'RapidAPI / Apify に AI 生成物を出品する場合の審査条件・収益条件・本人確認の要否を公式規約で確認する',
+  ai_content: 'AI生成コンテンツを販売できる売り先の規約（AI開示・量産判定・禁止カテゴリ）を一次情報で確認し、申請可能な売り先を確定する',
+  auto_service: 'AI代行サービス（監視・通知・定型業務）の受注につながる掲載先と、提示価格の相場を一次情報で確認する',
+};
+
+/**
+ * 稼ぎ方ミッションに、いま最有力の稼ぎ方（採点のトップ）の次の一手を実行するタスクを1件足す。
+ * 候補が空なら稼ぎ方4本を候補として登録してから採点する（空回りを防ぐ）。
+ */
+export async function laneFollowUpTasks({ store, mission, openTitles = new Set() } = {}) {
+  if (!/^msn_stream_/.test(String(mission && mission.id))) return [];
+  const { ensureLaneOpportunities } = await import('../income/lanes.js');
+  const { createRanking } = await import('../income/ranking.js');
+  await ensureLaneOpportunities({ store }).catch(() => {});
+  const ranking = createRanking({ store, memory: { guardrails: async () => [] } });
+  const r = await ranking.rank(store, { persist: true }).catch(() => null);
+  const top = r && Array.isArray(r.allocation) ? r.allocation[0] : null;
+  if (!top) return [];
+  const title = `最有力「${top.name}」の次の一手を実行: ${top.next_step}`;
+  if (openTitles.has(normTitle(title))) return [];
+  const question = LANE_QUESTION[top.domain] || `${top.name} の次の一手（${top.next_step}）を具体化する`;
+  return [{
+    title,
+    category: "research",
+    tool: "deep_research",
+    tool_args: { question },
+    priority: 70,
+    rationale: `採点スコア ${top.score}・資源配分 ${Math.round((top.share || 0) * 100)}% の稼ぎ方を進める。根拠: ${top.rationale || ""}`,
+    domain: top.domain,
+  }];
 }
 
 function normTitle(t) { return String(t || '').replace(/\s+/g, '').toLowerCase(); }
