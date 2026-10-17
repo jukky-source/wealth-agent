@@ -1065,6 +1065,10 @@ export async function labAuto({ store, env = {}, now = null, rows = null } = {})
     e8: {
       candidates: e8.length, passed: e8.filter((r) => r.gatesPass).length, champion: brief(e8Champ),
       collection: { members: members.length, keys: newKeys, wrote, previous: prevKeys, changed, minMembers },
+      // 門を通らなかった中で一番惜しい3本と、その理由。何が邪魔して引き渡せていないかを残す。
+      nearMiss: e8.filter((r) => !r.gatesPass).slice(0, 3).map((r) => ({
+        symbol: r.symbol, key: r.key, score: r.fitness, reasons: (r.reasons || []).slice(0, 3),
+      })),
     },
     skipped: skipped.slice(0, 8),
     handoff: wrote
@@ -1192,6 +1196,7 @@ export function labText(st = {}) {
       L.push(`自律ループ: 累計 ${st.auto.ticks || 0} tick / 自己資金の最良 ${c(a.own && a.own.champion)} / E8の最良 ${c(a.e8 && a.e8.champion)}`);
       L.push(`E8実行部への引き渡し: ${a.handoff}（集合 ${a.e8.collection.members}本 / 前回 ${a.e8.collection.previous.length}本 / 門通過 ${a.e8.passed}本）`);
       if (a.e8.collection.keys.length) L.push(`  集合の中身: ${a.e8.collection.keys.join(', ')}`);
+      if ((a.e8.nearMiss || []).length) L.push(`  惜しい候補（門で止まっている理由つき）: ${a.e8.nearMiss.map((n) => `${n.symbol}(${(n.reasons || [])[0] || '—'})`).join(' / ')}`);
     } else {
       L.push('自律ループ: まだ台帳が無い（次のtickで作られる）');
     }
