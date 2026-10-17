@@ -28,7 +28,8 @@
     "test:pairing": "node --test tests/pairing.test.mjs",
     "test:loop": "node tests/loop.test.mjs",
     "test:free": "node tests/freemium.test.mjs",
-    "test:risk": "node tests/risk.test.mjs"
+    "test:risk": "node tests/risk.test.mjs",
+    "test:prop": "node tests/prop.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
