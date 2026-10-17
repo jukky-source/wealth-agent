@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="color-scheme" content="dark" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>バックテスト作業台 — Wealth Agent</title>
+<meta name="robots" content="noindex" />
+<style>
+  :root{
+    --ink:#0b0b0d; --panel:#141417; --panel2:#1b1b1f; --line:#2a2a30; --line2:#3a3a42;
+    --fg:#f3f0e9; --fg2:#a5a19a; --amber:#e8a33d; --ok:#5fbf7f; --bad:#d9483b; --cyan:#5aa9c9;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--ink);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  a{color:var(--amber)}
+  .wrap{max-width:1400px;margin:0 auto;padding:18px 16px 80px}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:12px}
+  .brand{display:flex;align-items:center;gap:10px}
+  .brand i{width:9px;height:9px;background:var(--amber);border-radius:50%;box-shadow:0 0 0 4px rgba(232,163,61,.14)}
+  h1{font-size:19px;margin:0}
+  .sub{color:var(--fg2);font-size:12.5px;margin:2px 0 0}
+  .right{display:flex;gap:10px;align-items:center;font-size:12.5px;color:var(--fg2)}
+  .tabs{display:flex;gap:8px;margin:16px 0 0;border-bottom:1px solid var(--line)}
+  .tab{appearance:none;cursor:pointer;background:var(--panel);border:1px solid var(--line);border-bottom:none;
+       border-radius:11px 11px 0 0;padding:11px 18px 12px;color:var(--fg2);font-family:var(--sans);text-align:left;position:relative;top:1px}
+  .tab b{display:block;font-size:14.5px;color:var(--fg);font-weight:700;letter-spacing:.02em}
+  .tab span{display:block;font-size:11.5px;margin-top:3px}
+  .tab.on{background:var(--panel2);border-color:var(--line2);color:var(--fg2)}
+  .tab.on b{color:var(--amber)}
+  .tab.on::after{content:"";position:absolute;left:14px;right:14px;bottom:-1px;height:2px;background:var(--panel2)}
+  .panel{padding-top:18px}
+  .grid{display:grid;grid-template-columns:minmax(0,400px) minmax(0,1fr);gap:16px;align-items:start}
+  @media (max-width:1050px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}
+  .sec-t{font-size:11.5px;letter-spacing:.12em;color:var(--fg2);text-transform:uppercase;margin:0 0 10px}
+  .hint{font-size:12px;color:var(--fg2);line-height:1.6;margin:8px 0 0}
+  .note{font-size:12px;color:var(--fg2);line-height:1.6;margin-top:10px;border-left:2px solid var(--line);padding-left:10px}
+  button,.btn{font-family:var(--sans);font-size:13.5px;padding:9px 13px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--fg);cursor:pointer}
+  button.primary{background:var(--amber);border-color:var(--amber);color:#17130a;font-weight:700}
+  button.ghost{background:transparent}
+  button:disabled{opacity:.45;cursor:default}
+  select,input,textarea{font-family:var(--sans);font-size:13px;padding:7px 9px;border-radius:8px;border:1px solid var(--line);background:var(--panel2);color:var(--fg);max-width:100%}
+  input[type=number]{width:88px}
+  input[type=text]{width:100%}
+  label.f{display:block;font-size:11.5px;color:var(--fg2);letter-spacing:.06em;margin:9px 0 4px}
+  .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:6px 7px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--fg2);font-weight:600;font-size:11.5px;letter-spacing:.05em;position:sticky;top:0;background:var(--panel)}
+  td.num,th.num{text-align:right;font-family:var(--mono)}
+  .scroll{max-height:340px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:8px}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px 10px}
+  .kpi .k{font-size:11px;color:var(--fg2);letter-spacing:.06em}
+  .kpi .v{font-family:var(--mono);font-size:17px;margin-top:4px}
+  .kpi .s{font-size:11px;color:var(--fg2);margin-top:2px}
+  .good{color:var(--ok)} .bad{color:var(--bad)} .warn{color:var(--amber)} .dim{color:var(--fg2)}
+  canvas{display:block;width:100%;background:#0e0e11;border-radius:9px}
+  .rowitem{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:9px;margin-bottom:8px}
+  .rowitem .hd{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+  .rowitem .hd b{font-size:12.5px}
+  .chip{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 7px;border:1px solid var(--line2);border-radius:99px;color:var(--fg2);margin-right:5px}
+  .chip.on{color:var(--amber);border-color:var(--amber)}
+  .hidden{display:none!important}
+  .status{font-family:var(--mono);font-size:12px;color:var(--fg2);min-height:18px;margin-top:8px;white-space:pre-wrap}
+  .bar{height:6px;background:var(--panel2);border-radius:99px;overflow:hidden;margin:10px 0}
+  .bar i{display:block;height:100%;width:0;background:var(--amber);transition:width .3s}
+  .legend{font-size:11.5px;color:var(--fg2);margin-top:6px;font-family:var(--mono)}
+  .trades .pos{color:var(--ok)} .trades .neg{color:var(--bad)}
+  .tag{font-family:var(--mono);font-size:11px;color:var(--fg2)}
+  details{border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-top:10px;background:var(--panel2)}
+  summary{cursor:pointer;font-size:12.5px;color:var(--fg2)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <i></i>
+      <div>
+        <h1>バックテスト作業台</h1>
+        <p class="sub">2つのモード（E8の選考 / 自己資金）で、ロジックを試行錯誤する。原価0・無料の日足だけ。</p>
+      </div>
+    </div>
+    <div class="right">
+      <span id="conn">未接続</span>
+      <button id="btnToken" class="ghost">トークン</button>
+      <a href="./">アプリに戻る</a>
+    </div>
+  </header>
+
+  <div id="gate" class="card hidden" style="margin-top:16px">
+    <p class="sec-t">オーナートークン</p>
+    <div class="row" style="margin-top:0">
+      <input type="text" id="tok" placeholder="オーナートークン（.secrets/owner_token の中身）" />
+      <button class="primary" id="tokSave">つなぐ</button>
+    </div>
+    <p class="hint">この端末の中だけに保存します（localStorage:<span class="tag">wa_token</span>）。アプリ本体と同じトークンが使えます。</p>
+  </div>
+
+  <nav class="tabs" id="tabs"></nav>
+  <section id="panel-e8" class="panel hidden"></section>
+  <section id="panel-own" class="panel hidden"></section>
+</div>
+<script type="module" src="./lab.js"></script>
+</body>
+</html>

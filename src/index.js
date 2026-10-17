@@ -548,6 +548,67 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       }
     }
 
+    // バックテスト作業台（2つのタブ: E8モード / 自己資金モード）。オーナー専用。
+    //   GET  /api/lab            : 状態（?format=text / ?help=1）
+    //   GET  /api/lab/catalog    : 銘柄・論理・出口・費用・E8規格の一覧（UIのプルダウン用）
+    //   GET  /api/lab/board      : D1 に積んだ候補の順位表（?mode=own|e8）
+    //   GET  /api/lab/data       : チャート用の日足（?symbol=&days=&limit=）
+    //   POST /api/lab/run        : 1回の実行（モードごとの結論まで出す）
+    //   POST /api/lab/search     : 試行錯誤（候補づくり→採点→順位・ヒートマップ）
+    //   POST /api/lab/exit       : 出口（損切り/利確/保有日数）の最適化
+    //   POST /api/lab/project    : 保存・読込・一覧・削除
+    //   POST /api/lab/tick       : 背景ループをその場で1回
+    if (url.pathname === '/api/lab' || url.pathname.startsWith('/api/lab/')) {
+      try {
+        const lab = await import('./income/lab.js');
+        const sub = url.pathname.replace('/api/lab', '').replace(/^\//, '');
+        if (url.searchParams.get('help') === '1') return json({ ok: true, help: lab.labHelp() });
+        if (request.method === 'GET' && sub === 'catalog') return json({ ok: true, catalog: lab.labCatalog(env) });
+        if (request.method === 'GET' && sub === 'board') {
+          const mode = url.searchParams.get('mode') === 'e8' ? 'e8' : 'own';
+          return json({ ok: true, mode, rows: await lab.labBoard(deps.store, { mode, limit: Number(url.searchParams.get('limit') || 30) }) });
+        }
+        if (request.method === 'GET' && sub === 'data') {
+          const sym = url.searchParams.get('symbol') || 'USDJPY';
+          const days = Math.max(300, Math.min(3000, Number(url.searchParams.get('days') || 1600)));
+          const limit = Math.max(30, Math.min(900, Number(url.searchParams.get('limit') || 420)));
+          const { fetchMarketData } = await import('./income/fx.js');
+          const md = await fetchMarketData(deps.store, sym, { days });
+          const bars = (md.bars || []).slice(-limit).map((b) => ({ date: b.date, o: b.open, h: b.high, l: b.low, c: b.close }));
+          return json({ ok: true, symbol: sym, source: md.source || null, quality: md.quality || null, count: bars.length, bars });
+        }
+        let body = {};
+        if (request.method === 'POST') { try { body = await request.json(); } catch { body = {}; } }
+        if (sub === 'run') return json(await lab.labRun({ store: deps.store, env, body }));
+        if (sub === 'search') {
+          const mode = body.mode === 'e8' ? 'e8' : 'own';
+          const n = Math.max(1, Math.min(24, Number(body.n || 8)));
+          const r = await lab.labSearch({ store: deps.store, env, mode, n, opts: body.options || {}, settings: body.settings || {} });
+          return json({ ok: true, ...r });
+        }
+        if (sub === 'exit') {
+          const spec = body.spec || lab.specFromRow(body.row || {}, () => 0.5);
+          const r = await lab.exitOptimize({ store: deps.store, env, spec, opts: body.options || {}, grid: body.grid || null, limit: body.limit || 24 });
+          return json({ ok: true, ...r });
+        }
+        if (sub === 'project') {
+          const action = String(body.action || 'list');
+          if (action === 'save') return json({ ok: true, ...(await lab.labSaveProject(deps.store, body.name || 'untitled', body.payload || {})) });
+          if (action === 'load') return json({ ok: true, ...(await lab.labLoadProject(deps.store, body.name || '')) });
+          if (action === 'delete') return json({ ok: true, ...(await lab.labDeleteProject(deps.store, body.name || '')) });
+          return json({ ok: true, projects: await lab.labProjects(deps.store) });
+        }
+        if (sub === 'tick') return json({ ok: true, ...(await lab.labTick({ store: deps.store, env })) });
+        const st = await lab.labStatus(deps.store, env);
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(lab.labText(st), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+        }
+        return json({ ok: true, ...st });
+      } catch (e) {
+        return json({ ok: false, error: 'lab_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
     if (url.pathname === '/api/diag/research' && request.method === 'GET') {
       try {
         const { createResearch } = await import('./research/web.js');
