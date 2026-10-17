@@ -480,6 +480,22 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       }
     }
 
+    // プロップファーム選考と自己資金運用の計器（オーナー専用）。
+    // 各社のルール（利益目標・日次損失・最大損失・最低取引日数）に、実データの損益列を当てて
+    // 合格率・合格までの日数・合格後の月次報酬を出す。重い処理なのでWorker上で回す。
+    if (url.pathname === '/api/diag/prop' || url.pathname === '/api/prop') {
+      try {
+        const { buildPropReport, propHelp } = await import('./income/propReport.js');
+        if (request.method === 'GET' && url.searchParams.get('help') === '1') return json({ ok: true, help: propHelp() });
+        const p = Object.fromEntries(url.searchParams.entries());
+        if (request.method === 'POST') { try { Object.assign(p, await request.json()); } catch { /* 本文なしでも動く */ } }
+        const out = await buildPropReport({ store: deps.store, env, params: p });
+        return json({ ok: true, ...out });
+      } catch (e) {
+        return json({ ok: false, error: 'prop_diag_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
     if (url.pathname === '/api/diag/research' && request.method === 'GET') {
       try {
         const { createResearch } = await import('./research/web.js');
