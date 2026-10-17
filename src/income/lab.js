@@ -624,12 +624,31 @@ export async function labSearch({
   const rows = [];
   const errors = [];
   let stopped = false;
+  // 門で止まった候補を「出口の振り」で救う枠。門そのものは緩めない。
+  let refinements = 0;
+  const maxRefine = Math.max(1, Math.ceil(clamp(num(n, 12), 1, 40) / 4));
+  const refineExits = ['tight', 'timebox', 'balanced', 'wide'];
 
   for (const spec of specs) {
     if (Date.now() - t0 > budget) { stopped = true; break; }
     try {
-      const ev = await evalSpecISOS({ store, spec, env, ctx, opts: { ...opts, noRuinStop: mode === 'e8' ? true : false } });
+      let useSpec = spec;
+      let ev = await evalSpecISOS({ store, spec: useSpec, env, ctx, opts: { ...opts, noRuinStop: mode === 'e8' ? true : false } });
       if (!ev.ok) { errors.push({ symbol: spec.symbol, error: ev.error, bars: ev.bars }); continue; }
+      // 惜しい候補（止まった理由が「取引回数」か「DD」だけの候補）に限り、出口を振って門を通しにいく。
+      // これは規則を書き換えるのではなく、同じ論理に合う出口を選び直すだけ。門（15/6/40/45）は据え置き。
+      let refined = false;
+      const onlySizeReasons = (ev.gates.reasons || []).length > 0
+        && (ev.gates.reasons || []).every((r) => /DD|取引/.test(String(r)));
+      if (!ev.gates.pass && onlySizeReasons && refinements < maxRefine) {
+        refinements++;
+        for (const ex of refineExits) {
+          if (ex === useSpec.exit) continue;
+          if (Date.now() - t0 > budget) break;
+          const ev2 = await evalSpecISOS({ store, spec: { ...useSpec, exit: ex }, env, ctx, opts: { ...opts, noRuinStop: mode === 'e8' ? true : false } });
+          if (ev2.ok && ev2.gates.pass) { ev = ev2; useSpec = { ...useSpec, exit: ex }; refined = true; break; }
+        }
+      }
       let score = null; let objective = null;
       if (mode === 'e8') {
         const boot = bootstrapPass(ev.daily, labE8Plan(settings.profile, settings), {
@@ -666,20 +685,21 @@ export async function labSearch({
         objective = { medianMultiple: o.medianMultiple, reachPct: o.reachPct, ruinPct: o.ruinPct, medianFinalJPY: o.medianFinalJPY, p10FinalJPY: o.p10FinalJPY };
       }
       const row = {
-        symbol: ev.symbol, tf: ev.tf, exit: (spec.exit || null), dir: (spec.dir || null), filter: (spec.filter || null),
-        strategyLabel: (spec.base && spec.base.key) || null, tier: ev.tier, key: ev.key, label: ev.label,
-        score, objective, gates: ev.gates, metrics: { oos: ev.metrics.oos, is: ev.metrics.is }, spec,
-        origin: spec.__seed ? 'evolve' : 'random',
+        symbol: ev.symbol, tf: ev.tf, exit: (useSpec.exit || null), dir: (useSpec.dir || null), filter: (useSpec.filter || null),
+        strategyLabel: (useSpec.base && useSpec.base.key) || null, tier: ev.tier, key: ev.key, label: ev.label,
+        score, objective, gates: ev.gates, metrics: { oos: ev.metrics.oos, is: ev.metrics.is }, spec: useSpec,
+        refined,
+        origin: refined ? 'refine' : (useSpec.__seed ? 'evolve' : 'random'),
         bars: ev.bars, from: ev.from, to: ev.to, source: ev.source, evaluatedAt: now,
       };
       rows.push(row);
       if (persist) {
         await store.insert(T, {
-          id: newId('fxl_'), symbol: ev.symbol, strategy_key: ev.key, params_json: j({ spec, settings, mode }),
+          id: newId('fxl_'), symbol: ev.symbol, strategy_key: ev.key, params_json: j({ spec: useSpec, settings, mode }),
           metrics_json: j({ ...ev.metrics.oos, is: ev.metrics.is, oos: ev.metrics.oos, objective, score, mode, basis: 'oos' }),
           fitness: num(score, 0), verdict: ev.gates.pass ? 'pass' : 'fail', gates_json: j(ev.gates.reasons),
           walkforward_json: j({ isBars: ev.isBars, oosBars: ev.oosBars, oosFrac: num(opts.oosFrac, 0.3) }),
-          parent_id: null, mutation: mode === 'e8' ? 'lab:search:e8' : 'lab:search:own',
+          parent_id: null, mutation: refined ? 'lab:refine' : (mode === 'e8' ? 'lab:search:e8' : 'lab:search:own'),
           tag: `lab:${mode}`, bars: ev.bars, data_source: ev.source || null,
           date_from: ev.from, date_to: ev.to, promoted: 0, created_at: now,
         }).catch(() => {});
