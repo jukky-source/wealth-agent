@@ -13,6 +13,7 @@
 import { nowIso, j, safeJson } from '../util.js';
 import { PAIRS, STRATEGIES, DEFAULT_COST_MODEL } from './backtest.js';
 import { CHAMPION_KEY } from './fxLab.js';
+import { ATOMS, EXITS, FEATURES } from './grammar.js';
 
 export const EA_T = 'fx_ea_exports';
 export const DEFAULT_TIMEFRAME = 'PERIOD_D1';
@@ -298,9 +299,117 @@ export const eaStrategyKeys = () => Object.keys(EA_SPECS);
 // ---------------------------------------------------------------------------
 // MQL5 の生成
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 合成論理（Logic space の部品2つ）を MQL5 の EA にする。
+//   * 対応する特徴量だけを扱う（スーパートレンド方向・バンド幅比は MQL5 では未対応 → 生成しない）。
+//   * 出口は 損切/利確（tight / balanced / wide）のみ。トレーリング・時間切れは未対応 → 生成しない。
+//   * 忠実度: partial — Pine は完全一致だが、EA はここに書いた範囲だけを再現する（EA_NOTE を参照）。
+// ---------------------------------------------------------------------------
+export const EA_LOGIC_NOTE = 'MQL5版は「部品の条件＋ATRの損切・利確」を再現します。トレーリングストップと保有バー数による手仕舞いはEAに入っていません（Pine版は完全一致）。';
+
+const MQL_FEATURE = {
+  trend_spread: { h: ['hEma12L', 'hEma48L'], body: (sh) => `   double c = iClose(_Symbol, InpTimeframe, sh);\n   double a1 = Val(hEma12L, sh), a2 = Val(hEma48L, sh);\n   if(!Has(a1) || !Has(a2) || c <= 0.0) return(EMPTY_VALUE);\n   return(100.0 * (a1 - a2) / c);` },
+  rsi14: { h: ['hRsiL'], body: () => `   return(Val(hRsiL, sh));` },
+  z20: { h: ['hBandsL'], body: () => `   double u = ValB(hBandsL, 1, sh), m = ValB(hBandsL, 0, sh), l = ValB(hBandsL, 2, sh);\n   double sd = (u - l) / 4.0;\n   double c = iClose(_Symbol, InpTimeframe, sh);\n   if(!Has(sd) || sd <= 0.0) return(EMPTY_VALUE);\n   return((c - m) / sd);` },
+  bb_pos: { h: ['hBandsL'], body: () => `   double u = ValB(hBandsL, 1, sh), m = ValB(hBandsL, 0, sh), l = ValB(hBandsL, 2, sh);\n   double c = iClose(_Symbol, InpTimeframe, sh);\n   if(!Has(u) || u <= m) return(EMPTY_VALUE);\n   return((c - m) / (u - m));` },
+  macd_hist: { h: ['hMacdL'], body: () => `   double mn = ValB(hMacdL, 0, sh), sg = ValB(hMacdL, 1, sh), at = Val(hAtr, sh);\n   if(!Has(mn) || !Has(sg) || !Has(at) || at <= 0.0) return(EMPTY_VALUE);\n   return((mn - sg) / at);` },
+  adx14: { h: ['hAdxL'], body: () => `   return(ValB(hAdxL, 0, sh));` },
+  di_diff: { h: ['hAdxL'], body: () => `   double p = ValB(hAdxL, 1, sh), m = ValB(hAdxL, 2, sh);\n   if(!Has(p) || !Has(m)) return(EMPTY_VALUE);\n   return(p - m);` },
+  stoch_k: { h: ['hStochL'], body: () => `   return(ValB(hStochL, 0, sh));` },
+  cci20: { h: ['hCciL'], body: () => `   return(Val(hCciL, sh));` },
+  roc10: { h: [], body: () => `   double c = iClose(_Symbol, InpTimeframe, sh), c0 = iClose(_Symbol, InpTimeframe, sh + 10);\n   if(c0 <= 0.0) return(EMPTY_VALUE);\n   return(100.0 * (c / c0 - 1.0));` },
+  kc_pos: { h: ['hEma20L'], body: () => `   double e = Val(hEma20L, sh), at = Val(hAtr, sh), c = iClose(_Symbol, InpTimeframe, sh);\n   if(!Has(e) || !Has(at) || at <= 0.0) return(EMPTY_VALUE);\n   return((c - e) / (2.0 * at));` },
+  ich_diff: { h: ['hIchL'], body: () => `   double k = ValB(hIchL, 2, sh), at = Val(hAtr, sh), c = iClose(_Symbol, InpTimeframe, sh);\n   if(!Has(k) || !Has(at) || at <= 0.0) return(EMPTY_VALUE);\n   return((c - k) / at);` },
+  atr_pct: { h: [], body: () => `   double at = Val(hAtr, sh), c = iClose(_Symbol, InpTimeframe, sh);\n   if(!Has(at) || c <= 0.0) return(EMPTY_VALUE);\n   return(100.0 * at / c);` },
+  ret1: { h: [], body: () => `   double c = iClose(_Symbol, InpTimeframe, sh), c1 = iClose(_Symbol, InpTimeframe, sh + 1);\n   if(c1 <= 0.0) return(EMPTY_VALUE);\n   return(100.0 * (c / c1 - 1.0));` },
+  don_pos: { h: [], body: () => `   double hi, lo, c;\n   if(!HL(20, sh, hi, lo)) return(EMPTY_VALUE);\n   c = iClose(_Symbol, InpTimeframe, sh);\n   if(hi <= lo) return(EMPTY_VALUE);\n   return((c - lo) / (hi - lo));` },
+};
+
+const MQL_HANDLE_INIT = {
+  hEma12L: 'iMA(_Symbol, InpTimeframe, 12, 0, MODE_EMA, PRICE_CLOSE)',
+  hEma20L: 'iMA(_Symbol, InpTimeframe, 20, 0, MODE_EMA, PRICE_CLOSE)',
+  hEma48L: 'iMA(_Symbol, InpTimeframe, 48, 0, MODE_EMA, PRICE_CLOSE)',
+  hRsiL: 'iRSI(_Symbol, InpTimeframe, 14, PRICE_CLOSE)',
+  hCciL: 'iCCI(_Symbol, InpTimeframe, 20, PRICE_TYPICAL)',
+  hAdxL: 'iADX(_Symbol, InpTimeframe, 14)',
+  hMacdL: 'iMACD(_Symbol, InpTimeframe, 12, 26, 9, PRICE_CLOSE)',
+  hStochL: 'iStochastic(_Symbol, InpTimeframe, 14, 3, 3, MODE_SMA, STO_LOWHIGH)',
+  hBandsL: 'iBands(_Symbol, InpTimeframe, 20, 0, 2.0, PRICE_CLOSE)',
+  hIchL: 'iIchimoku(_Symbol, InpTimeframe, 9, 26, 52)',
+};
+
+const EA_LOGIC_EXITS = ['tight', 'balanced', 'wide'];
+
+/** 合成論理から MQL5 の EA 仕様を作る。作れないときは理由つきの {unsupported} を返す。 */
+export function logicEaSpec(strategyKey, params = {}) {
+  const logic = params?.logic || STRATEGIES[strategyKey]?.defaultParams?.logic || null;
+  if (!logic || logic.base?.kind !== 'rule') return { unsupported: '合成論理（部品の組合せ）ではないため、MQL5の自動生成は未対応です（Pineは出力できます）。' };
+  const A = ATOMS[logic.base.a];
+  const B = logic.base.b == null ? null : ATOMS[logic.base.b];
+  if (!A) return { unsupported: '部品（条件）が特定できません。' };
+  const need = [A.f, B?.f].filter(Boolean);
+  const unsupported = need.filter((f) => !MQL_FEATURE[f]);
+  if (unsupported.length) return { unsupported: `MQL5で未対応の特徴量が入っています（${unsupported.join(', ')}）。Pineを使ってください。` };
+  if (!EA_LOGIC_EXITS.includes(logic.exit)) return { unsupported: `出口「${logic.exit}」はEA未対応です（対応: 損切/利確型のみ）。Pineを使ってください。` };
+
+  const exit = EXITS.find((e) => e.key === logic.exit) || EXITS[1];
+  const feats = [...new Set(need)];
+  const handles = [...new Set(feats.flatMap((f) => MQL_FEATURE[f].h))];
+  const vals = (key, sh) => `F_${key}(${sh})`;
+  const cmp = (a, neg) => {
+    const v1 = vals(a.f, 1); const v2 = vals(a.f, 2); const th = Number(a.th);
+    if (a.op === 'gt') return `(Has(${v1}) && ${v1} ${neg ? '<=' : '>'} ${th})`;
+    if (a.op === 'lt') return `(Has(${v1}) && ${v1} ${neg ? '>=' : '<'} ${th})`;
+    if (a.op === 'xup') return neg
+      ? `(Has(${v1}) && Has(${v2}) && !(${v1} > ${th} && ${v2} <= ${th}))`
+      : `(Has(${v1}) && Has(${v2}) && ${v1} > ${th} && ${v2} <= ${th})`;
+    return neg
+      ? `(Has(${v1}) && Has(${v2}) && !(${v1} < ${th} && ${v2} >= ${th}))`
+      : `(Has(${v1}) && Has(${v2}) && ${v1} < ${th} && ${v2} >= ${th})`;
+  };
+  const cmb = logic.base.comb === 'or' ? ' || ' : ' && ';
+  const longExpr = B ? `(${cmp(A, false)}${cmb}${cmp(B, false)})` : cmp(A, false);
+  const shortExpr = B ? `(${cmp(A, true)}${cmb}${cmp(B, true)})` : cmp(A, true);
+  const dir = logic.dir || 'both';
+  const wantLine = dir === 'long'
+    ? `   if(goLong && !goShort) want = 1;`
+    : dir === 'short'
+      ? `   if(goShort && !goLong) want = -1;`
+      : `   if(goLong && !goShort) want = 1;\n   else if(goShort && !goLong) want = -1;`;
+
+  const featureFns = feats.map((f) => `double F_${f}(const int sh)\n{\n${MQL_FEATURE[f].body()}\n}`).join('\n\n');
+  const extraDecls = [
+    '   // --- Logic space（合成論理）用の追加 ---',
+    ...handles.map((h) => `int ${h} = INVALID_HANDLE;`),
+    'bool Has(const double v)\n{\n   return(v != EMPTY_VALUE && !(v != v));\n}',
+    'bool HL(const int period, const int sh, double &hi, double &lo)\n{\n   double h[], l[];\n   if(CopyHigh(_Symbol, InpTimeframe, sh, period, h) != period) return(false);\n   if(CopyLow(_Symbol, InpTimeframe, sh, period, l) != period) return(false);\n   hi = h[ArrayMaximum(h)];\n   lo = l[ArrayMinimum(l)];\n   return(true);\n}',
+    featureFns,
+  ].join('\n');
+  const extraInit = handles.map((h) => `   ${h} = ${MQL_HANDLE_INIT[h]};`).join('\n');
+  const extraRelease = handles.map((h) => `   if(${h} != INVALID_HANDLE) IndicatorRelease(${h});`).join('\n');
+  const signal = `   bool goLong = ${longExpr};\n   bool goShort = ${shortExpr};\n${wantLine}`;
+
+  return {
+    label: `合成論理（${logic.base.comb === 'or' ? 'または' : 'かつ'}）`,
+    inputs: (p) => [
+      `input double InpAtrStopMult   = ${fmtDbl(p.atrStopMult, exit.atrStopMult)};       // ATRストップの倍率`,
+      `input double InpAtrTargetMult = ${fmtDbl(p.atrTargetMult, exit.atrTargetMult)};       // ATR利確の倍率（0で利確なし）`,
+      `input bool   InpAllowShort    = ${fmtBool(dir !== 'long')};      // 売りも取る（方向の指定はEAに埋め込み済み）`,
+    ],
+    handles: '',
+    extraDecls,
+    extraInit,
+    extraRelease,
+    signal,
+    tpLine: `   double tpDist = atr1 * InpAtrTargetMult;`,
+    ea_note: EA_LOGIC_NOTE,
+    unsupported: null,
+  };
+}
+
 export function generateMql5({ strategyKey, params = {}, symbol = 'USDJPY', timeframe = DEFAULT_TIMEFRAME, metrics = {}, cost = null, name = null, at = null } = {}) {
-  const spec = EA_SPECS[strategyKey];
-  if (!spec) return null;
+  const spec = EA_SPECS[strategyKey] || logicEaSpec(strategyKey, params);
+  if (!spec || spec.unsupported) return null;
   const C = { ...DEFAULT_COST_MODEL, ...(cost || {}) };
   const generatedAt = at || nowIso();
   // ファイル名はMT5で扱いやすい英数字だけにする（日本語の戦略名は使わない）。
@@ -349,6 +458,7 @@ int      hTrend = INVALID_HANDLE;
 int      hAtr   = INVALID_HANDLE;
 int      hRsi   = INVALID_HANDLE;
 int      hBands = INVALID_HANDLE;
+${spec.extraDecls || ''}
 datetime g_lastBar = 0;
 
 //+------------------------------------------------------------------+
@@ -362,6 +472,7 @@ int OnInit()
       Print("注意: チャートは ", _Symbol, " ですが、検証したのは ", InpSymbol, " です。同じ通貨ペアで動かしてください。");
 
 ${handles}
+${spec.extraInit || ''}
 
    if(hAtr == INVALID_HANDLE)
    {
@@ -381,6 +492,7 @@ void OnDeinit(const int reason)
    if(hAtr   != INVALID_HANDLE) IndicatorRelease(hAtr);
    if(hRsi   != INVALID_HANDLE) IndicatorRelease(hRsi);
    if(hBands != INVALID_HANDLE) IndicatorRelease(hBands);
+${spec.extraRelease || ''}
 }
 
 //+------------------------------------------------------------------+

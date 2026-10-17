@@ -17,6 +17,17 @@ export const SUPPORTED_SYMBOLS = Object.keys(PAIRS);
 // ---------------------------------------------------------------------------
 const YAHOO_SYMBOL = {
   USDJPY: 'JPY=X', EURUSD: 'EURUSD=X', GBPUSD: 'GBPUSD=X', USDCAD: 'USDCAD=X', GOLD: 'GC=F',
+  USDCHF: 'USDCHF=X', AUDUSD: 'AUDUSD=X', NZDUSD: 'NZDUSD=X', EURJPY: 'EURJPY=X', GBPJPY: 'GBPJPY=X',
+  AUDJPY: 'AUDJPY=X', CADJPY: 'CADJPY=X', CHFJPY: 'CHFJPY=X', NZDJPY: 'NZDJPY=X', EURGBP: 'EURGBP=X',
+  EURCHF: 'EURCHF=X', EURAUD: 'EURAUD=X', GBPCHF: 'GBPCHF=X', USDMXN: 'USDMXN=X', XAGUSD: 'SI=F',
+};
+
+// quote通貨 → 円にするための近道。USD建ての通貨（AUD/NZD/EUR/GBP）は掛け、USDが基準の通貨（CAD/CHF/MXN）は割る。
+const JPY_PER_QUOTE = {
+  EUR: { symbol: 'EURUSD', mul: true }, GBP: { symbol: 'GBPUSD', mul: true },
+  AUD: { symbol: 'AUDUSD', mul: true }, NZD: { symbol: 'NZDUSD', mul: true },
+  CAD: { symbol: 'USDCAD', mul: false }, CHF: { symbol: 'USDCHF', mul: false },
+  MXN: { symbol: 'USDMXN', mul: false },
 };
 
 export async function fetchMarketData(store, symbol, { days = 1500, force = false } = {}) {
@@ -117,10 +128,17 @@ export async function buildCurrencyConverter(store, symbol) {
     const jpy = await fetchMarketData(store, 'USDJPY', { days: 2600 });
     const usdjpy = resolver(jpy.bars);
     if (meta.quote === 'USD') return { quote: 'USD', rateAt: usdjpy, source: 'yahoo_usdjpy_close', note: 'USD建ての損益を決済日のUSDJPY終値で円換算。' };
-    if (meta.quote === 'CAD') {
-      const cad = await fetchMarketData(store, 'USDCAD', { days: 2600 });
-      const usdcad = resolver(cad.bars);
-      return { quote: 'CAD', rateAt: (d) => { const a = usdjpy(d); const b = usdcad(d) || 1; return b > 0 ? a / b : 1; }, source: 'yahoo_usdjpy_over_usdcad_close', note: 'CAD建ての損益を USDJPY/USDCAD で円換算。' };
+    const via = JPY_PER_QUOTE[meta.quote];
+    if (via) {
+      // 例: AUD建て → JPY per AUD = AUDUSD × USDJPY ／ CHF建て → JPY per CHF = USDJPY ÷ USDCHF
+      const other = await fetchMarketData(store, via.symbol, { days: 2600 });
+      const rate = resolver(other.bars);
+      return {
+        quote: meta.quote,
+        rateAt: (d) => { const a = usdjpy(d) || 0; const b = rate(d) || 0; if (!(a > 0) || !(b > 0)) return 1; return via.mul ? a * b : a / b; },
+        source: `yahoo_usdjpy_${via.mul ? 'times' : 'over'}_${via.symbol.toLowerCase()}_close`,
+        note: `${meta.quote}建ての損益を USDJPY と ${via.symbol} の終値で円換算（決済日ベース）。`,
+      };
     }
     return { quote: meta.quote, rateAt: usdjpy, source: 'yahoo_usdjpy_close', note: `${meta.quote}建てをUSDJPY終値で近似換算。` };
   } catch (e) {

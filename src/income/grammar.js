@@ -226,6 +226,22 @@ export function coreSize(symbols = SYMBOLS) {
 }
 
 /** 合成層の広さ（AND/OR × 部品2つ × 出口 × 方向 × 時間軸 × 銘柄） */
+/** 特徴量のキー一覧（合成層の仮説を1つに絞るときに使う） */
+export function featureKeys() { return Object.keys(FEATURES); }
+
+/**
+ * 共有パラメータ制約（breadth）: 同じ論理を「同時に複数の銘柄」に当てる。
+ * 1つの設定を多数の銘柄で試すので、試行1回あたりの情報量が増える。
+ * 過半の銘柄で通ったときだけ候補にする＝偶然の1本を昇格させない。
+ */
+export function basketFor(index, symbols = SYMBOLS, k = 3) {
+  const n = Math.max(1, Math.min(symbols.length, Number(k) || 1));
+  const start = ((Math.floor(Number(index) || 0) % symbols.length) + symbols.length) % symbols.length;
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(symbols[(start + i) % symbols.length]);
+  return out;
+}
+
 export function ruleSize(symbols = SYMBOLS) {
   const A = ATOMS.length;
   return symbols.length * TIMEFRAMES.length * A * (A + 1) * 2 * DIRECTIONS.length * EXITS.length;
@@ -254,21 +270,26 @@ export function coreAt(index, symbols = SYMBOLS) {
 }
 
 /** 合成層: 部品2つを AND/OR で組む。mutateFrom を渡すと現王者の近傍を変異させる。 */
-export function randomRule(rnd, symbols = SYMBOLS, { mutateFrom = null } = {}) {
+export function randomRule(rnd, symbols = SYMBOLS, { mutateFrom = null, features = null } = {}) {
   const A = ATOMS.length;
   const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
+  // 仮説を1本に絞る: features を渡すと、その特徴量の部品だけを使う（探索の的を絞り、試行の質を上げる）
+  const allowed = (features && features.length)
+    ? ATOMS.map((a, i) => (features.includes(a.f) ? i : -1)).filter((i) => i >= 0)
+    : null;
+  const pickAtom = () => (allowed && allowed.length ? allowed[Math.floor(rnd() * allowed.length)] : Math.floor(rnd() * A));
   let base;
   if (mutateFrom && mutateFrom.base && mutateFrom.base.kind === 'rule' && rnd() < 0.7) {
     base = { ...mutateFrom.base };
     const w = rnd();
-    if (w < 0.4) base.a = Math.floor(rnd() * A);
-    else if (w < 0.7) base.b = base.b == null ? Math.floor(rnd() * A) : (rnd() < 0.2 ? null : Math.floor(rnd() * A));
+    if (w < 0.4) base.a = pickAtom();
+    else if (w < 0.7) base.b = base.b == null ? pickAtom() : (rnd() < 0.2 ? null : pickAtom());
     else base.comb = base.comb === 'and' ? 'or' : 'and';
   } else {
     base = {
       kind: 'rule',
-      a: Math.floor(rnd() * A),
-      b: rnd() < 0.45 ? Math.floor(rnd() * A) : null,
+      a: pickAtom(),
+      b: rnd() < 0.45 ? pickAtom() : null,
       comb: rnd() < 0.5 ? 'and' : 'or',
     };
   }

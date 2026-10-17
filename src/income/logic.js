@@ -16,6 +16,7 @@ import { generatePine } from './pine.js';
 import {
   SYMBOLS, coreSize, ruleSize, spaceSize, coreAt, randomRule, materialize, describeLogic,
   exitParams, vocabulary, NOT_INCLUDED, FEATURES, TIMEFRAMES, FILTERS, EXITS, DIRECTIONS, ATOMS,
+  basketFor, featureKeys,
 } from './grammar.js';
 import {
   T, ensureLabTable, runExperiment, promote, storeValidation, CHAMPION_KEY, ROBUST_CHECKS,
@@ -40,6 +41,9 @@ export function spaceReport(env = {}) {
     core_size: core,
     rule_size: rule,
     space_size: core + rule,
+    mode: String(env.FX_LAB_LOGIC_SHARED ?? 'true') !== 'false' ? 'shared' : 'single',
+    basket: Math.max(1, Number(env.FX_LAB_LOGIC_BASKET || 3)),
+    hypothesis: String(env.FX_LAB_LOGIC_HYPOTHESIS ?? 'true') !== 'false',
     per_tick: per,
     every_minutes: every,
     per_day: perDay,
@@ -48,7 +52,8 @@ export function spaceReport(env = {}) {
     core_days: Math.ceil(core / corePerDay),
     rule_days: rulePerDay > 0 ? Math.ceil(rule / rulePerDay) : null,
     note: `1tick ${per}件・${every}分間隔なら 1日 ${perDay}件。コア層 ${core.toLocaleString('en-US')} 通りは約 ${Math.ceil(core / corePerDay)} 日で全通り、`
-      + `合成層 ${rule.toLocaleString('en-US')} 通りは全列挙が非現実的なので無作為＋王者近傍の変異で探索します（原価0）。`,
+      + `合成層 ${rule.toLocaleString('en-US')} 通りは全列挙が非現実的なので無作為＋王者近傍の変異で探索します（原価0）。`
+      + `コア層は同じ設定を最大 ${Math.max(1, Number(env.FX_LAB_LOGIC_BASKET || 3))} 銘柄に同時に当て、過半で通ったときだけ候補にします（1本だけの偶然を昇格させないため）。`,
   };
 }
 
@@ -87,11 +92,17 @@ export async function logicTick({
   const deepLimit = deepPerTick == null ? Math.max(0, Number(env.FX_LAB_LOGIC_DEEP_PER_TICK ?? 1)) : deepPerTick;
   const deepBudget = Math.max(3000, Number(deepBudgetMs || env.FX_LAB_DEEP_BUDGET_MS || 12000));
 
+  // 探索の設計: コア層は「同じ設定を複数銘柄に同時に当てる」、合成層は「仮説を1つに絞る」。
+  const shareEnabled = String(env.FX_LAB_LOGIC_SHARED ?? 'true') !== 'false';
+  const basketSize = Math.max(1, Math.min(syms.length, Number(env.FX_LAB_LOGIC_BASKET || 3)));
+  const hypoEnabled = String(env.FX_LAB_LOGIC_HYPOTHESIS ?? 'true') !== 'false';
+
   const rnd = seededRandom(`logic-${at}-${stats.core_cursor}`);
   const mdCache = new Map();
   const report = {
     at, ran: 0, tier: null, experiments: [], improved: false, promoted: null,
     deep_validations: 0, skipped: 0, cursor_before: stats.core_cursor,
+    mode: shareEnabled ? 'shared' : 'single', basket: shareEnabled ? basketSize : 1,
   };
   let deepUsed = 0;
   let championLocal = champion;
@@ -104,56 +115,77 @@ export async function logicTick({
     }
     // 7割はコア層（番号順）、3割は合成層（無作為＋変異）
     const useCore = rnd() < CORE_WEIGHT || !bestRule;
-    let spec;
+    let spec; let members = null;
     if (useCore) {
       if (stats.core_cursor >= core) { stats.core_rounds = (stats.core_rounds || 0) + 1; stats.core_cursor = 0; }
       spec = coreAt(stats.core_cursor, syms);
+      // 共有パラメータ制約: 同じ設定を同時に複数の銘柄へ（過半で通ったときだけ候補）
+      members = shareEnabled ? basketFor(stats.core_cursor, syms, basketSize) : [spec.symbol];
       stats.core_cursor += 1;
     } else {
-      spec = randomRule(rnd, syms, { mutateFrom: bestRule });
+      // 仮説を1本に絞る: その周回で扱う特徴量を1つに固定し、的を絞って探索する
+      const fams = featureKeys();
+      const fam = hypoEnabled ? [fams[(stats.evaluated_rule || 0) % fams.length]] : null;
+      spec = randomRule(rnd, syms, { mutateFrom: bestRule, features: fam });
+      if (fam) report.hypothesis = fam[0];
     }
     report.tier = spec.tier;
 
     const key = materialize(spec);
     const d = describeLogic(spec);
-    const params = {
-      ...exitParams(spec),
-      logic: spec,
-      logic_round: stats.core_rounds || 0,
-      symbol: spec.symbol,
-    };
-    const dedupKey = `${spec.symbol}|${key}|${j(params)}`;
-    if (seen.has(dedupKey)) { report.skipped++; continue; }
-    seen.add(dedupKey);
+    const group = members && members.length ? members : [spec.symbol];
+    const results = [];
 
-    let exp;
-    try {
-      exp = await runExperiment({
-        store, symbol: spec.symbol, strategyKey: key, params,
-        tag: `logic:${spec.tier}`, mutation: d.line, now: at, mdCache,
+    for (const sym of group) {
+      if (Date.now() - t0 > budget) { report.budget_exhausted = true; report.budget_note = `CPU予算 ${budget}ms を使い切った（バスケットの途中まで）`; break; }
+      const specSym = { ...spec, symbol: sym };
+      const paramsSym = { ...exitParams(specSym), logic: specSym, logic_round: stats.core_rounds || 0, symbol: sym };
+      const dedupKey = `${sym}|${key}|${j(paramsSym)}`;
+      if (seen.has(dedupKey)) { report.skipped++; continue; }
+      seen.add(dedupKey);
+      let e2;
+      try {
+        e2 = await runExperiment({
+          store, symbol: sym, strategyKey: key, params: paramsSym,
+          tag: `logic:${spec.tier}`, mutation: d.line, now: at, mdCache,
+        });
+      } catch (e) {
+        report.experiments.push({ symbol: sym, tier: spec.tier, error: String(e.message || e) });
+        continue;
+      }
+      if (!e2 || !e2.ok) {
+        report.experiments.push({ symbol: sym, tier: spec.tier, error: e2?.error || 'unknown', bars: e2?.bars });
+        continue;
+      }
+      report.ran++;
+      if (spec.tier === 'core') stats.evaluated_core = (stats.evaluated_core || 0) + 1;
+      else stats.evaluated_rule = (stats.evaluated_rule || 0) + 1;
+      stats.evaluated = (stats.evaluated || 0) + 1;
+      report.experiments.push({
+        id: e2.id, symbol: sym, tier: spec.tier, key, logic: d.line,
+        fitness: e2.fitness, pass: e2.gates.pass,
+        net: e2.metrics.netProfitPct, dd: e2.metrics.maxDrawdownPctMtm ?? e2.metrics.maxDrawdownPct,
+        pf: e2.metrics.profitFactor, trades: e2.metrics.trades,
+        gates: e2.gates.reasons, data_source: e2.data_source,
       });
-    } catch (e) {
-      report.experiments.push({ symbol: spec.symbol, tier: spec.tier, error: String(e.message || e) });
-      continue;
+      results.push({ sym, exp: e2, params: paramsSym });
     }
-    if (!exp.ok) {
-      report.experiments.push({ symbol: spec.symbol, tier: spec.tier, error: exp.error, bars: exp.bars });
-      continue;
-    }
-    report.ran++;
-    if (spec.tier === 'core') stats.evaluated_core = (stats.evaluated_core || 0) + 1;
-    else stats.evaluated_rule = (stats.evaluated_rule || 0) + 1;
-    stats.evaluated = (stats.evaluated || 0) + 1;
-    report.experiments.push({
-      id: exp.id, symbol: spec.symbol, tier: spec.tier, key, logic: d.line,
-      fitness: exp.fitness, pass: exp.gates.pass,
-      net: exp.metrics.netProfitPct, dd: exp.metrics.maxDrawdownPct,
-      pf: exp.metrics.profitFactor, trades: exp.metrics.trades,
-      gates: exp.gates.reasons, data_source: exp.data_source,
-    });
+    if (!results.length) continue;
 
-    // 門を通過し、現王者を上回ったときだけフル検証へ（王者＝EAの対象候補）
-    const beats = exp.gates.pass && (!championLocal || exp.fitness > Number(championLocal.fitness || 0));
+    // 共有パラメータ制約: 過半の銘柄で門を通ったときだけ「候補」にする
+    const need = results.length > 1 ? Math.ceil(results.length * 0.6) : 1;
+    const passers = results.filter((r) => r.exp.gates.pass);
+    report.shared = { members: results.length, passed: passers.length, required: need, ok: passers.length >= need };
+    if (passers.length < need) continue;
+
+    // 通った銘柄のうち、最も良いものを代表として深掘りする
+    const win = passers.slice().sort((a, b) => Number(b.exp.fitness || 0) - Number(a.exp.fitness || 0))[0];
+    spec = { ...spec, symbol: win.sym };
+    const exp = win.exp;
+    const params = win.params;
+
+    // 現王者を上回ったときだけフル検証へ（王者＝EAの対象候補）
+    const beats = !championLocal || Number(exp.fitness || 0) > Number(championLocal.fitness || 0);
     if (!beats) continue;
     if (deepUsed >= deepLimit) {
       report.experiments.push({ id: exp.id, note: `フル検証の上限（1tickあたり${deepLimit}件）に達したため、検証は次tickへ` });
@@ -239,7 +271,8 @@ export async function logicTick({
     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
     j({
       at, ran: report.ran, tier: report.tier, cursor: stats.core_cursor, rounds: stats.core_rounds || 0,
-      improved: report.improved,
+      improved: report.improved, mode: report.mode, basket: report.basket,
+      shared: report.shared || null, hypothesis: report.hypothesis || null,
       experiments: report.experiments.map((e) => `${e.symbol}/${e.tier}:${e.fitness ?? e.error ?? '?'}`),
     }), at);
 
@@ -278,6 +311,8 @@ export async function logicSpaceInfo(store, env = {}) {
   });
   return {
     plan: spaceReport(env),
+    mode: spaceReport(env).mode,
+    basket: spaceReport(env).basket,
     core_size: core,
     rule_size: rule,
     space_size: core + rule,
@@ -332,6 +367,7 @@ export function logicHelp() {
     '空間は2層です。コア層（既知の17ロジック×パラメータ×絞り込み×出口×方向×時間軸×銘柄）は番号順に全通り踏破します。合成層（指標の条件を2つ AND/OR で組む論理）は広大なので、無作為に引きつつ、伸びている論理の近傍を変異させて探索します。',
     'このループは Cloudflare の Cron（Workerの中）で回ります。手元のパソコンやサンドボックスは使いません。1tickあたり少数だけ回し、CPU予算を使い切ったら残りは次tickへ回すので、途中で黙って落ちることはありません。結果はD1に積み上がり、失敗も消しません。',
     '昇格（＝EAやPineの対象になること）の条件は変えていません。門（取引30回以上・PF1.15以上・期待値プラス・DD35%以下）を通り、さらにフル検証11項目（データ品質／パージドCV／PBO／DSR／ブートストラップ／符号反転／ランダムエントリー比較／費用耐性／相場環境／パラメータ台地／多重検定補正）を全部通った論理だけです。通らないものは「暫定」として記録だけ残します。',
+    'なので探索の設計を変えました。(1) コア層は同じ設定を複数の銘柄に同時に当て、過半の銘柄で門を通ったときだけ候補にします（1つの銘柄だけで偶然よく見えた設定を昇格させない）。(2) 合成層は仮説を1つの指標に絞ってから探索します（的を絞って試行の質を上げる）。(3) 検証に「破産判定」と「含み損込みの最大DD」を入れました（実現損益だけのDDは、含みで深く沈む危険を見落とすため）。',
     'なぜ簡単に通らないかも正直に書きます。試した回数が増えるほど「偶然の1位」が出やすくなるので、DSR（試行回数を織り込んだSharpe）が厳しくなります。つまり、たくさん試すこと自体が合格を難しくします。これは欠陥ではなく、過剰最適化を防ぐための設計です。',
     'この空間に入っていないもの（＝ここでは検証しないもの）: ' + NOT_INCLUDED.join(' / ') + '。',
   ].join('\n\n');
