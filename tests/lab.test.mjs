@@ -193,14 +193,23 @@ console.log('バックテスト作業台（lab）');
   ok('最良は門を通った中から選ぶ', pickChampion([...good, ...bad], 'e8').symbol === 'USDJPY');
   ok('床に届かない個体は選ばない', pickChampion([row({ symbol: 'XAUUSD', key: 'g_c3', fitness: 0.05, pass: true })], 'e8') === null);
 
-  const e8rows = [...good, ...bad];
-  const store = {
-    _s: new Map(),
+  // labBoard は D1 の行（params_json / metrics_json / gates_json）を読む。テストも同じ形で渡す。
+  const d1 = (r) => ({
+    symbol: r.symbol, strategy_key: r.key, fitness: r.fitness, verdict: r.verdict, created_at: '2026-10-17T09:00:00.000Z',
+    bars: 1600, date_from: '2020-01-01', date_to: '2026-10-16',
+    params_json: JSON.stringify({ spec: r.spec, settings: {}, mode: 'e8' }),
+    metrics_json: JSON.stringify({ oos: { netProfitPct: r.oosNetPct, maxDrawdownPctMtm: r.oosDdMtmPct }, objective: r.objective, label: r.label, mode: 'e8' }),
+    gates_json: JSON.stringify(r.reasons || []),
+  });
+  const e8rows = [...good, ...bad].map(d1);
+  const mkStore = (seed) => ({
+    _s: new Map(seed || []),
     async first(sql, ...p) { return this._s.has(p[0]) ? { value: this._s.get(p[0]) } : null; },
     async run(sql, key, value) { this._s.set(key, value); },
     async all() { return e8rows; },
     async insert() {},
-  };
+  });
+  const store = mkStore();
   const auto = await labAuto({ store, env: {}, now: '2026-10-17T09:00:00.000Z' });
   ok('引き渡しを記録する', /lab:collection/.test(auto.handoff), auto.handoff);
   ok('集合を settings に書く', store._s.has(LAB_COLLECTION_KEY) && JSON.parse(store._s.get(LAB_COLLECTION_KEY)).members.length === 2);
@@ -208,13 +217,7 @@ console.log('バックテスト作業台（lab）');
   ok('何本通ったかを残す', auto.e8.passed === 2 && auto.e8.candidates === 3, JSON.stringify(auto.e8));
   ok('最良と集合の中身を残す', auto.e8.champion.symbol === 'USDJPY' && auto.e8.collection.keys.length === 2);
 
-  const store2 = {
-    _s: new Map([[LAB_COLLECTION_KEY, JSON.stringify({ members: [{ symbol: 'USDJPY', key: 'g_aaa1' }, { symbol: 'GOLD', key: 'ema_cross' }] })]]),
-    async first(sql, ...p) { return this._s.has(p[0]) ? { value: this._s.get(p[0]) } : null; },
-    async run(sql, key, value) { this._s.set(key, value); },
-    async all() { return e8rows; },
-    async insert() {},
-  };
+  const store2 = mkStore([[LAB_COLLECTION_KEY, JSON.stringify({ members: [{ symbol: 'USDJPY', key: 'g_aaa1' }, { symbol: 'GOLD', key: 'ema_cross' }] })]]);
   const auto2 = await labAuto({ store: store2, env: {}, now: '2026-10-17T09:05:00.000Z' });
   ok('同じ集合なら「更新した」と言わない', auto2.e8.collection.changed === false, auto2.handoff);
 
@@ -222,7 +225,7 @@ console.log('バックテスト作業台（lab）');
     _s: new Map(),
     async first() { return null; },
     async run() {},
-    async all() { return bad; },
+    async all() { return bad.map(d1); },
     async insert() {},
   };
   const auto3 = await labAuto({ store: store3, env: {}, now: '2026-10-17T09:10:00.000Z' });
@@ -237,7 +240,7 @@ console.log('バックテスト作業台（lab）');
   const fatPay = labE8Score({ passRatePct: 60 }, dd, { medianMonthly: 20000 });
   ok('支払いを計算していない個体は合格率だけで採点', near(noPay, 0.6, 1e-6), String(noPay));
   ok('支払いが出ない個体は沈む', thinPay < noPay && thinPay > noPay * 0.4, `${thinPay} vs ${noPay}`);
-  ok('支払いが出る個体は戻る（上限1.0）', fatPay > noPay && fatPay <= 0.6, `${fatPay} vs ${noPay}`);
+  ok('支払いが出る個体は合格率の水準まで戻る（上限は合格率）', near(fatPay, noPay, 1e-6) && fatPay <= 0.6, `${fatPay} vs ${noPay}`);
   ok('DDが大きい個体はさらに沈む', labE8Score({ passRatePct: 60 }, { maxDrawdownPctMtm: 80 }, null) < noPay);
 }
 
