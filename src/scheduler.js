@@ -223,6 +223,24 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'playbook', error: e.message }); }
 
+    // 5c-3) 有益情報 — 特典・ポイ活・割引を出典つきで貯め、出典ページを読んで実額と終了を確認する（原価0）。
+    try {
+      const everyMin = Math.max(30, Number(env.PERKS_EVERY_MINUTES || 360));
+      const prevPk = await setting(store, 'perks:last_run_at', null);
+      const duePk = !prevPk || (Date.now() - new Date(prevPk).getTime() >= everyMin * 60e3);
+      if (duePk && (!env || env.PERKS_ENABLED !== 'false')) {
+        const pkm = await import('./agent/perks.js');
+        await pkm.ensurePerkTable(store);
+        const seeded = await pkm.seedPerks(store);
+        const tried = await pkm.tryPerks(store, { limit: Number(env.PERKS_TRIES_PER_TICK || 3) });
+        const sum = await pkm.perkSummary(store);
+        await setSetting(store, 'perks:last_run_at', nowIso());
+        report.steps.push({ step: 'perks', seeded: seeded.inserted, tried: tried.tried, due_within_7d: sum.due_within_7d, verdicts: tried.rows.map((x) => x.kind + ':' + x.verdict) });
+      } else {
+        report.steps.push({ step: 'perks', skipped: duePk ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'perks', error: e.message }); }
+
     // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
     //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
     try {

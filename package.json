@@ -34,7 +34,9 @@
     "test:opt": "node tests/opt.test.mjs",
     "test:lab": "node tests/lab.test.mjs",
     "test:labgen": "node tests/lab-gen.test.mjs",
-    "test:playbook": "node tests/playbook.test.mjs"
+    "test:playbook": "node tests/playbook.test.mjs",
+    "test:perks": "node tests/perks.test.mjs",
+    "test:reddit": "node tests/reddit.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

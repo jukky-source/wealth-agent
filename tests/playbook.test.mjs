@@ -49,6 +49,7 @@ function memStore() {
       }
       return {};
     },
+    async first(sql, ...a) { return this.get(sql, ...a); },
     async get(sql, ...a) {
       if (/COUNT\(\*\) AS n/.test(sql)) {
         if (/tries > 0/.test(sql)) return { n: rows.filter((r) => (r.tries || 0) > 0).length };
