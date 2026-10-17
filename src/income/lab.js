@@ -686,12 +686,11 @@ export async function exitOptimize({ store, spec, env = {}, ctx = {}, opts = {},
   const base = { ...exitParams(spec), logic: spec, symbol: sym, noRuinStop: !!opts.noRuinStop };
   const combos = (grid || exitGrid(opts.grid || {})).slice(0, clamp(num(limit, 24), 4, 120));
   const rows = [];
-  let applied = true; let first = null;
+  const sigs = new Set();
   for (const combo of combos) {
     const bt = backtest(md.bars, { strategyKey: key, params: { ...base, ...combo }, cost });
     const m = trimMetrics(bt.metrics);
-    const sig = `${m.trades}|${m.netProfitJPY}|${m.maxDrawdownPct}`;
-    if (first == null) first = sig; else if (sig === first) applied = false;
+    sigs.add(`${m.trades}|${m.netProfitJPY}|${m.maxDrawdownPct}`);
     const dd = num(m.maxDrawdownPctMtm ?? m.maxDrawdownPct, 0);
     rows.push({
       ...combo, netPct: m.netProfitPct, pf: m.profitFactor, trades: m.trades, winRate: m.winRate,
@@ -700,13 +699,18 @@ export async function exitOptimize({ store, spec, env = {}, ctx = {}, opts = {},
     });
   }
   rows.sort((a, b) => b.score - a.score);
+  // 上書きが効いているかは「通りの数だけ違う結果が出たか」で判定する。
+  // 1通りしか出ないなら、出口は spec の exit から作り直されていて上書きが無視されている。
+  const distinct = sigs.size;
+  const applied = distinct > 1;
   return {
     ok: true, symbol: sym, key, label: specLabel(spec), bars: md.bars.length, evaluated: rows.length,
     rows, best: rows[0] || null,
     applied,
+    distinct,
     note: applied
-      ? '出口パラメータの上書きが効いている（同じ結果の行が混ざっていれば効いていない）。'
-      : '上書きが効いていない疑い（全行が同じ結果）。出口は spec の exit から作り直す必要がある。これはこの作業台の実装上の限界として隠さず返す。',
+      ? `出口の上書きは効いている（${rows.length}通り中 ${distinct}通りが違う結果。同じ結果になった行は、その条件が約定を変えない組み合わせ）。`
+      : '出口の上書きが効いていない（全通りが同じ結果）。出口は spec の exit から作り直す必要がある。実装上の限界として隠さず返す。',
   };
 }
 
