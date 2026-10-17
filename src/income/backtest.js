@@ -571,15 +571,22 @@ export function simulateFromIntent(bars, intent, { params = {}, cost = {}, symbo
     // 1) manage open position using THIS bar's range (stop-first, pessimistic)
     if (pos) {
       let exitPrice = null; let exitReason = null;
+      // ATRトレーリング: 前バーまでの情報だけでストップを詰める（未来参照なし）
+      if (Number(p.trailAtrMult) > 0 && i >= 1 && a[i - 1] != null) {
+        const cand = pos.dir === 1
+          ? bars[i - 1].close - Number(p.trailAtrMult) * a[i - 1]
+          : bars[i - 1].close + Number(p.trailAtrMult) * a[i - 1];
+        pos.stop = pos.dir === 1 ? Math.max(pos.stop, cand) : Math.min(pos.stop, cand);
+      }
       const stopHit = pos.dir === 1 ? bar.low <= pos.stop : bar.high >= pos.stop;
-      const targetHit = pos.dir === 1 ? bar.high >= pos.target : bar.low <= pos.target;
+      const targetHit = pos.target != null && (pos.dir === 1 ? bar.high >= pos.target : bar.low <= pos.target);
       if (stopHit) { exitPrice = pos.stop; exitReason = 'stop'; }
       else if (targetHit) { exitPrice = pos.target; exitReason = 'target'; }
 
       // signal flip → exit at this bar's close
       const flipped = intent[i] !== 0 && intent[i] !== pos.dir;
       if (!exitPrice && flipped) { exitPrice = bar.close; exitReason = 'flip'; }
-      if (!exitPrice && p.maxHoldBars != null && pos.barsHeld >= p.maxHoldBars) { exitPrice = bar.close; exitReason = 'time'; }
+      if (!exitPrice && Number(p.maxHoldBars) > 0 && pos.barsHeld >= Number(p.maxHoldBars)) { exitPrice = bar.close; exitReason = 'time'; }
 
       if (exitPrice !== null) {
         const cv = cvAt(bar.date);
@@ -605,11 +612,13 @@ export function simulateFromIntent(bars, intent, { params = {}, cost = {}, symbo
         const next = bars[i + 1];
         const entryPrice = next.open + (sig === 1 ? costPrice : -costPrice); // pay the spread/slippage
         const stopDist = (p.atrStopMult || 2.0) * (a[i] || Math.abs(next.open * 0.005));
-        const targetDist = (p.atrTargetMult || 2.5) * stopDist;
+        // 利確0 = 利確なし（以前は 0 を 2.5 と解釈し、さらに 0倍なら建値で即決済になる不具合があった）
+        const targetMult = p.atrTargetMult == null ? 2.5 : Number(p.atrTargetMult);
+        const targetDist = targetMult > 0 ? targetMult * stopDist : 0;
         pos = {
           dir: sig, entryPrice, entryDate: next.date, barsHeld: 0,
           stop: sig === 1 ? entryPrice - stopDist : entryPrice + stopDist,
-          target: sig === 1 ? entryPrice + targetDist : entryPrice - targetDist,
+          target: targetDist > 0 ? (sig === 1 ? entryPrice + targetDist : entryPrice - targetDist) : null,
           entryCostPrice: costPrice,
           context: { signalBar: bars[i].date, atr: round(a[i] || 0, 5), params: p },
         };

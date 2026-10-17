@@ -121,6 +121,23 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'fx_lab', error: e.message }); }
 
+    // 5c-2) Logic space（論理空間）— 文法の中で作れる論理を番号順に踏破する。
+    //       FX Lab とは別の時計で回す（既定5分＝cronと同じ間隔）。原価0。
+    try {
+      const everyMin = Math.max(5, Number(env.FX_LAB_LOGIC_EVERY_MINUTES || 5));
+      const last = await setting(store, 'fxlab:logic_last_at', null);
+      const due = !last || (Date.now() - new Date(last).getTime() >= everyMin * 60e3);
+      if (due && env && env.FX_LAB_LOGIC_ENABLED === 'true') {
+        const { logicTick } = await import('./income/logic.js');
+        const r = await logicTick({ store, env, n: Number(env.FX_LAB_LOGIC_PER_TICK || 3) });
+        await setSetting(store, 'fxlab:logic_last_at', nowIso());
+        const top = (r.experiments || []).find((e) => e.fitness != null);
+        report.steps.push({ step: 'fx_logic', ran: r.ran, tier: r.tier, coverage: r.coverage_pct, deep: r.deep_validations || 0, best: top ? `${top.symbol}/${top.tier} fitness=${top.fitness}` : null, promoted: r.promoted && r.promoted.name ? r.promoted.name : null });
+      } else {
+        report.steps.push({ step: 'fx_logic', skipped: due ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'fx_logic', error: e.message }); }
+
     // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
     //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
     try {

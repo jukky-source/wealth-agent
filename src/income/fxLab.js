@@ -90,7 +90,7 @@ export function sanitize(strategyKey, params = {}) {
   }
   if (p.oversold != null) p.oversold = Math.max(15, Math.min(40, Number(p.oversold)));
   if (p.overbought != null) p.overbought = Math.min(85, Math.max(60, Number(p.overbought)));
-  if (p.atrStopMult != null) p.atrStopMult = round(Math.max(1.0, Math.min(4.0, Number(p.atrStopMult))), 1);
+  if (p.atrStopMult != null) p.atrStopMult = round(Math.max(1.0, Math.min(Number(p.atrStopMax) || 4.0, Number(p.atrStopMult))), 1);
   if (p.exit != null && p.entry != null && Number(p.exit) >= Number(p.entry)) p.exit = Math.max(10, Number(p.entry) - 15);
   // 追加ロジック（17戦略）の整合
   if (p.oversold != null && p.overbought != null && Number(p.oversold) >= Number(p.overbought) - 10) p.oversold = Math.max(10, Number(p.overbought) - 30);
@@ -164,10 +164,12 @@ export function gates(metrics = {}, wf = null, robust = null) {
 // ---------------------------------------------------------------------------
 export async function runExperiment({
   store, symbol, strategyKey, params, parentId = null, mutation = null, tag = 'explore',
-  days = 1996, validate = false, now = null,
+  days = 1996, validate = false, now = null, mdCache = null,
 }) {
   const at = now || nowIso();
-  const md = await fetchMarketData(store, symbol, { days });
+  const memo = mdCache && typeof mdCache.get === 'function' ? mdCache.get(symbol) : null;
+  const md = memo || await fetchMarketData(store, symbol, { days });
+  if (mdCache && typeof mdCache.set === 'function' && !memo) mdCache.set(symbol, md);
   if (!md.bars || md.bars.length < 250) {
     return { ok: false, error: 'insufficient_market_data', symbol, bars: md.bars?.length || 0, source: md.source };
   }
@@ -279,13 +281,14 @@ export const ROBUST_CHECKS = [
   { key: 'multiple_testing', what: '多重検定の補正', why: 'N回試せば p<0.05 は 0.05N 件たまたま通過する' },
 ];
 
-export async function promote({ store, exp, note = '' }) {
+export async function promote({ store, exp, note = '', pine = null }) {
   const strategyKey = exp.strategy_key || exp.strategyKey;
   const symbol = exp.symbol;
   const params = safeJson(exp.params_json, null) || exp.params || {};
   const m = safeJson(exp.metrics_json, null) || exp.metrics || {};
-  const pine = generatePine(strategyKey, params, { version: 'v6', symbol });
-  const lint = lintPine(pine);
+  // 外から Pine を渡せる（論理空間から出た合成論理は logic.js が生成する）
+  const pineCode = pine || generatePine(strategyKey, params, { version: 'v6', symbol });
+  const lint = lintPine(pineCode);
   const prior = await store.all(`SELECT version FROM fx_strategies WHERE symbol=? ORDER BY version DESC LIMIT 1`, symbol).catch(() => []);
   const version = (Number(prior[0]?.version) || 0) + 1;
   const row = {
@@ -294,7 +297,7 @@ export async function promote({ store, exp, note = '' }) {
     symbol, version,
     hypothesis: `FX Lab の試行錯誤から昇格${note ? `（${note}）` : ''}: 純益 ${m.netProfitPct ?? 'n/a'}% / PF ${m.profitFactor ?? 'n/a'} / DD ${m.maxDrawdownPct ?? 'n/a'}% / ${m.trades ?? 'n/a'}取引。`,
     params_json: j({ ...params, strategyKey }),
-    pine_code: pine, pine_version: 'v6',
+    pine_code: pineCode, pine_version: 'v6',
     non_repaint: lint.nonRepaint ? 1 : 0, lint_json: j(lint),
     status: lint.nonRepaint ? 'draft' : 'rejected',
     created_at: nowIso(), updated_at: nowIso(),

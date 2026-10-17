@@ -11,6 +11,7 @@
     "test:scout": "node tests/scout.test.mjs",
     "test:cdp": "node tests/cdp-facilitator.test.mjs",
     "test:fxlab": "node tests/fxlab.test.mjs",
+    "test:grammar": "node tests/grammar.test.mjs",
     "test:robust": "node tests/robust.test.mjs",
     "test:social": "node tests/social.test.mjs",
     "report:ea": "node scripts/ea-report.mjs",
