@@ -526,12 +526,13 @@ function renderResults(mode) {
     ${modeBlock}
     <div class="row" style="margin-top:14px"><b>積んだロジックの成績</b><span class="tag">${members.length}本（破産で外した本は下に表示）</span></div>
     <div class="scroll"><table><thead><tr><th>ロジック</th><th class="num">取引</th><th class="num">勝率</th><th class="num">PF</th><th class="num">純益</th><th class="num">DD(含)</th><th class="num">シャープ</th><th class="num">重み</th></tr></thead><tbody>
-      ${members.map((m) => `<tr><td>${esc(m.label)}<div class="tag">${m.from}〜${m.to} / ${n(m.bars)}本</div></td>
+      ${members.map((m) => `<tr><td>${esc(m.label)}${m.excludedFromEnsemble ? ' <span class="chip">束から除外</span>' : ''}<div class="tag">${m.from}〜${m.to} / ${n(m.bars)}本</div></td>
         <td class="num">${n((m.metrics || {}).trades)}</td><td class="num">${pct((m.metrics || {}).winRate)}</td>
         <td class="num">${f2((m.metrics || {}).profitFactor)}</td><td class="num ${sgn((m.metrics || {}).netProfitPct)}">${pct((m.metrics || {}).netProfitPct)}</td>
         <td class="num ${n(((m.metrics || {}).maxDrawdownPctMtm)) > 35 ? 'bad' : ''}">${pct((m.metrics || {}).maxDrawdownPctMtm)}</td>
         <td class="num">${f2((m.metrics || {}).sharpe)}</td><td class="num">${f2(m.weight)}</td></tr>`).join('') || '<tr><td colspan="8" class="dim">なし</td></tr>'}
     </tbody></table></div>
+    ${(r.warnings || []).length ? `<p class="note warn">${r.warnings.map((w) => esc(w)).join('<br>')}</p>` : ''}
     ${(r.errors || []).length ? `<p class="note bad">走らなかった行: ${esc(JSON.stringify(r.errors))}</p>` : ''}
 
     <div class="row" style="margin-top:14px"><b>月ごとの損益（合成）</b></div>

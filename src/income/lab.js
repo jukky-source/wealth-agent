@@ -41,6 +41,14 @@ export const LAB_MODES = ['e8', 'own'];
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const pct = (v, d = 2) => round(Number(v || 0), d);
 
+// describeLogic は「行（文字列）」と「分解した部品（オブジェクト）」の両方を返しうる。
+// 表示に使うのは行のほう。オブジェクトをそのまま返すと画面が [object Object] になる（実害が出た）。
+export function specLabel(spec) {
+  const d = describeLogic(spec);
+  if (d && typeof d === 'object') return d.line || d.base || JSON.stringify(d);
+  return String(d == null ? '' : d);
+}
+
 // ---------------------------------------------------------------------------
 // 前提（誇張しないための線引き）。UIにもそのまま出す。
 // ---------------------------------------------------------------------------
@@ -215,7 +223,7 @@ export async function runMember({ store, spec, env = {}, ctx = {}, opts = {} }) 
   let md = ctx.mdCache.get(`${sym}:${days}`);
   if (!md) { md = await fetchMarketData(store, sym, { days }); ctx.mdCache.set(`${sym}:${days}`, md); }
   if (!md || !md.bars || md.bars.length < 250) {
-    return { ok: false, symbol: sym, label: describeLogic(spec), error: 'insufficient_market_data', bars: (md && md.bars) ? md.bars.length : 0 };
+    return { ok: false, symbol: sym, label: specLabel(spec), error: 'insufficient_market_data', bars: (md && md.bars) ? md.bars.length : 0 };
   }
   const cost = labCost(DEFAULT_COST_MODEL, opts);
   let fx = ctx.fxCache.get(sym);
@@ -227,7 +235,7 @@ export async function runMember({ store, spec, env = {}, ctx = {}, opts = {} }) 
   const bt = backtest(md.bars, { strategyKey: key, params, cost });
   return {
     ok: true,
-    symbol: sym, key, label: describeLogic(spec), spec, tf: spec.tf || '1d',
+    symbol: sym, key, label: specLabel(spec), spec, tf: spec.tf || '1d',
     strategy: (spec.base && spec.base.key) || null, tier: spec.tier || 'core',
     bars: md.bars.length, source: md.source || null, from: md.bars[0].date, to: md.bars[md.bars.length - 1].date,
     metrics: trimMetrics(bt.metrics), ruined: !!bt.metrics.ruined,
@@ -241,12 +249,16 @@ export async function runMember({ store, spec, env = {}, ctx = {}, opts = {} }) 
 export function weightedEnsemble(members = []) {
   const byDate = new Map();
   for (const m of members) {
+    if (m.excludedFromEnsemble) continue;      // 破産した構成員は束に入れない（E8の実行部と同じ規則）
     const w = num(m.weight, 1) || 1;
     for (const d of m.daily || []) {
+      if (!isFinite(d.r)) continue;
+      // 1日で元本を超えて失うことはない（資金がマイナスに振り切れた構成員が、
+      // 束の平均を -541% のような非現実的な値にしてしまうのを止める）。実害が出たので上限を置く。
+      const r = clamp(Number(d.r), -0.9999, 10);
       if (!byDate.has(d.date)) byDate.set(d.date, { sum: 0, w: 0 });
       const cell = byDate.get(d.date);
-      if (!isFinite(d.r)) continue;
-      cell.sum += w * d.r;
+      cell.sum += w * r;
       cell.w += w;
     }
   }
@@ -505,7 +517,7 @@ async function evalSpecISOS({ store, spec, env = {}, ctx = {}, opts = {} }) {
   const metrics = { is: trimMetrics(isBt.metrics), oos: trimMetrics(oosBt.metrics), full: trimMetrics(full.metrics) };
   const gates = evalGates(metrics);
   return {
-    ok: true, symbol: sym, key, label: describeLogic(spec), spec, tf: spec.tf || '1d',
+    ok: true, symbol: sym, key, label: specLabel(spec), spec, tf: spec.tf || '1d',
     tier: spec.tier || 'core', strategy: (spec.base && spec.base.key) || null,
     bars: bars.length, isBars: cut, oosBars: bars.length - cut, source: md.source || null,
     from: bars[0].date, to: bars[bars.length - 1].date,
@@ -689,7 +701,7 @@ export async function exitOptimize({ store, spec, env = {}, ctx = {}, opts = {},
   }
   rows.sort((a, b) => b.score - a.score);
   return {
-    ok: true, symbol: sym, key, label: describeLogic(spec), bars: md.bars.length, evaluated: rows.length,
+    ok: true, symbol: sym, key, label: specLabel(spec), bars: md.bars.length, evaluated: rows.length,
     rows, best: rows[0] || null,
     applied,
     note: applied
@@ -709,17 +721,44 @@ export async function labRun({ store, env = {}, body = {}, ctx = {} }) {
   const withOpts = { replay: true, robust: false, tradeLimit: 200, ...(body.with || {}) };
   if (mode === 'e8') { opts.noRuinStop = true; settings.accountSize = num(settings.accountSize, 100000); }
   const rnd = seededRandom(`lab-run-${nowIso()}-${rows.length}`);
-  const specs = rows.map((r) => ({ spec: specFromRow(r, rnd), weight: num(r.weight, 1) || 1 }));
-  const members = [];
+  const known = new Set(basePresets().map((p) => p.key));
   const errors = [];
+  const warnings = [];
+  const specs = [];
+  for (const r of rows) {
+    // 知らないロジック名は黙って別のロジックに差し替えない（実害が出た: donchian を指定したのに
+    // 先頭のロジックで走っていた）。走らせずに、理由を返す。
+    if (r && r.strategy && !r.spec && r.kind !== 'rule' && !known.has(r.strategy)) {
+      errors.push({ symbol: r.symbol || null, error: 'unknown_strategy', strategy: r.strategy, known: [...known].slice(0, 24) });
+      continue;
+    }
+    specs.push({ spec: specFromRow(r, rnd), weight: num(r.weight, 1) || 1 });
+  }
+  const members = [];
   for (const s of specs) {
     const m = await runMember({ store, spec: s.spec, env, ctx, opts });
     if (m.ok) members.push({ ...m, weight: s.weight });
     else errors.push({ symbol: s.spec.symbol, error: m.error, bars: m.bars });
   }
-  if (!members.length) return { ok: false, mode, error: 'no_member_ran', errors, assumptions: LAB_ASSUMPTIONS };
+  if (!members.length) return { ok: false, mode, error: 'no_member_ran', errors, warnings, assumptions: LAB_ASSUMPTIONS };
 
-  const daily = weightedEnsemble(members);
+  // E8モードでは、破産した構成員を束から外す（実行部 e8Runner.js の splitViable と同じ規則）。
+  // 資金がマイナスに振り切れた構成員をそのまま平均すると、束が非現実的な値になる。
+  if (mode === 'e8') {
+    for (const m of members) {
+      const broke = m.ruined === true || num(m.metrics.netProfitPct, 0) <= -100;
+      if (broke) {
+        m.excludedFromEnsemble = true;
+        warnings.push(`${String(m.label).slice(0, 48)}… は資金が尽きた（純益 ${num(m.metrics.netProfitPct, 0)}%）ので束から外しました`);
+      }
+    }
+  }
+  const usable = members.filter((m) => !m.excludedFromEnsemble);
+  if (!usable.length) {
+    return { ok: false, mode, error: 'all_members_ruined', errors, warnings, members: members.map((m) => ({ symbol: m.symbol, label: m.label, metrics: m.metrics, excludedFromEnsemble: !!m.excludedFromEnsemble })), assumptions: LAB_ASSUMPTIONS };
+  }
+
+  const daily = weightedEnsemble(usable);
   const stats = portfolioStats(daily, { initial: 100 });
   const startCapital = mode === 'e8' ? num(settings.accountSize, 100000) : num(settings.capitalJPY, OWN_CAPITAL_DEFAULT);
   const scaledDaily = mode === 'own'
@@ -734,8 +773,8 @@ export async function labRun({ store, env = {}, body = {}, ctx = {} }) {
     : labOwnResult({ daily, settings });
 
   let replay = null;
-  if (withOpts.replay && members.length) {
-    const primary = members.slice().sort((a, b) => num(b.metrics.netProfitPct, 0) - num(a.metrics.netProfitPct, 0))[0];
+  if (withOpts.replay && usable.length) {
+    const primary = usable.slice().sort((a, b) => num(b.metrics.netProfitPct, 0) - num(a.metrics.netProfitPct, 0))[0];
     const md = ctx.mdCache.get(`${primary.symbol}:${clamp(num(opts.days, 1600), 300, 3000)}`) || null;
     const bars = md && md.bars ? md.bars.slice(-420) : [];
     const from = bars.length ? bars[0].date : null;
@@ -754,8 +793,8 @@ export async function labRun({ store, env = {}, body = {}, ctx = {} }) {
   }
 
   let extras = null;
-  if (withOpts.robust && members.length) {
-    const primary = members[0];
+  if (withOpts.robust && usable.length) {
+    const primary = usable[0];
     try {
       const md = ctx.mdCache.get(`${primary.symbol}:${clamp(num(opts.days, 1600), 400, 3000)}`);
       const cost = labCost(DEFAULT_COST_MODEL, opts);
@@ -790,6 +829,7 @@ export async function labRun({ store, env = {}, body = {}, ctx = {} }) {
     settings, options: opts,
     members: members.map((m) => ({
       symbol: m.symbol, label: m.label, tf: m.tf, key: m.key, weight: m.weight, tier: m.tier,
+      excludedFromEnsemble: !!m.excludedFromEnsemble,
       bars: m.bars, from: m.from, to: m.to, source: m.source, metrics: m.metrics,
       tradeCount: (m.trades || []).length,
       trades: (m.trades || []).slice(-withOpts.tradeLimit).map((t) => ({
@@ -798,9 +838,10 @@ export async function labRun({ store, env = {}, body = {}, ctx = {} }) {
       })),
     })),
     errors,
+    warnings,
     portfolio: {
       stats, curve, drawdown: ddSeries, monthly,
-      trades: members.flatMap((m) => (m.trades || []).map((t) => ({ ...t, symbol: m.symbol })))
+      trades: usable.flatMap((m) => (m.trades || []).map((t) => ({ ...t, symbol: m.symbol })))
         .sort((a, b) => String(a.exitDate).localeCompare(String(b.exitDate))).slice(-withOpts.tradeLimit),
       memberCount: members.length,
     },
@@ -910,7 +951,7 @@ export async function labBoard(store, { mode = 'own', limit = 30 } = {}) {
       oosNetPct: (m.oos && m.oos.netProfitPct) ?? m.netProfitPct ?? null,
       oosDdMtmPct: (m.oos && (m.oos.maxDrawdownPctMtm ?? m.oos.maxDrawdownPct)) ?? null,
       objective: m.objective || null, mode: m.mode || mode,
-      label: (m.spec ? describeLogic(m.spec) : null) || null,
+      label: m.label || (m.spec ? specLabel(m.spec) : null) || null,
     };
   });
 }
