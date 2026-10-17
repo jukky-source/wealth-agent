@@ -107,7 +107,8 @@ t('overfit check splits IS/OOS and reports a verdict', () => {
 
 t('loser analysis returns concrete hypotheses', () => {
   const bars = synthBars(700, 9);
-  const r = backtest(bars, { strategyKey: 'rsi_meanrev', params: { symbol: 'USDJPY', maxHoldBars: 30 } });
+  // 資金を十分に取る: 破産判定（今回追加）が働くと取引が途中で止まり、負け分析の材料が減るため
+  const r = backtest(bars, { strategyKey: 'rsi_meanrev', params: { symbol: 'USDJPY', maxHoldBars: 30 }, cost: { initialCapitalJPY: 100000000 } });
   const an = analyzeLosers(r.trades);
   assert.ok(an.hypotheses.length >= 1);
   assert.equal(an.byExitReason.stop + (an.byExitReason.target || 0) + (an.byExitReason.flip || 0) + (an.byExitReason.time || 0) + (an.byExitReason.open_at_end || 0), an.losses);
