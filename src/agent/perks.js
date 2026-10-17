@@ -273,9 +273,10 @@ export const SEED_PERKS = [
 const PERK_RULES = [
   { kind: 'cashback', re: /(cashback|キャッシュバック|還元|ポイントバック|もれなく.*%|%分)/i },
   { kind: 'points', re: /(ポイント|ponta|dポイント|楽天ポイント|paypay|スタンプ|マイル)/i },
-  { kind: 'discount', re: /(割引|discount|%off|半額|off|クーポン|coupon|無料コード|優待)/i },
-  { kind: 'reward', re: /(\$\d|usd|賞金|報酬|bounty|reward|airdrop|エアドロ|もらえる現金)/i },
-  { kind: 'perk', re: /(無料|free|特典|perk|付帯|トライアル|trial|プレゼント|貰える|もらえる|ギフト)/i },
+  { kind: 'discount', re: /(割引|discount|\d+\s?%\s?off|半額|クーポン|coupon|無料コード|優待|セール|値下げ)/i },
+  { kind: 'reward', re: /(bounty|賞金|報酬|reward|airdrop|エアドロ|もらえる|貰える|verif|referral|紹介|bonus|ボーナス|支払わ|earn(ed|ing)?\b)/i },
+  { kind: 'free', re: /(無料|free\b|トライアル|trial|無料コード|フリーミント)/i },
+  { kind: 'perk', re: /(特典|perk|付帯|プレゼント|貰える|もらえる|ギフト|優待)/i },
 ];
 const MONEY_RE = /(\$\s?\d[\d,.]*|\d[\d,]*\s?円|\d+\s?%|最大\s?\d)/i;
 
@@ -295,14 +296,15 @@ export function isBeneficial(text = '') {
   if (BENEFIT_NOISE.test(s)) return false;
   const sig = perkSignals(s);
   if (!sig.length) return false;
-  if (sig.includes('money')) return true;
-  const kinds = new Set(sig.filter((k) => k !== 'money'));
-  return kinds.size >= 2;
+  const kinds = new Set(sig.filter((k) => k !== 'money' && k !== 'perk'));  // 総称の perk は数えない
+  if (!kinds.size) return false;                                   // 金額だけ（資金調達・値段の話）は有益情報にしない
+  if (sig.includes('money')) return true;                          // 金額 + 受け取れる形
+  return kinds.size >= 2;                                          // 金額が無くても、独立した特典が2つ
 }
 
 export function classifyPerk(item = {}) {
   const hay = `${item.title || ''} ${item.excerpt || ''} ${item.conditions || ''} ${item.url || ''}`;
-  for (const r of PERK_RULES) if (r.re.test(hay)) return r.kind;
+  for (const r of PERK_RULES) if (r.re.test(hay)) return r.kind === 'free' ? 'perk' : r.kind;
   return 'perk';
 }
 
