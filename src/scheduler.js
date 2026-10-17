@@ -200,6 +200,29 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'lab', error: e.message }); }
 
+    // 5c-2) ネタ帳 — scout の実データから「こうやれば稼げる」を作り、読み取りだけで試す。
+    //     営業・売り込みの下書きは作らない。原価0（先にお金が要る手順は入れない）。
+    try {
+      const everyMin = Math.max(30, Number(env.PLAYBOOK_EVERY_MINUTES || 120));
+      const prevPb = await setting(store, 'playbook:last_run_at', null);
+      const duePb = !prevPb || (Date.now() - new Date(prevPb).getTime() >= everyMin * 60e3);
+      if (duePb && (!env || env.PLAYBOOK_ENABLED !== 'false')) {
+        const pbm = await import('./agent/playbook.js');
+        await pbm.ensurePlaybookTable(store);
+        const seeded = await pbm.seedPlaybooks(store);
+        const rows = await store.all('SELECT title, url, excerpt, score, source_id FROM scout_findings ORDER BY score DESC LIMIT 20');
+        let ins = 0;
+        for (const f of rows || []) {
+          for (const c of pbm.derivePlaybooks(f, { max: 1 })) { const r = await pbm.savePlaybook(store, c); if (r.inserted) ins++; }
+        }
+        const tried = await pbm.tryPlaybooks(store, { limit: Number(env.PLAYBOOK_TRIES_PER_TICK || 2) });
+        await setSetting(store, 'playbook:last_run_at', nowIso());
+        report.steps.push({ step: 'playbook', seeded: seeded.inserted, derived: ins, tried: tried.tried, verdicts: tried.rows.map((x) => x.kind + ':' + x.verdict) });
+      } else {
+        report.steps.push({ step: 'playbook', skipped: duePb ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'playbook', error: e.message }); }
+
     // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
     //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
     try {
@@ -207,7 +230,7 @@ export function createScheduler(deps) {
       const prev = await setting(store, 'social:last_refill', null);
       const lastAt = prev && typeof prev === 'object' ? prev.at : null;
       const due = !lastAt || (Date.now() - new Date(lastAt).getTime() >= everyMin * 60e3);
-      if (due && env && env.SOCIAL_ENABLED === 'true') {
+      if (due && env && env.SOCIAL_ENABLED === 'true' && env.SOCIAL_DRAFTS_ENABLED === 'true') {
         const { refillQueue } = await import('./agent/social.js');
         const r = await refillQueue({ store, limit: Number(env.SOCIAL_DRAFTS_PER_TICK || 2) });
         report.steps.push({ step: 'social_refill', created: r.created.length, blocked: r.blocked.length, skipped: r.skipped });

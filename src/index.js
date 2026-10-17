@@ -558,6 +558,38 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     //   POST /api/lab/exit       : 出口（損切り/利確/保有日数）の最適化
     //   POST /api/lab/project    : 保存・読込・一覧・削除
     //   POST /api/lab/tick       : 背景ループをその場で1回
+    // ネタ帳 — 「有益な情報 → 実際に試す」。営業・売り込みの下書きは作らない。原価0。
+    if (url.pathname === '/api/playbook' || url.pathname.startsWith('/api/playbook/')) {
+      const pj = (o, code = 200) => new Response(JSON.stringify(o), { status: code, headers: { 'content-type': 'application/json; charset=utf-8' } });
+      try {
+        const pbm = await import('./agent/playbook.js');
+        await pbm.ensurePlaybookTable(store);
+        const sub = url.pathname.replace('/api/playbook', '').replace(/^\//, '');
+        if (sub === 'help') return pj({ ok: true, help: pbm.playbookHelp() });
+        if (sub === 'seed' && req.method === 'POST') { const r = await pbm.seedPlaybooks(store); return pj({ ok: true, ...r }); }
+        if (sub === 'derive' && req.method === 'POST') {
+          const rows = await store.all('SELECT title, url, excerpt, score, source_id FROM scout_findings ORDER BY score DESC LIMIT 40');
+          let ins = 0, cand = 0;
+          for (const f of rows || []) {
+            for (const c of pbm.derivePlaybooks(f, { max: 2 })) { cand++; const r = await pbm.savePlaybook(store, c); if (r.inserted) ins++; }
+          }
+          return pj({ ok: true, scanned: (rows || []).length, candidates: cand, inserted: ins });
+        }
+        if (sub === 'try' && req.method === 'POST') {
+          const r = await pbm.tryPlaybooks(store, { limit: Number(url.searchParams.get('limit') || 2) });
+          return pj({ ok: true, ...r });
+        }
+        const list = await pbm.listPlaybooks(store, {
+          limit: Number(url.searchParams.get('limit') || 50),
+          kind: url.searchParams.get('kind'), status: url.searchParams.get('status'),
+        });
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(pbm.playbookText(list), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        }
+        return pj({ ok: true, summary: await pbm.playbookSummary(store), rows: list });
+      } catch (e) { return pj({ ok: false, error: e.message }, 500); }
+    }
+
     if (url.pathname === '/api/lab' || url.pathname.startsWith('/api/lab/')) {
       try {
         const lab = await import('./income/lab.js');
