@@ -241,7 +241,7 @@ export function fundedPayouts(returns, plan, {
   const horizonDays = Math.round(months * 21);
   const rnd = mulberry32(hashSeed(`${seed}|funded|${plan.id}|${scale}`));
   const totals = []; const monthlies = []; let survived = 0;
-  const cycleDays = plan.payoutCycleDays && plan.payoutCycleDays > 0 ? Math.round(plan.payoutCycleDays * (21 / 30)) : Math.round(21);
+  const cycleDays = plan.payoutCycleDays && plan.payoutCycleDays > 0 ? Math.max(1, Math.round(plan.payoutCycleDays * (21 / 30))) : 1;  // 随時請求は毎日判定
   if (r.length < 30) return { trials, medianTotal: null, medianMonthly: null, survivorPct: 0, p10: null, p90: null };
   for (let t = 0; t < trials; t++) {
     const path = new Array(horizonDays);
