@@ -1049,22 +1049,91 @@ export async function labBoard(store, { mode = 'own', limit = 30 } = {}) {
 // ---------------------------------------------------------------------------
 // 自律ループ: 門を通した個体だけを E8 実行部へ渡し、何をしたかを台帳に残す
 // ---------------------------------------------------------------------------
-/** 門を通った個体だけを集合にする。重みは素点の順位で薄く減衰させ、合計1に正規化する。 */
-export function labCollectionFrom(rows = [], { max = 6 } = {}) {
-  const seen = new Set(); const members = []; const skipped = [];
+// ---------------------------------------------------------------------------
+// 分散の門: 「同じ銘柄 × 同じ中身（出口だけ違う）」を畳み、系列が取れるときは相関で落とす。
+// 実測で EURJPY の3本が同一部品・出口違い（相関≒1）で並び、分散効果が1本と同じになっていた。
+// ---------------------------------------------------------------------------
+const EXITISH_KEY_RE = /^(exit|exits|exit_kind|exitkind|exit_mode|exitmode|tp|sl|stop|stoploss|stop_loss|takeprofit|take_profit|target|trail|trailing|timebox|maxhold|max_hold|maxdays|max_days|hold|holdbars|atr|atrmult|atr_mult|be|breakeven|rr|rewardrisk|reward_risk)$/i;
+
+/** 出口っぽい鍵を再帰的に落とす。全部落ちて空になったら呼び出し側で全体に戻す。 */
+function stripExitish(v, depth = 0) {
+  if (depth > 6 || v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) return v.map((x) => stripExitish(x, depth + 1));
+  const out = {};
+  for (const k of Object.keys(v).sort()) { if (EXITISH_KEY_RE.test(k)) continue; out[k] = stripExitish(v[k], depth + 1); }
+  return out;
+}
+
+/** 「同じ銘柄 × 同じ中身（出口を除く）」を1本に畳むための鍵。 */
+export function labStructKey(r = {}) {
+  const base = r && r.spec ? stripExitish(r.spec) : null;
+  const body = base && Object.keys(base).length ? JSON.stringify(base) : JSON.stringify((r && r.spec) || (r && r.key) || '');
+  return `${(r && r.symbol) || ''}|${body}`;
+}
+
+const SERIES_KEYS = ['daily', 'series', 'returns', 'dailyReturns', 'oosDaily', 'oosSeries', 'equity'];
+
+/** 日付→値 の系列。equity（水準）しか無いときは階差にして水準の相関で嵩上げしない。 */
+function seriesMap(r = {}) {
+  let arr = null; let key = null;
+  for (const k of SERIES_KEYS) { if (Array.isArray(r[k]) && r[k].length) { arr = r[k]; key = k; break; } }
+  if (!arr) return null;
+  const useLevel = key === 'equity';
+  const m = new Map(); let prev = null;
+  for (const d of arr) {
+    if (!d || typeof d !== 'object') continue;
+    const date = d.date || d.d || d.t;
+    let v = num(d.pct, num(d.ret, num(d.netPct, num(d.value, num(d.equity, NaN)))));
+    if (!Number.isFinite(v) || !date) continue;
+    if (useLevel) { const cur = v; v = prev === null ? null : cur - prev; prev = cur; if (v === null) continue; }
+    m.set(String(date), v);
+  }
+  return m.size >= 30 ? m : null;
+}
+
+/** 日付を突き合わせた相関。系列が無い/足りないときは null（＝判定不能として通す）。 */
+export function pairCorr(a = {}, b = {}) {
+  const ma = seriesMap(a); const mb = seriesMap(b);
+  if (!ma || !mb) return null;
+  const xs = []; const ys = [];
+  for (const [k, v] of ma) { if (mb.has(k)) { xs.push(v); ys.push(mb.get(k)); } }
+  if (xs.length < 30) return null;
+  const n = xs.length;
+  const mx = xs.reduce((s, v) => s + v, 0) / n; const my = ys.reduce((s, v) => s + v, 0) / n;
+  let sxy = 0; let sxx = 0; let syy = 0;
+  for (let i = 0; i < n; i++) { const dx = xs[i] - mx; const dy = ys[i] - my; sxy += dx * dy; sxx += dx * dx; syy += dy * dy; }
+  if (sxx <= 0 || syy <= 0) return null;
+  return round(sxy / Math.sqrt(sxx * syy), 4);
+}
+
+/**
+ * 門を通った個体だけを集合にする。重みは素点の順位で薄く減衰させ、合計1に正規化する。
+ * 同じ銘柄 × 同じ中身（出口だけ違う）は1本に畳み、系列が取れるときは相関 >= maxCorr を落とす。
+ */
+export function labCollectionFrom(rows = [], { max = 6, maxCorr = 0.6, corrGate = true } = {}) {
+  const seen = new Set(); const members = []; const skipped = []; const structs = new Set();
   const sorted = rows.filter((r) => r && r.gatesPass && r.spec).sort((a, b) => num(b.fitness, 0) - num(a.fitness, 0));
   for (const r of sorted) {
     if (members.length >= max) { skipped.push({ symbol: r.symbol, key: r.key, why: 'over_max' }); continue; }
     const k = `${r.symbol}|${r.key}`;
     if (seen.has(k)) { skipped.push({ symbol: r.symbol, key: r.key, why: 'duplicate' }); continue; }
-    seen.add(k);
+    const sk = labStructKey(r);
+    if (structs.has(sk)) { skipped.push({ symbol: r.symbol, key: r.key, why: 'same_structure', struct: sk.slice(0, 90) }); continue; }
+    let corr = null; let hit = null;
+    if (corrGate) {
+      for (const m of members) { const c = pairCorr(r, m.row); if (c !== null && (corr === null || Math.abs(c) > Math.abs(corr))) { corr = c; hit = `${m.symbol}|${m.key}`; } }
+      if (corr !== null && Math.abs(corr) >= maxCorr) { skipped.push({ symbol: r.symbol, key: r.key, why: 'correlated', corr, against: hit }); continue; }
+    }
+    seen.add(k); structs.add(sk);
     members.push({
       symbol: r.symbol, key: r.key, from: 'lab:auto', label: r.label || `${r.symbol} / ${r.key}`,
       params: { ...exitParams(r.spec), logic: r.spec, symbol: r.symbol },
       score: num(r.fitness, 0), objective: r.objective || null,
       oosNetPct: r.oosNetPct ?? null, oosDdMtmPct: r.oosDdMtmPct ?? null,
+      struct: sk, corr: corr, row: r,
     });
   }
+  for (const m of members) delete m.row;
   const raw = members.map((m, i) => 1 / (1 + i * 0.2));
   const sum = raw.reduce((a, b) => a + b, 0) || 1;
   members.forEach((m, i) => { m.weight = round(raw[i] / sum, 4); });
@@ -1112,7 +1181,12 @@ export async function labAuto({ store, env = {}, now = null, rows = null } = {})
     own: { candidates: own.length, passed: own.filter((r) => r.gatesPass).length, champion: brief(ownChamp) },
     e8: {
       candidates: e8.length, passed: e8.filter((r) => r.gatesPass).length, champion: brief(e8Champ),
-      collection: { members: members.length, keys: newKeys, wrote, previous: prevKeys, changed, minMembers },
+      collection: {
+        members: members.length, keys: newKeys, wrote, previous: prevKeys, changed, minMembers,
+        structures: new Set(members.map((m) => m.struct)).size,
+        dropped_correlated: skipped.filter((s) => s.why === 'correlated').length,
+        dropped_same_structure: skipped.filter((s) => s.why === 'same_structure').length,
+      },
       // 門を通らなかった中で一番惜しい3本と、その理由。何が邪魔して引き渡せていないかを残す。
       nearMiss: e8.filter((r) => !r.gatesPass).slice(0, 3).map((r) => ({
         symbol: r.symbol, key: r.key, score: r.fitness, reasons: (r.reasons || []).slice(0, 3),
