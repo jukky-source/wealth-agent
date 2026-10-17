@@ -87,7 +87,7 @@ export const DESTINATIONS = [
     id: 'x', label: 'X（旧Twitter）', kind: 'SNS', ai: 'allowed_with_label', needs_label: false,
     autonomy: 'partial', human: ['投稿の1タップ'], social: true,
     source: 'https://docs.x.com/x-api/getting-started/pricing', verified: true,
-    note: '自動化そのものは禁じていないが、重複・ほぼ同内容の連投は凍結対象。リンク付きは1日3件まで自主規制。本文は intent URL に入れて渡すので、操作はタップ1回。公式APIはサブスク無しの従量課金のみ（2026-10-17時点: 投稿 $0.015 / URL付き投稿 $0.200 / 自分の投稿の読み取り $0.001。いずれも1リクエストまたは1リソース）。無料枠の記載は無く、リンク付きを1日3件出すと月 $18（約2,844円）の固定費になるため、原価0の制約下ではAPI経由の自動投稿を使わない。Cookieを持ち込む自動投稿も不可（cf_clearance は発行元のIPとUAに紐づくのでWorkerからは通らない）。',
+    note: '自動化そのものは禁じていないが、重複・ほぼ同内容の連投は凍結対象。リンク付きは1日3件まで自主規制。本文は intent URL に入れて渡すので、操作はタップ1回。公式APIはサブスク無しの従量課金のみ（2026-10-17時点: 投稿 $0.015 / URL付き投稿 $0.200 / 自分の投稿の読み取り $0.001。いずれも1リクエストまたは1リソース）。読み取りも課金対象で、無料の scaled access は Public Utility Apps と分類されたアプリだけ（2026-02-06 の公式アナウンス）。だからリンク付きを1日3件出すと月 $18（約2,844円）の固定費になるため、原価0の制約下ではAPI経由の自動投稿を使わない。Cookieを持ち込む自動投稿も不可（cf_clearance は発行元のIPとUAに紐づくのでWorkerからは通らない）。',
   },
   {
     id: 'reddit', label: 'Reddit', kind: 'SNS', ai: 'allowed_with_label', needs_label: true,
