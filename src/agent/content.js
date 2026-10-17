@@ -86,8 +86,14 @@ export const DESTINATIONS = [
   {
     id: 'x', label: 'X（旧Twitter）', kind: 'SNS', ai: 'allowed_with_label', needs_label: false,
     autonomy: 'partial', human: ['投稿の1タップ'], social: true,
-    source: 'https://help.x.com/en/rules-and-policies/x-automation', verified: false,
-    note: '自動化そのものは禁じていないが、重複・ほぼ同内容の連投は凍結対象。リンク付きは1日3件まで自主規制。本文は intent URL に入れて渡すので、操作はタップ1回。',
+    source: 'https://docs.x.com/x-api/getting-started/pricing', verified: true,
+    note: '自動化そのものは禁じていないが、重複・ほぼ同内容の連投は凍結対象。リンク付きは1日3件まで自主規制。本文は intent URL に入れて渡すので、操作はタップ1回。公式APIはサブスク無しの従量課金のみ（2026-10-17時点: 投稿 $0.015 / URL付き投稿 $0.200 / 自分の投稿の読み取り $0.001。いずれも1リクエストまたは1リソース）。無料枠の記載は無く、リンク付きを1日3件出すと月 $18（約2,844円）の固定費になるため、原価0の制約下ではAPI経由の自動投稿を使わない。Cookieを持ち込む自動投稿も不可（cf_clearance は発行元のIPとUAに紐づくのでWorkerからは通らない）。',
+  },
+  {
+    id: 'reddit', label: 'Reddit', kind: 'SNS', ai: 'allowed_with_label', needs_label: true,
+    autonomy: 'none', human: ['Redditの本人確認（AgentHansa・最大$14.50）', '投稿・返信（人手）'], social: true,
+    source: 'https://support.reddithelp.com/hc/en-us/articles/16160319875092-Reddit-Data-API-Wiki', verified: true,
+    note: '自動化しない。理由は3つ。(1) 公式Wikiが hosted service provider の netblock からのアクセスに有効なOAuthトークンを要求し、OAuthなしの通信はブロックする＝Cloudflare Workers からは読めない（実測でも reddit.com/search.json は403）。(2) 新規OAuthトークンは Responsible Builder Policy で承認制、r/redditdev では 2027-01-12 から Developer Platform 未移行のAPIアプリを削除開始と告知。(3) 公式の基準は 90/10（参加9割・宣伝1割）で細部は各サブレディットのモデレーター判断、制裁は削除からサイト全体の永久BANまでエスカレートし、永久BANはほぼ戻らない（凍結は入金経路ごと失う）。いま取れる確定した現金は AgentHansa の本人確認（最大$14.50）だけで、これは人の操作。読み取りはコネクタ（読み取り専用）で拾い、書き込みは人が価値先行で行う。',
   },
   {
     id: 'note', label: 'note', kind: '記事', ai: 'allowed_with_label', needs_label: true,
