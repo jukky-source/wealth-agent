@@ -27,7 +27,8 @@ export const MARKET_CHANNELS = [
     human_actions: [
       'Click the email link from AgentHansa to bind jukky.48@gmail.com (+$0.50)',
       'Set the payout Solana wallet (blocked until the email is bound)',
-      'Verify X (+$0.50) / Reddit (up to $14.50) from your own accounts',
+      'Verify X (+$0.50) from your own account — open X while logged in, the check reads the logged-in session',
+      'Verify Reddit (up to $14.50) from your own account — the only Reddit cash that needs no API access or approval',
     ],
   },
   {
