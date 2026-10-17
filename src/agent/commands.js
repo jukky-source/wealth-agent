@@ -320,6 +320,26 @@ const RULES = [
     },
   },
   {
+    id: 'e8',
+    // 「E8 One と仮定して、エージェントの中で回す」を見せる入口。
+    test: (s) => has(s, 'E8', 'イーエイト', 'プロップ', '選考', 'チャレンジ'),
+    run: async (s, d) => {
+      const { e8Status, e8Text } = await import('../income/e8Runner.js');
+      const st = await e8Status(d.store, d.env || {});
+      return { reply: e8Text(st), suggest: ['E8の状況を見せて', 'E8を今すぐ1日進めて', '最適なロジックを探して'] };
+    },
+  },
+  {
+    id: 'opt',
+    // 「様々なロジック・時間足・通貨を合わせて最適を探す」を見せる入口。
+    test: (s) => has(s, '最適', '最適化', '遺伝', '進化', 'オプティマイザ', '時間足を探', '通貨を探'),
+    run: async (s, d) => {
+      const { optStatus, optText } = await import('../income/optimizer.js');
+      const st = await optStatus(d.store, d.env || {});
+      return { reply: optText(st), suggest: ['最適なロジックを探して', 'E8の状況を見せて', '見つけた集合を教えて'] };
+    },
+  },
+  {
     id: 'help',
     test: (s) => has(s, 'ヘルプ', '使い方', '操作方法', '何を頼め'),
     run: async () => ({ reply: HELP, suggest: SUGGESTIONS }),

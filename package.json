@@ -29,7 +29,9 @@
     "test:loop": "node tests/loop.test.mjs",
     "test:free": "node tests/freemium.test.mjs",
     "test:risk": "node tests/risk.test.mjs",
-    "test:prop": "node tests/prop.test.mjs"
+    "test:prop": "node tests/prop.test.mjs",
+    "test:e8": "node tests/e8.test.mjs",
+    "test:opt": "node tests/opt.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
