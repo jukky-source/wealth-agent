@@ -131,3 +131,5 @@ body.has-bnav .bnav{ position:static; flex:0 0 auto }
 body.has-bnav .views{ position:static; flex:1 1 auto; min-height:0 }
 .toast2{ bottom:calc(env(safe-area-inset-bottom, 0px) + 74px) }
 @supports not (height:100dvh){ body.has-bnav{ height:100% } }
+
+body.has-bnav .bar{ padding-top: calc(env(safe-area-inset-top, 0px) + 16px) }
