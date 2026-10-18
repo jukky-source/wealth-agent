@@ -2,8 +2,7 @@
 import {
   parseRss, decodeXml, stripTags, normalizeTweet, tweetScore, isBeneficialTweet,
   rankTweets, toPerkItems, watchList, queryList, newsRssUrl,
-  fxStatuses, fxSearch, nitterRss, sweepTwitter, tryTwitter, saveTweets, ensureTwitterTable, listTweets, twitterSummary,
-} from '../src/agent/twitter.js';
+  fxStatuses, fxSearch, nitterRss, sweepTwitter, tryTwitter, saveTweets, ensureTwitterTable, listTweets, twitterSummary,, DEFAULT_WATCH } from '../src/agent/twitter.js';
 
 let pass = 0; let fail = 0;
 function ok(name, cond, extra = '') {
@@ -77,7 +76,7 @@ console.log('twitter: 選別');
 
 console.log('twitter: env');
 {
-  eq('既定の監視先', watchList(null), ['googlejapan', 'GooglePlay']);
+  eq('既定の監視先', watchList(null), DEFAULT_WATCH);
   eq('env で差し替え＋@ を落とす', watchList({ TW_WATCH: '@a, b' }), ['a', 'b']);
   ok('空の env なら既定に戻る', queryList({ TW_QUERIES: '  ' }).length > 0);
   ok('newsRssUrl がエンコードする', newsRssUrl('ポイ活 キャンペーン').includes('%E3%83%9D%E3%82%A4%E6%B4%BB'));
