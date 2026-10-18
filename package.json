@@ -38,7 +38,8 @@
     "test:playbook": "node tests/playbook.test.mjs && node tests/playbook-ingest.test.mjs",
     "test:perks": "node tests/perks.test.mjs",
     "test:reddit": "node tests/reddit.test.mjs",
-    "test:twitter": "node tests/twitter.test.mjs && node tests/twitter-watch.test.mjs"
+    "test:twitter": "node tests/twitter.test.mjs && node tests/twitter-watch.test.mjs",
+    "test:surface": "node tests/surface.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

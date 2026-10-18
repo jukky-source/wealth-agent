@@ -208,6 +208,7 @@ export const X402_CATALOG = [
   { resource: 'csv-json', price_usdc: 20_000, free_tier: true, label_ja: 'CSV⇔JSON 変換', description: 'Convert tabular data between CSV/TSV and a JSON array of objects, in either direction, with detected delimiter and typed columns. Use it when a tool returns CSV but your pipeline needs JSON (or the reverse) and you do not want to run a parser yourself.', unit: '件' },
   { resource: 'regex', price_usdc: 10_000, free_tier: true, label_ja: '正規表現の一括抽出', description: 'Apply one regular expression to a text blob on the server and return every match with its index and capture groups. Deterministic, so the same input always returns the same answer. Useful for log triage, field extraction and validation at scale.', unit: '件' },
   { resource: 'diff', price_usdc: 10_000, free_tier: true, label_ja: 'テキスト差分', description: 'Return the line-level diff between two texts as added/removed/unified hunks with counts. Use it to review a patch, compare two API responses, or decide whether two documents actually differ before spending tokens on them.', unit: '件' },
+  { resource: 'surface-report', price_usdc: 250_000, label_ja: '公開表面の解析レポート', description: 'Inspect one publicly reachable website or API and return a machine-readable capability report: the entry points it exposes (endpoints, forms, feeds, MCP tools), the evidence behind every finding, and an explicit list of what could not be determined. Only public responses are read; a 401/403 is recorded as auth_required and never bypassed. Use it to plan an integration, document an undocumented API, or triage a vendor before you build on it.', unit: '件' },
 ];
 
 // 品目ごとの掲載文（Bazaar / 検索 / 404 で共通に使う）。サービス名は検索語を含む英名。
@@ -478,11 +479,13 @@ export const INPUT_SCHEMAS = {
   brief: { type: 'object', properties: { question: { type: 'string', description: 'The question to research (5-400 chars, any language)' } }, required: ['question'] },
   'data-clean': { type: 'object', properties: { data: { type: 'string', description: 'Table as CSV / TSV text or a JSON array of objects (max 60,000 chars)' }, format: { type: 'string', enum: ['csv', 'tsv', 'json'], description: 'Optional input format; auto-detected when omitted' } }, required: ['data'] },
   'code-review': { type: 'object', properties: { code: { type: 'string', description: 'Source code to review (10-60,000 chars)' }, language: { type: 'string', description: 'Optional language hint, e.g. javascript, python, go' } }, required: ['code'] },
+  'surface-report': { type: 'object', properties: { url: { type: 'string', description: 'Public https URL to inspect (site root or any public page on it)' }, focus: { type: 'string', description: 'Optional: what you want to learn, e.g. "how do I call their API"' } }, required: ['url'] },
 };
 export const INPUT_EXAMPLES = {
   brief: { question: 'x402 に対応した facilitator を比較して' },
   'data-clean': { data: 'name,price\nA,100\nA,100\nB,' },
   'code-review': { code: 'function add(a,b){ return a+b }', language: 'javascript' },
+  'surface-report': { url: 'https://example.com' },
 };
 
 /** x402 Bazaar（CDP の索引）に載るための発見メタデータ。402 応答の extensions に入れる。 */
