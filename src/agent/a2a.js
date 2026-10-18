@@ -4,6 +4,7 @@
 import { X402_CATALOG, challenge, preflight, requiredHeader, verifyAndSettle } from './x402.js';
 import { validateOrder, fulfillOrder } from './fulfill.js';
 import { createJob, recordReceipt } from './revenue.js';
+import { logHit } from './hits.js';
 
 const X402_EXT = 'https://github.com/google-agentic-commerce/a2a-x402/blob/main/spec/v0.2/extension.md';
 const SKILL_NAME = { brief: 'research_brief', 'data-clean': 'clean_tabular_data', 'code-review': 'review_code' };
@@ -107,7 +108,10 @@ async function sell(msg, request, env, url, deps) {
   const order = validateOrder(resource, input);
   if (!order.ok) return rpcErr(id, -32602, order.reason, { order_spec: order.spec });
   const header = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
-  const pay402 = (why) => new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32402, message: `payment required: ${why}`, data: { ...ch.body, order_spec: undefined } } }), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), ...cors } });
+  const pay402 = async (why) => {
+    await logHit(deps.store, request, { resource, kind: 'challenge', status: 402, note: why });
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32402, message: `payment required: ${why}`, data: { ...ch.body, order_spec: undefined } } }), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), ...cors } });
+  };
   if (!header) return pay402('PAYMENT-SIGNATURE ヘッダがありません');
   const settled = await verifyAndSettle({ env, resource, paymentHeader: header, feePayer: pf.feePayer });
   if (!settled.ok) return pay402(settled.error);

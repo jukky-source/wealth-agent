@@ -6,6 +6,7 @@ import { validateOrder } from './fulfill.js';
 import { deliver } from './a2a.js';
 import { labLoopRound, labLoopStatus } from '../income/labLoop.js';
 import { improveRound, improveTick, improveStatus } from './improve.js';
+import { logHit } from './hits.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const TOOL = { brief: 'buy_research_brief', 'data-clean': 'buy_data_clean', 'code-review': 'buy_code_review', 'surface-report': 'buy_surface_report', 'rea-report': 'buy_rea_report' };
@@ -14,7 +15,7 @@ const RESOURCE = Object.fromEntries(Object.entries(TOOL).map(([k, v]) => [v, k])
 export function toolList() {
   const tools = X402_CATALOG.map((item) => ({
     name: TOOL[item.resource] || item.resource,
-    description: `${item.description}。【価格】${(Number(item.price_usdc) / 1e6).toFixed(2)} USDC。【使い方】呼ぶと 402 と PAYMENT-REQUIRED（支払い条件）が返る。USDC で支払い、同じ引数に PAYMENT-SIGNATURE ヘッダを添えて再送すると結果が返る。`,
+    description: `${item.description} Paid per call via x402 (USDC on Base, no account, no API key). 【価格】${(Number(item.price_usdc) / 1e6).toFixed(2)} USDC。【使い方】呼ぶと 402 と PAYMENT-REQUIRED（支払い条件）が返る。USDC で支払い、同じ引数に PAYMENT-SIGNATURE ヘッダを添えて再送すると結果が返る。`,
     inputSchema: { type: 'object', properties: INPUT_SCHEMAS[item.resource]?.properties || {}, required: INPUT_SCHEMAS[item.resource]?.required || [] },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     _meta: { price: { currency: 'USDC', amount: (Number(item.price_usdc) / 1e6).toFixed(2) }, example: INPUT_EXAMPLES[item.resource] || {} },
@@ -89,7 +90,7 @@ export async function handleMcp(request, env, url, deps = {}) {
   const method = String(msg.method || '');
   if (method.startsWith('notifications/')) return new Response(null, { status: 202, headers: cors });
   if (method === 'initialize') {
-    return ok(id, { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'wealth-agent', version: '1.0.0' }, instructions: '有料ツールは x402 で支払う。呼ぶと 402 と PAYMENT-REQUIRED（支払い条件）が返る。支払い後、同じ引数に PAYMENT-SIGNATURE を添えて再送すると納品物が返る。' });
+    return ok(id, { protocolVersion: PROTOCOL_VERSION, capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'wealth-agent', version: '1.0.0' }, instructions: 'Wealth Agent — a pay-per-call API for AI agents. Paid tools are gated by x402 (HTTP 402, USDC on Base, scheme exact). Call one and you get 402 + PAYMENT-REQUIRED (the price quote); pay with any x402 client and resend the same arguments with PAYMENT-SIGNATURE to receive the deliverable. No account and no API key. Deterministic tools (regex / diff / csv-json / url-meta) are also free at /api/free/<name> up to a daily limit. Discovery: /.well-known/x402, /openapi.json, /llms.txt. Keywords: x402, MCP paid API, USDC on Base, agent-to-agent payment, pay-per-call API, no API key.' });
   }
   if (method === 'ping') return ok(id, {});
   if (method === 'tools/list') return ok(id, { tools: toolList() });
@@ -177,7 +178,10 @@ export async function handleMcp(request, env, url, deps = {}) {
   const order = validateOrder(resource, args);
   if (!order.ok) return ok(id, { content: [{ type: 'text', text: `入力が不正: ${order.reason}` }], isError: true });
   const header = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
-  const pay402 = (why) => new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32402, message: `payment required: ${why}`, data: ch.body } }), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), ...cors } });
+  const pay402 = async (why) => {
+    await logHit(deps.store, request, { resource, kind: 'challenge', status: 402, note: why });
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32402, message: `payment required: ${why}`, data: ch.body } }), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), ...cors } });
+  };
   if (!header) return pay402('PAYMENT-SIGNATURE ヘッダがありません');
   const settled = await verifyAndSettle({ env, resource, paymentHeader: header, feePayer: pf.feePayer });
   if (!settled.ok) return pay402(settled.error);
