@@ -835,7 +835,11 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
         screen_h: cl(b.screenH, 6000), screen_w: cl(b.screenW, 6000), avail_h: cl(b.availH, 6000),
         inset_top: cl(b.insetTop, 600), inset_bottom: cl(b.insetBottom, 600), shell_h: cl(b.shellH, 6000), dpr: Number(b.dpr) || 0,
       };
-      await st.run('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at', ['device:report', JSON.stringify(rec), rec.at]);
+      const sql = 'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at';
+      const params = ['device:report', JSON.stringify(rec), rec.at];
+      try { await st.run(sql, params); } catch (e1) {
+        try { await st.run(sql, ...params); } catch (e2) { return json({ ok: false, error: 'run_failed', e1: String(e1), e2: String(e2) }, 500); }
+      }
       return json({ ok: true, saved: 'settings:device:report' });
     }
     if (url.pathname === '/api/loop' || url.pathname === '/api/loop/public' || url.pathname === '/api/loop/help' || url.pathname === '/api/rea/queue') {
