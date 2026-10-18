@@ -4,6 +4,8 @@
 import { X402_CATALOG, INPUT_SCHEMAS, INPUT_EXAMPLES, discoveryFeed, challenge, preflight, requiredHeader, verifyAndSettle } from './x402.js';
 import { validateOrder } from './fulfill.js';
 import { deliver } from './a2a.js';
+import { labLoopRound, labLoopStatus } from '../income/labLoop.js';
+import { improveRound, improveTick, improveStatus } from './improve.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const TOOL = { brief: 'buy_research_brief', 'data-clean': 'buy_data_clean', 'code-review': 'buy_code_review', 'surface-report': 'buy_surface_report', 'rea-report': 'buy_rea_report' };
@@ -65,6 +67,9 @@ export function toolList() {
     inputSchema: { type: 'object', properties: { url: { type: 'string', description: '公開 https URL' } }, required: ['url'] },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   });
+  tools.push({ name: 'lab_loop', description: 'FX論理の試行錯誤ループ（無料）。状態では「今ぶつかっている壁」と「次の打ち手」を返し、run:true でその場で1ラウンド回して結果を記録する。', inputSchema: { type: 'object', properties: { mode: { type: 'string', enum: ['own', 'e8'], description: 'own=自己資金 / e8=E8チャレンジ（既定 own）' }, run: { type: 'boolean', description: 'true で1ラウンド実行（既定は状態のみ）' } } }, annotations: { readOnlyHint: false } });
+  tools.push({ name: 'improve_status', description: '全般の改善ループの状態（無料）。レーンごとの壁・打ち手・判定と、直近の記録を返す。', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } });
+  tools.push({ name: 'improve_round', description: '全般の改善ループをその場で回す（無料）。lane を指定しなければカーソル順に n レーン回す。', inputSchema: { type: 'object', properties: { lane: { type: 'string', description: 'fx / funnel / playbook / perks / rea / discovery / catalog' }, n: { type: 'number', description: '回すレーン数（既定1）' } } }, annotations: { readOnlyHint: false } });
   tools.push({ name: 'list_services', description: '販売中の有料サービスと価格・支払い条件の一覧（無料）', inputSchema: { type: 'object', properties: {} }, annotations: { readOnlyHint: true } });
   return tools;
 }
@@ -93,6 +98,20 @@ export async function handleMcp(request, env, url, deps = {}) {
   const name = String(msg?.params?.name || '');
   const args = msg?.params?.arguments || {};
   if (name === 'list_services') return ok(id, { content: [{ type: 'text', text: JSON.stringify(discoveryFeed(env, url.origin), null, 2) }], isError: false });
+  if (name === 'lab_loop') {
+    const mode = args && args.mode === 'e8' ? 'e8' : 'own';
+    if (args && args.run) return ok(id, { content: [{ type: 'text', text: JSON.stringify(await labLoopRound({ store, env, mode }), null, 2) }], isError: false });
+    return ok(id, { content: [{ type: 'text', text: JSON.stringify(await labLoopStatus(store, env), null, 2) }], isError: false });
+  }
+  if (name === 'improve_status' || name === 'improve_round') {
+    if (name === 'improve_round') {
+      const lane = (args && args.lane) || null;
+      const n = Number((args && args.n) || 1);
+      const rounds = lane ? [await improveRound({ store, env, lane })] : await improveTick({ store, env, n });
+      return ok(id, { content: [{ type: 'text', text: JSON.stringify({ rounds }, null, 2) }], isError: false });
+    }
+    return ok(id, { content: [{ type: 'text', text: JSON.stringify(await improveStatus(store, env), null, 2) }], isError: false });
+  }
   if (name === 'perk_deadlines' || name === 'perk_search') {
     const { listPerks, rankPerks, perkText } = await import('./perks.js');
     if (!deps.store) return ok(id, { content: [{ type: 'text', text: 'このツールはストア付きで起動していないため使えません' }], isError: true });

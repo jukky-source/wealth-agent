@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>改善台帳 — wealth-agent</title>
+<style>
+:root{--bg:#0C1116;--panel:#131A22;--rule:#22303F;--text:#DFE8F0;--muted:#8CA0B3;--amber:#F0A73A;--teal:#4FC9A6;--red:#E4685A;--blue:#5AA6E4}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'Noto Sans JP',-apple-system,'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif;font-size:14px;line-height:1.65}
+a{color:var(--blue);text-decoration:none}
+.wrap{max-width:1080px;margin:0 auto;padding:20px 18px 64px}
+header{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;border-bottom:1px solid var(--rule);padding-bottom:12px}
+h1{margin:0;font-size:19px;letter-spacing:.02em}
+.sub{color:var(--muted);font-size:12px;margin-top:4px}
+.mono{font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.right{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+button{font:inherit;background:transparent;color:var(--text);border:1px solid var(--rule);border-radius:6px;padding:6px 11px;cursor:pointer}
+button.primary{border-color:var(--amber);color:var(--amber)}
+button:hover{border-color:var(--muted)}
+.strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:18px 0 6px}
+.kpi{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:12px 14px}
+.kpi .k{color:var(--muted);font-size:11px;letter-spacing:.08em}
+.kpi .v{font-size:24px;margin-top:2px;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}
+h2{font-size:13px;color:var(--muted);letter-spacing:.1em;margin:30px 0 10px;font-weight:600}
+.lanes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.lane{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:13px 14px;border-left:3px solid var(--rule)}
+.lane.good{border-left-color:var(--teal)}.lane.warn{border-left-color:var(--amber)}.lane.bad{border-left-color:var(--red)}.lane.info{border-left-color:var(--blue)}
+.lane .t{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.lane .name{font-weight:600}
+.lane .meta{color:var(--muted);font-size:11px}
+.lane .what{color:var(--muted);font-size:12px;margin:6px 0 8px}
+.lane .wall{font-size:12.5px;border-top:1px solid var(--rule);padding-top:8px;margin-top:6px}
+.chip{display:inline-block;font-size:10.5px;border:1px solid var(--rule);border-radius:999px;padding:1px 8px;color:var(--muted);margin-left:6px;vertical-align:1px}
+.chip.good{color:var(--teal);border-color:var(--teal)}.chip.warn{color:var(--amber);border-color:var(--amber)}.chip.bad{color:var(--red);border-color:var(--red)}.chip.info{color:var(--blue);border-color:var(--blue)}
+table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--rule);border-radius:8px;overflow:hidden}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule);font-size:12.5px;vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:.06em;background:#101720}
+tr:last-child td{border-bottom:0}
+.note{color:var(--muted);font-size:12px;margin-top:14px;border-top:1px solid var(--rule);padding-top:12px}
+.err{color:var(--red)}
+.hidden{display:none}
+#tok{background:#0F1620;border:1px solid var(--rule);color:var(--text);border-radius:6px;padding:6px 9px;font:inherit;min-width:240px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>改善台帳</h1>
+      <div class="sub">FX だけでなく全レーンを「測る → 壁を名指しする → 手を変える → 記録する」で回した結果</div>
+    </div>
+    <div class="right">
+      <span id="conn" class="mono" style="color:var(--muted)">読み込み中…</span>
+      <button id="btnRun" class="primary">1ラウンド回す</button>
+      <button id="btnTok" class="ghost">トークン</button>
+      <a href="/lab">/lab</a>
+      <a href="/loop">/loop</a>
+      <a href="./">アプリ</a>
+    </div>
+  </header>
+
+  <div id="gate" class="kpi hidden" style="margin-top:16px">
+    <div class="k">オーナートークン</div>
+    <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+      <input id="tok" type="text" placeholder="オーナートークン（.secrets/owner_token）" />
+      <button class="primary" id="tokSave">つなぐ</button>
+    </div>
+    <div class="sub" style="margin-top:6px">この端末の中だけに保存します（localStorage: wa_token）。</div>
+  </div>
+
+  <div class="strip" id="kpi"></div>
+  <h2>レーンごとの今</h2>
+  <div class="lanes" id="lanes"></div>
+  <h2>直近の記録（壁 → 打ち手 → 判定）</h2>
+  <div id="rows"></div>
+  <div class="note" id="note"></div>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const tok = () => localStorage.getItem('wa_token') || '';
+const VERD = { improved: ['改善', 'good'], regressed: ['後退', 'bad'], no_change: ['変化なし', 'flat'], acted: ['手を打った', 'info'], blocked_human: ['人の操作待ち', 'warn'], error: ['失敗', 'bad'] };
+const vchip = (v) => { const x = VERD[v] || [v || '—', 'flat']; return '<span class="chip ' + (x[1] === 'flat' ? '' : x[1]) + '">' + esc(x[0]) + '</span>'; };
+const lvl = (l) => (l === 'approve' ? '<span class="chip warn">人の1タップ</span>' : l === 'blocked_human' ? '<span class="chip bad">人待ち</span>' : l ? '<span class="chip">自動</span>' : '');
+
+function render(d) {
+  const bv = d.by_verdict || {};
+  $('#kpi').innerHTML = [
+    ['累計ラウンド', n(d.rounds)],
+    ['改善', n(bv.improved)],
+    ['変化なし', n(bv.no_change)],
+    ['人の操作待ち', n(bv.blocked_human)],
+    ['失敗', n(bv.error)],
+  ].map(([k, v]) => '<div class="kpi"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>').join('');
+
+  $('#lanes').innerHTML = (d.lanes || []).map((l) => {
+    const cls = l.verdict === 'improved' ? 'good' : (l.verdict === 'blocked_human' || l.verdict === 'error') ? 'bad' : (l.verdict ? 'info' : '');
+    const wall = (l.walls || []).find((w) => w.key === l.wall);
+    return '<div class="lane ' + cls + '">' +
+      '<div class="t"><span class="name">' + esc(l.label) + '</span><span class="meta mono">' + n(l.rounds) + '回 / 無変化' + n(l.stall) + '連続</span></div>' +
+      (l.what ? '<div class="what">' + esc(l.what) + '</div>' : '') +
+      (l.wall ? '<div class="wall">壁 <b>' + esc((wall && wall.label) || l.wall) + '</b>' + vchip(l.verdict) + '<br>打ち手 <span class="mono">' + esc(l.action || '—') + '</span>' + lvl(l.level) + '</div>' : '<div class="wall" style="color:var(--muted)">まだ1ラウンドも回っていない</div>') +
+      '</div>';
+  }).join('');
+
+  const rows = d.recent || [];
+  $('#rows').innerHTML = rows.length
+    ? '<table><thead><tr><th>時刻</th><th>レーン</th><th>壁</th><th>打ち手</th><th>判定</th><th>差分</th><th>メモ</th></tr></thead><tbody>' +
+      rows.map((r) => '<tr><td class="mono">' + esc(String(r.at || '').slice(5, 16).replace('T', ' ')) + '</td><td>' + esc(r.lane) + '</td><td>' + esc(r.wall) + '</td><td class="mono">' + esc(r.action) + lvl(r.level) + '</td><td>' + vchip(r.verdict) + '</td><td class="mono">' + (n(r.delta) ? (n(r.delta) > 0 ? '+' : '') + n(r.delta) : '—') + '</td><td>' + esc(r.note) + '</td></tr>').join('') +
+      '</tbody></table>'
+    : '<div class="kpi">まだ記録がありません。「1ラウンド回す」か cron（既定30分）で積み上がります。</div>';
+  $('#note').innerHTML = esc(d.note || '') + '<br>既定: 30分ごとに ' + n((d.config || {}).perTick) + ' レーン / 同じ壁で3連続の無変化なら見切って探索を広げる。';
+}
+
+async function load() {
+  const t = tok();
+  const res = await fetch(t ? '/api/improve' : '/api/improve/public', { headers: t ? { authorization: 'Bearer ' + t } : {}, cache: 'no-store' });
+  const d = await res.json();
+  if (!res.ok || d.ok === false) throw new Error(d.detail || d.error || ('HTTP ' + res.status));
+  render(d);
+  $('#conn').textContent = (t ? '接続済み（オーナー）' : '公開要約') + ' / ' + n(d.rounds) + ' ラウンド';
+}
+
+$('#btnTok').onclick = () => $('#gate').classList.toggle('hidden');
+$('#tokSave').onclick = () => { const v = $('#tok').value.trim(); if (v) { localStorage.setItem('wa_token', v); location.reload(); } };
+$('#btnRun').onclick = async () => {
+  const t = tok();
+  if (!t) { $('#gate').classList.remove('hidden'); $('#conn').textContent = '1ラウンド回すにはトークンが必要です'; return; }
+  $('#conn').textContent = '実行中…（1〜2分かかることがあります）';
+  try {
+    const res = await fetch('/api/improve?n=1', { method: 'POST', headers: { authorization: 'Bearer ' + t } });
+    const d = await res.json();
+    if (!res.ok || d.ok === false) throw new Error(d.detail || d.error || ('HTTP ' + res.status));
+    const r = (d.rounds || [])[0] || {};
+    $('#conn').textContent = '[' + (r.lane || '?') + '] ' + (r.wall || '') + ' → ' + (r.action || '') + ' = ' + (r.verdict || '');
+    await load();
+  } catch (e) { $('#conn').innerHTML = '<span class="err">失敗: ' + esc(e.message) + '</span>'; }
+};
+load().catch((e) => { $('#conn').innerHTML = '<span class="err">読めません: ' + esc(e.message) + '</span>'; });
+</script>
+</body>
+</html>

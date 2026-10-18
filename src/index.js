@@ -349,7 +349,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
           try { store = wire(env).store; } catch {}
           return new Response(JSON.stringify(await todayDigest(store, { publicOnly: true })), { headers: { 'content-type': 'application/json; charset=utf-8' } });
         }
-        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html', '/loop': '/loop.html', '/lab': '/lab.html' };
+        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html', '/loop': '/loop.html', '/lab': '/lab.html', '/improve': '/improve.html' };
         const pretty = PRETTY[url.pathname] || url.pathname;
         const res = await env.ASSETS.fetch(pretty === url.pathname ? request : new Request(new URL(pretty, url.origin).toString(), request));
         if (res.status === 404) {
@@ -398,7 +398,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/rea/queue'];
+      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/improve/public', '/api/rea/queue'];
       if (!OPEN.includes(url.pathname)) return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
@@ -750,6 +750,40 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 活動報告: 「いま何をしているか」をタスク・台帳・売り物から実測して返す。
     // ?format=text で人が読む形、?live=1 で外部（自分の402・Bazaar 掲載）も実測する。オーナー専用。
     // 今日なにを拾い、何を試し、何が分かったか — 1画面ぶんのデータ（/today が読む）。
+    // 全般の改善ループ — FX だけでなく、ファネル・ネタ帳・特典・REA・収集・売り物まで
+    // 同じ形（測る → 壁を名指し → 手を変える → 記録する）でエージェント自身が回す。
+    //   GET  /api/improve          : 状態（?format=text / ?help=1）
+    //   GET  /api/improve/public   : 認証なしの要約
+    //   POST /api/improve          : その場で1〜nラウンド（?lane=key&n=数）
+    if (url.pathname === '/api/improve' || url.pathname === '/api/improve/help' || url.pathname === '/api/improve/public') {
+      try {
+        const im = await import('./agent/improve.js');
+        if (url.pathname === '/api/improve/help' || url.searchParams.get('help') === '1') return json({ ok: true, ...im.improveHelp() });
+        if (url.pathname === '/api/improve' && request.method === 'POST') {
+          const lane = url.searchParams.get('lane');
+          const n = Number(url.searchParams.get('n') || (lane ? 1 : env.IMPROVE_N || 2));
+          const rounds = lane
+            ? [await im.improveRound({ store: deps.store, env, lane })]
+            : await im.improveTick({ store: deps.store, env, n });
+          return json({ ok: true, rounds });
+        }
+        const st = await im.improveStatus(deps.store, env);
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(im.improveText(st), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+        }
+        if (url.pathname === '/api/improve/public') {
+          return json({
+            ok: true, version: st.version, rounds: st.rounds, by_verdict: st.by_verdict, by_wall: st.by_wall,
+            lanes: st.lanes.map((l) => ({ key: l.key, label: l.label, what: l.what, rounds: l.rounds, stall: l.stall, wall: l.wall, action: l.action, level: l.level, verdict: l.verdict, at: l.at })),
+            recent: st.recent.slice(0, 12), history: st.history, config: st.config, note: st.note,
+          });
+        }
+        return json({ ok: true, ...st });
+      } catch (e) {
+        return json({ ok: false, error: 'improve_failed', detail: String((e && e.message) || e).slice(0, 300) }, 500);
+      }
+    }
+
     if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       const { todayDigest, todayText } = await import('./agent/today.js');
       const body = await todayDigest(deps.store, { publicOnly: url.pathname.endsWith('/public') });

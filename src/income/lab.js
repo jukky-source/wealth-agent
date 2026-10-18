@@ -1096,7 +1096,8 @@ export async function labPassBoard(store, { mode = 'own', limit = 12 } = {}) {
   const want = clamp(num(limit, 12), 1, 100);
   const rows = await store.all(`SELECT id,symbol,strategy_key,params_json,metrics_json,fitness,verdict,gates_json,date_from,date_to,bars,created_at,mutation
     FROM ${T} WHERE tag=? AND verdict='pass' ORDER BY fitness DESC, created_at DESC, id DESC LIMIT ?`, `lab:${mode}`, clamp(want * 6, want, 600)).catch(() => []);
-  return rankLabRows(rows.map((r) => mapLabRow(r, mode)), want).rows;
+  const ranked = rankLabRows(rows.map((r) => mapLabRow(r, mode)), want);
+  return Array.isArray(ranked) ? ranked : (ranked && ranked.rows) || [];
 }
 
 export async function labBoard(store, opts = {}) {

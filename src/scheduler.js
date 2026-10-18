@@ -216,6 +216,21 @@ export function createScheduler(deps) {
         report.steps.push({ step: 'lab_loop', skipped: loopDue ? 'disabled' : 'not_due' });
       }
     } catch (e) { report.steps.push({ step: 'lab_loop', error: e.message }); }
+    // 5c-9) improve : 全般の改善ループ。FX だけでなく、ファネル・ネタ帳・特典・REA・収集・売り物を
+    //       同じ規律（測る→壁を名指し→手を変える→記録する）で回す。原価0の範囲だけ。
+    try {
+      const imEvery = Math.max(10, Number(env.IMPROVE_EVERY_MINUTES || 30));
+      const imLast = await setting(store, 'improve:last_at', null);
+      const imDue = !imLast || (Date.now() - new Date(imLast).getTime() >= imEvery * 60e3);
+      if (imDue && env && env.IMPROVE_ENABLED !== 'false') {
+        const { improveTick } = await import('./agent/improve.js');
+        const rounds = await improveTick({ store, env, n: Math.max(1, Math.min(7, Number(env.IMPROVE_N || 2))) });
+        await setSetting(store, 'improve:last_at', nowIso());
+        report.steps.push({ step: 'improve', rounds: rounds.map((r) => (r && r.lane ? `${r.lane}:${r.verdict}(${r.wall}->${r.action})` : `error:${(r && r.error) || '?'}`)) });
+      } else {
+        report.steps.push({ step: 'improve', skipped: imDue ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'improve', error: e.message }); }
 
     // 5c-2) ネタ帳 — scout の実データから「こうやれば稼げる」を作り、読み取りだけで試す。
     //     営業・売り込みの下書きは作らない。原価0（先にお金が要る手順は入れない）。
