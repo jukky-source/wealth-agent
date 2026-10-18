@@ -621,6 +621,29 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       } catch (e) { return pj({ ok: false, error: e.message }); }
     }
 
+    // X（Twitter）の無料巡回 — 鍵もアカウントも要らない経路だけで読む（読み取り専用）。
+    // 経路: FxTwitter API v2（鍵なし）→ Nitter の RSS（生きている2台）→ Google News RSS。
+    // 投稿・返信・引用・DM は行わない。X 公式 API は Free 枠廃止で読み取りが従量課金なので使わない。
+    if (url.pathname === '/api/twitter' || url.pathname.startsWith('/api/twitter/')) {
+      const tj = (o, code = 200) => new Response(JSON.stringify(o), { status: code, headers: { 'content-type': 'application/json; charset=utf-8' } });
+      try {
+        const tw = await import('./agent/twitter.js');
+        await tw.ensureTwitterTable(deps.store);
+        const sub = url.pathname.replace('/api/twitter', '').replace(/^\//, '');
+        if (sub === 'help') return tj({ ok: true, help: tw.twitterHelp() });
+        if (sub === 'providers') return tj({ ok: true, providers: tw.PROVIDERS });
+        if (sub === 'sweep' || sub === 'try') {
+          const r = await tw.tryTwitter(deps.store, { env });
+          return tj({ ok: true, ...r });
+        }
+        const rows = await tw.listTweets(deps.store, { limit: Number(url.searchParams.get('limit') || 20) });
+        if (url.searchParams.get('format') === 'text') {
+          return new Response(tw.twitterText(rows), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+        }
+        return tj({ ok: true, summary: await tw.twitterSummary(deps.store), watch: tw.watchList(env), queries: tw.queryList(env), rows });
+      } catch (e) { return tj({ ok: false, error: e.message }); }
+    }
+
     // Reddit 横断巡回の計画。実際の巡回はサンドボックス側（Worker から Reddit 公式APIには到達できない）。
     if (url.pathname === '/api/reddit' || url.pathname.startsWith('/api/reddit/')) {
       try {

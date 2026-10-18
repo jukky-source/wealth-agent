@@ -241,6 +241,23 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'perks', error: e.message }); }
 
+    // 5c-4) X（Twitter）の無料巡回 — 鍵もアカウントも使わずに読める経路だけで有益情報の候補を拾う。
+    //        FxTwitter API v2（鍵なし）→ Nitter の RSS（生きている2台）→ Google News RSS。読み取り専用。
+    try {
+      const everyMin = Math.max(60, Number(env.TWITTER_EVERY_MINUTES || 180));
+      const prevTw = await setting(store, 'twitter:last_run_at', null);
+      const dueTw = !prevTw || (Date.now() - new Date(prevTw).getTime() >= everyMin * 60e3);
+      if (dueTw && (!env || env.TWITTER_ENABLED !== 'false')) {
+        const tw = await import('./agent/twitter.js');
+        await tw.ensureTwitterTable(store);
+        const r = await tw.tryTwitter(store, { env });
+        await setSetting(store, 'twitter:last_run_at', nowIso());
+        report.steps.push({ step: 'twitter', fetched: r.fetched, kept: r.kept, ingested: r.ingested && r.ingested.inserted, sources: r.sources, errors: r.errors });
+      } else {
+        report.steps.push({ step: 'twitter', skipped: dueTw ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'twitter', error: e.message }); }
+
     // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
     //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
     try {

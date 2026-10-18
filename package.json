@@ -37,7 +37,8 @@
     "test:labgen": "node tests/lab-gen.test.mjs",
     "test:playbook": "node tests/playbook.test.mjs",
     "test:perks": "node tests/perks.test.mjs",
-    "test:reddit": "node tests/reddit.test.mjs"
+    "test:reddit": "node tests/reddit.test.mjs",
+    "test:twitter": "node tests/twitter.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
