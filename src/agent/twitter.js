@@ -19,8 +19,35 @@ export const FX_BASE = 'https://api.fxtwitter.com';
 /** 実測で RSS を返した Nitter インスタンス（2026-10-18）。順に試す。 */
 export const NITTER_INSTANCES = ['https://nitter.kareem.one', 'https://nitter.meowing.monster'];
 
-/** 監視する公式アカウント（存在と投稿取得を実測済み）。env TW_WATCH で差し替え可。 */
-export const DEFAULT_WATCH = ['googlejapan', 'GooglePlay'];
+// 監視するアカウント。2026-10-18 に FxTwitter で1件ずつ実在を確かめ、直近20投稿を
+// 実際に採点して「有益情報が出る」ことを確認したものだけを入れる（当てずっぽうのIDは入れない）。
+//   topic=perk : 特典・ポイント還元（期限と実額が本文にあるもの）
+//   topic=ai   : AI で実際に金が動く機会（賞金・グラント・ハッカソン・有料募集・無料クレジット）
+// 除外（理由つき）: poikatsu_lab / point_katsu = 紹介コード・アフィリ誘導が主体、PERAGARU1 = 株式投資であって
+//   ポイ活ではない、karpathy / simonw 等の研究・製品ニュース勢 = 有益だが「金の機会」ではないので台帳に貯まらない。
+export const WATCH_ENTRIES = [
+  { handle: 'googlejapan', topic: 'perk' },
+  { handle: 'GooglePlay', topic: 'perk' },
+  { handle: 'akiko_lawson', topic: 'perk' },
+  { handle: 'famima_now', topic: 'perk' },
+  { handle: 'RakutenJP', topic: 'perk' },
+  { handle: 'au_official', topic: 'perk' },
+  { handle: 'docomo', topic: 'perk' },
+  { handle: 'enjoy_point_', topic: 'perk' },
+  { handle: 'poi_nem', topic: 'perk' },
+  { handle: 'devpost', topic: 'ai' },
+  { handle: 'SuperteamEarn', topic: 'ai' },
+  { handle: 'kaggle', topic: 'ai' },
+  { handle: 'bugcrowd', topic: 'ai' },
+  { handle: 'googleaidevs', topic: 'ai' },
+  { handle: 'indiehackers', topic: 'ai' },
+  { handle: 'trq212', topic: 'ai' },
+  { handle: 'tibo_maker', topic: 'ai' },
+  { handle: 'levelsio', topic: 'ai' },
+];
+
+/** 監視アカウントの handle 一覧（互換用）。env TW_WATCH で差し替え可。 */
+export const DEFAULT_WATCH = WATCH_ENTRIES.map((e) => e.handle);
 
 /** キーワード監視（Google News RSS に投げる）。env TW_QUERIES で差し替え可。 */
 export const DEFAULT_QUERIES = ['ポイ活 キャンペーン', 'Google Play ギフトコード', 'ポイント還元 期限'];
@@ -48,6 +75,29 @@ const PERK_RE = /(キャンペーン|特典|プレゼント|抽選|応募|配布
 const DEADLINE_RE = /(期限|締切|まで|本日|今日|残り|最終日|〜\d|\d+\/\d+)/;
 const AMOUNT_RE = /\d+\s*(円|%|％|pt|ポイント|倍)/i;
 const NOISE_RE = /(副業|儲か|稼げる|稼ぐ方法|投資|仮想通貨|FX|アフィリ|無在庫|情報商材|フォロワー増)/;
+
+// AI で実際に金が動く機会だけを拾う（topic=ai）。研究・製品ニュースは貯めない。
+const OPP_KIND = /(bounty|bounties|grant|grants|hackathon|ハッカソン|competition|コンペ|contest|prize|賞金|懸賞|助成|ミッション|mission|fund|資金|credits?|クレジット|free tier|無料枠|free plan|無料プラン|hiring|we're hiring|募集|paid|報酬|謝礼|freelanc|仕事|プログラム)/i;
+const OPP_MONEY = /(\$\s?\d|\d[\d,]*\s*(usd|usdc|ドル|円)|賞金|prize|bounty|grant|報酬|paid)/i;
+const OPP_TIME = /(deadline|締切|期限|まで|closes|closing|apply by|ends|最終日|\d+\/\d+|\d+月\d+日)/i;
+const OPP_NOISE = /(airdrop|presale|token sale|nft drop|100x|guaranteed|情報商材|無在庫|絶対に稼げ)/i;
+
+/** AIビジネス枠の採点。機会の種類が無いものは0点（研究・製品ニュースを貯めない）。 */
+export function oppScore(p = {}) {
+  const t = `${p.text || ''} ${p.title || ''}`;
+  if (!t.trim() || OPP_NOISE.test(t)) return 0;
+  if (!OPP_KIND.test(t)) return 0;
+  return (OPP_MONEY.test(t) ? 2 : 0) + 1 + (OPP_TIME.test(t) ? 1 : 0);
+}
+
+export function isOpportunityTweet(p = {}, { minScore = 3 } = {}) {
+  return oppScore(p) >= minScore;
+}
+
+/** topic ごとの採点。perk=特典、ai=金が動く機会。 */
+export function trackScore(p = {}, topic = 'perk') {
+  return topic === 'ai' ? oppScore(p) : tweetScore(p);
+}
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, Number(n) || lo)); }
 
@@ -159,13 +209,21 @@ export function toPerkItems(posts = []) {
   }));
 }
 
-/** 監視アカウント（env のカンマ区切りで差し替え可）。 */
-export function watchList(env = null) {
+/** 監視アカウント（env のカンマ区切りで差し替え可。`handle:ai` で AIビジネス枠）。 */
+export function watchEntries(env = null) {
   const raw = env && env.TW_WATCH;
-  const list = typeof raw === 'string' && raw.trim()
-    ? raw.split(',').map((s) => s.trim().replace(/^@/, '')).filter(Boolean)
-    : DEFAULT_WATCH.slice();
-  return list.slice(0, 12);
+  if (typeof raw === 'string' && raw.trim()) {
+    return raw.split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
+      const parts = s.split(':');
+      return { handle: String(parts[0] || '').replace(/^@/, ''), topic: parts[1] === 'ai' ? 'ai' : 'perk' };
+    }).filter((e) => e.handle).slice(0, 24);
+  }
+  return WATCH_ENTRIES.slice(0, 24);
+}
+
+/** 監視アカウントの handle 一覧（互換用）。 */
+export function watchList(env = null) {
+  return watchEntries(env).map((e) => e.handle);
 }
 
 /** キーワード監視（env のカンマ区切りで差し替え可）。 */
@@ -282,8 +340,10 @@ export async function ensureTwitterTable(store) {
   await store.run(
     `CREATE TABLE IF NOT EXISTS ${T} (
       tweet_id TEXT PRIMARY KEY, handle TEXT, provider TEXT, url TEXT, title TEXT, text TEXT,
-      created_at TEXT, score INTEGER, likes INTEGER, reposts INTEGER, fetched_at TEXT)`,
+      created_at TEXT, score INTEGER, likes INTEGER, reposts INTEGER, fetched_at TEXT, topic TEXT)`,
   );
+  // 既存テーブルに topic 列を足す（既にあれば黙って無視する）。
+  try { await store.run(`ALTER TABLE ${T} ADD COLUMN topic TEXT`); } catch { /* already exists */ }
 }
 
 export async function saveTweets(store, posts = [], { now = null } = {}) {
@@ -293,10 +353,11 @@ export async function saveTweets(store, posts = [], { now = null } = {}) {
   for (const p of posts) {
     if (!p || !p.tweet_id) continue;
     const r = await store.run(
-      `INSERT OR IGNORE INTO ${T} (tweet_id, handle, provider, url, title, text, created_at, score, likes, reposts, fetched_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT OR IGNORE INTO ${T} (tweet_id, handle, provider, url, title, text, created_at, score, likes, reposts, fetched_at, topic)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       String(p.tweet_id), p.handle || null, p.provider || null, p.url || null, p.title || null,
-      p.text || null, p.created_at || null, Number(p.score || tweetScore(p)), Number(p.likes || 0), Number(p.reposts || 0), at,
+      p.text || null, p.created_at || null, Number(p.score || trackScore(p, p.topic)), Number(p.likes || 0), Number(p.reposts || 0), at,
+      p.topic === 'ai' ? 'ai' : 'perk',
     );
     inserted += Number((r && r.meta && r.meta.changes) || 0);
   }
@@ -313,36 +374,46 @@ export async function listTweets(store, { limit = 40 } = {}) {
 }
 
 /** 1回ぶんの巡回。取れた数・落ちた理由を必ず残す（「取れなかった」を隠さない）。 */
-export async function sweepTwitter(store, { env = null, fetchImpl = fetch, handles = null, queries = null, perHandle = 20, minScore = 3, max = 20, now = null } = {}) {
+export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entries = null, handles = null, queries = null, perHandle = 20, minScore = 3, max = 40, now = null } = {}) {
   const at = now || nowIso();
-  const watch = handles || watchList(env);
+  const watch = entries || (handles ? handles.map((h) => ({ handle: h, topic: 'perk' })) : watchEntries(env));
   const qs = queries || queryList(env);
   const sources = [];
   const errors = [];
   let fetched = 0;
   const all = [];
 
-  for (const h of watch) {
+  for (const e of watch) {
+    const h = e.handle;
+    const topic = e.topic === 'ai' ? 'ai' : 'perk';
     const fx = await fxStatuses(h, { count: perHandle, fetchImpl });
-    if (fx.ok) { fetched += fx.posts.length; all.push(...fx.posts); sources.push({ provider: 'fxtwitter', handle: h, posts: fx.posts.length }); }
-    else {
-      sources.push({ provider: 'fxtwitter', handle: h, posts: 0, error: fx.error });
+    if (fx.ok) {
+      fetched += fx.posts.length;
+      const hits = fx.posts.filter((p) => trackScore(p, topic) >= minScore).length;
+      all.push(...fx.posts.map((p) => ({ ...p, topic })));
+      sources.push({ provider: 'fxtwitter', handle: h, topic, posts: fx.posts.length, hits });
+    } else {
+      sources.push({ provider: 'fxtwitter', handle: h, topic, posts: 0, error: fx.error });
       errors.push(`fxtwitter:${h}:${fx.error}`);
       const nr = await nitterRss(h, { fetchImpl });
-      if (nr.ok) { fetched += nr.posts.length; all.push(...nr.posts); sources.push({ provider: 'nitter', handle: h, posts: nr.posts.length, instance: nr.instance }); }
+      if (nr.ok) { fetched += nr.posts.length; all.push(...nr.posts.map((p) => ({ ...p, topic }))); sources.push({ provider: 'nitter', handle: h, topic, posts: nr.posts.length, instance: nr.instance }); }
       else errors.push(`nitter:${h}:${nr.error}`);
     }
   }
 
   for (const q of qs) {
     const nr = await newsRss(q, { fetchImpl });
-    if (nr.ok) { fetched += nr.posts.length; all.push(...nr.posts); sources.push({ provider: 'google_news', query: q, posts: nr.posts.length }); }
+    if (nr.ok) { fetched += nr.posts.length; all.push(...nr.posts.map((p) => ({ ...p, topic: 'perk' }))); sources.push({ provider: 'google_news', query: q, posts: nr.posts.length }); }
     else { sources.push({ provider: 'google_news', query: q, posts: 0, error: nr.error }); errors.push(`google_news:${q}:${nr.error}`); }
   }
 
-  const ranked = rankTweets(all, { minScore, max });
+  const ranked = all
+    .map((p) => ({ ...p, score: trackScore(p, p.topic) }))
+    .filter((p) => p.score >= minScore)
+    .sort((a, b) => b.score - a.score || String(b.created_at || '').localeCompare(String(a.created_at || '')))
+    .slice(0, max);
   const saved = await saveTweets(store, ranked, { now: at });
-  return { at, watch, queries: qs, fetched, candidates: all.length, kept: saved.inserted, ranked, sources, errors };
+  return { at, watch: watch.map((e) => e.handle), queries: qs, fetched, candidates: all.length, kept: saved.inserted, ranked, sources, errors };
 }
 
 /** 巡回＋有益情報への取り込み。perks 側の選別（isBeneficial）も通す。 */
@@ -350,9 +421,10 @@ export async function tryTwitter(store, { env = null, fetchImpl = fetch, now = n
   const r = await sweepTwitter(store, { env, fetchImpl, now });
   let ingested = null;
   try {
-    if (r.ranked.length) {
+    const perksOnly = r.ranked.filter((p) => p.topic !== 'ai');
+    if (perksOnly.length) {
       const pkm = await import('./perks.js');
-      ingested = await pkm.ingestPerks(store, toPerkItems(r.ranked), { now: r.at, max: 40 });
+      ingested = await pkm.ingestPerks(store, toPerkItems(perksOnly), { now: r.at, max: 40 });
     }
   } catch (e) { ingested = { error: String(e && e.message || e) }; }
   return { at: r.at, fetched: r.fetched, candidates: r.candidates, kept: r.kept, ingested, sources: r.sources, errors: r.errors, rows: r.ranked.slice(0, 10) };
@@ -362,12 +434,14 @@ export async function twitterSummary(store) {
   await ensureTwitterTable(store);
   const total = await store.first(`SELECT COUNT(*) AS n FROM ${T}`);
   const byProvider = await store.all(`SELECT provider, COUNT(*) AS n FROM ${T} GROUP BY provider ORDER BY n DESC`);
+  const byTopic = await store.all(`SELECT COALESCE(topic,'perk') AS topic, COUNT(*) AS n FROM ${T} GROUP BY topic ORDER BY n DESC`);
   const best = await store.first(`SELECT MAX(score) AS s FROM ${T}`);
   return {
     total: Number((total && total.n) || 0),
     by_provider: (byProvider || []).map((r) => ({ provider: r.provider, n: Number(r.n) })),
+    by_topic: (byTopic || []).map((r) => ({ topic: r.topic, n: Number(r.n) })),
     best_score: Number((best && best.s) || 0),
-    watch: watchList(null), queries: queryList(null),
+    watch: watchList(null), watch_ai: WATCH_ENTRIES.filter((e) => e.topic === 'ai').map((e) => e.handle), queries: queryList(null),
   };
 }
 
@@ -375,7 +449,7 @@ export function twitterText(rows = []) {
   if (!rows.length) return 'X（Twitter）の巡回: まだ何も貯まっていない。';
   const L = [`X（Twitter）の巡回: ${rows.length}件`, ''];
   for (const r of rows.slice(0, 30)) {
-    L.push(`[${r.score}] @${r.handle || '-'} (${r.provider}) ${String(r.text || '').slice(0, 140)}`);
+    L.push(`[${r.score}/${r.topic === 'ai' ? 'AI' : '特典'}] @${r.handle || '-'} (${r.provider}) ${String(r.text || '').slice(0, 140)}`);
     if (r.url) L.push(`      ${r.url}`);
   }
   return L.join('\n');
@@ -394,6 +468,11 @@ export function twitterHelp() {
     '  - FxTwitter の /2/search: 上流の認証が要り 404。キーワード監視は Google News RSS で代替。',
     '',
     'やらないこと: 投稿・返信・引用・DM（読み取り専用）。自動フォロー/いいね。ログインCookieの利用。',
+    '',
+    '監視アカウント（実在と「有益情報が出る」ことを1件ずつ実測して採用。当てずっぽうのIDは入れない）:',
+    '  特典（topic=perk）: ' + WATCH_ENTRIES.filter((e) => e.topic === 'perk').map((e) => '@' + e.handle).join(' '),
+    '  AIビジネス（topic=ai）: ' + WATCH_ENTRIES.filter((e) => e.topic === 'ai').map((e) => '@' + e.handle).join(' '),
+    '  env TW_WATCH で差し替え可（`handle:ai` でAI枠）。',
     '',
     'エンドポイント:',
     '  GET /api/twitter            : 巡回状況の要約＋貯まった投稿',
