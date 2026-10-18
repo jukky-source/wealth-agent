@@ -27,6 +27,7 @@ export async function todayDigest(store, { now = null, publicOnly = false } = {}
     rows: await q1('SELECT COUNT(*) FROM ledger'),
   };
   const loop = await mod('./loop.js', 'loopSummary', store, { env: null });
+  const whyZeroErr = loop && loop.error ? String(loop.error).slice(0, 200) : null;
   const whyZero = loop && loop.bottleneck ? {
     stage: loop.bottleneck.stage, key: loop.bottleneck.key, why: loop.bottleneck.why,
     fix: loop.bottleneck.fix, level: loop.bottleneck.level,
@@ -50,6 +51,7 @@ export async function todayDigest(store, { now = null, publicOnly = false } = {}
     learned,
     money,
     why_zero: whyZero,
+    why_zero_error: whyZeroErr,
     gaps: [
       '実際の売上は 0（ledger の入金行はすべて自己テスト basis=self_test）',
       '報酬の受け取りは人間の1タップが必要（自動化しない）',
