@@ -77,7 +77,8 @@
       <p class="hint">使えた／使えない／人の操作が要る、の内訳。</p>
       <ul class="rows" id="learned-rows"><li><span class="err">読み込み中…</span></li></ul>
       <p class="money" id="money">$—</p>
-      <p class="hint" style="margin:0">受領済みの売上（ledger の合計）</p>
+      <p class="hint" style="margin:0">実際の売上（自己テストを除く）</p>
+      <p class="hint" id="selftest" style="margin:4px 0 0">—</p>
     </article>
   </section>
   <section class="card wide">
@@ -124,6 +125,7 @@ fetch(url).then((r) => r.json()).then((d) => {
   const lr = order.filter((k) => st[k] != null).map((k) => row(esc(k), st[k] + '件'));
   document.getElementById('learned-rows').innerHTML = lr.join('') || row('まだ無し', '—');
   document.getElementById('money').textContent = '$' + (m.revenue_usd == null ? '—' : Number(m.revenue_usd).toFixed(2));
+  document.getElementById('selftest').textContent = '自己テスト $' + (m.self_test_usd == null ? '—' : Number(m.self_test_usd).toFixed(2)) + '（売上ではない）／記録 ' + fmt(m.rows) + '行';
 
   document.getElementById('gaps').innerHTML = (d.gaps || []).map((g) => row(esc(g))).join('');
   document.getElementById('asof').textContent = (d.at || '').replace('T', ' ').slice(0, 16) + ' UTC';
