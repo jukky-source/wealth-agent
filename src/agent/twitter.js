@@ -407,11 +407,13 @@ export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entri
     else { sources.push({ provider: 'google_news', query: q, posts: 0, error: nr.error }); errors.push(`google_news:${q}:${nr.error}`); }
   }
 
-  const ranked = all
-    .map((p) => ({ ...p, score: trackScore(p, p.topic) }))
-    .filter((p) => p.score >= minScore)
-    .sort((a, b) => b.score - a.score || String(b.created_at || '').localeCompare(String(a.created_at || '')))
-    .slice(0, max);
+  // topic ごとに枠を分ける（perk の高得点が AI 枠を押し出さないように）。
+  const sorter = (a, b) => b.score - a.score || String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  const scored = all.map((p) => ({ ...p, score: trackScore(p, p.topic) })).filter((p) => p.score >= minScore);
+  const ranked = [
+    ...scored.filter((p) => p.topic !== 'ai').sort(sorter).slice(0, 25),
+    ...scored.filter((p) => p.topic === 'ai').sort(sorter).slice(0, 15),
+  ].sort(sorter).slice(0, max);
   const saved = await saveTweets(store, ranked, { now: at });
   return { at, watch: watch.map((e) => e.handle), queries: qs, fetched, candidates: all.length, kept: saved.inserted, ranked, sources, errors };
 }
@@ -434,7 +436,7 @@ export async function twitterSummary(store) {
   await ensureTwitterTable(store);
   const total = await store.first(`SELECT COUNT(*) AS n FROM ${T}`);
   const byProvider = await store.all(`SELECT provider, COUNT(*) AS n FROM ${T} GROUP BY provider ORDER BY n DESC`);
-  const byTopic = await store.all(`SELECT COALESCE(topic,'perk') AS topic, COUNT(*) AS n FROM ${T} GROUP BY topic ORDER BY n DESC`);
+  const byTopic = await store.all(`SELECT CASE WHEN topic='ai' THEN 'ai' ELSE 'perk' END AS topic, COUNT(*) AS n FROM ${T} GROUP BY 1 ORDER BY n DESC`);
   const best = await store.first(`SELECT MAX(score) AS s FROM ${T}`);
   return {
     total: Number((total && total.n) || 0),
