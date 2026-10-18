@@ -634,6 +634,29 @@ export function createApi(deps) {
   });
 
   // ---------------------------------------------------------------- logs & memory
+  // LIKE 系の疑いを実機で切り分ける（読み取りのみ・書き込みなし）。
+  on('GET', '/api/diag/sql', async () => {
+    const probes = {
+      memory_like: () => store.all("SELECT id FROM memories WHERE text LIKE ? LIMIT 1", '%無料でできる小さな稼ぎ方を1つ探して%'),
+      memory_like_long: () => store.all("SELECT id FROM memories WHERE text LIKE ? LIMIT 1", '%' + 'あ'.repeat(300) + '%'),
+      receipts_escape: () => store.all("SELECT id FROM receipts WHERE external_id NOT LIKE 'test\\_%' ESCAPE '\\' LIMIT 1"),
+      playbooks_f: () => store.all("SELECT id FROM playbooks WHERE key LIKE 'f_%' LIMIT 1"),
+      settings_not: () => store.all("SELECT key FROM settings WHERE key NOT LIKE 'md:%' AND key NOT LIKE 'fetch%' LIMIT 1"),
+      loop_result: () => store.all("SELECT id FROM playbooks WHERE result_json LIKE '%\"alive\"%' LIMIT 1"),
+      mem_fts: () => store.all("SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? LIMIT 1", '稼ぐ*'),
+      tasks_pick: () => store.all("SELECT id FROM tasks WHERE state IN ('queued','improving','planning') LIMIT 1"),
+      literal_like_memory: () => store.all("SELECT id FROM memories WHERE text LIKE '%あ%' LIMIT 1"),
+      bound_like_playbooks: () => store.all("SELECT id FROM playbooks WHERE title LIKE ? LIMIT 1", '%あ%'),
+      memory_instr: () => store.all("SELECT id FROM memories WHERE instr(text, ?) > 0 LIMIT 1", '稼ぐ'),
+      threads_instr: () => store.all("SELECT id FROM chat_threads WHERE instr(title, ?) > 0 LIMIT 1", '稼ぐ'),
+    };
+    const out = {};
+    for (const [k, fn] of Object.entries(probes)) {
+      try { const r = await fn(); out[k] = { ok: true, n: (r || []).length }; }
+      catch (e) { out[k] = { ok: false, error: String((e && e.message) || e) }; }
+    }
+    return { ok: true, probes: out };
+  });
   on('GET', '/api/logs', async (req) => {
     const limit = Math.min(500, Number(req.query.get('limit') || 120));
     const state = req.query.get('state');
@@ -780,9 +803,9 @@ ${memos.map((m) => `- [${m.kind}] ${truncate(m.text, 160)}`).join('\n') || '（�
       `SELECT t.*,
               (SELECT text FROM chat_messages m WHERE m.thread_id=t.id ORDER BY m.created_at DESC LIMIT 1) AS preview,
               (SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id=t.id) AS message_count
-         FROM chat_threads t ${q ? 'WHERE t.title LIKE ?' : ''}
+         FROM chat_threads t ${q ? 'WHERE instr(t.title, ?) > 0' : ''}
         ORDER BY t.pinned DESC, t.updated_at DESC LIMIT 100`,
-      ...(q ? [`%${q}%`] : []),
+      ...(q ? [String(q).slice(0, 64)] : []),
     );
     return { ok: true, threads: rows, query: q || null };
   });

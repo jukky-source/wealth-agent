@@ -1011,7 +1011,7 @@ export async function labLoadProject(store, name) {
 }
 
 export async function labProjects(store) {
-  const rows = await store.all(`SELECT key,value,updated_at FROM settings WHERE key LIKE ? ORDER BY updated_at DESC LIMIT 50`, LAB_PROJECT_PREFIX + '%').catch(() => []);
+  const rows = await store.all(`SELECT key,value,updated_at FROM settings WHERE instr(key, ?) = 1 ORDER BY updated_at DESC LIMIT 50`, LAB_PROJECT_PREFIX).catch(() => []);
   return rows.map((r) => {
     const v = safeJson(r.value, {}) || {};
     return { name: v.name || r.key.slice(LAB_PROJECT_PREFIX.length), savedAt: v.savedAt || r.updated_at, rows: (v.payload && v.payload.rows ? v.payload.rows.length : null), mode: (v.payload && v.payload.mode) || null };
