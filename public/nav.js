@@ -277,6 +277,12 @@ async function viewSettings(root) {
       <button class="ghost" data-act="reload-set">更新</button></div>
 
     <div class="card">
+      <h3>バックテスト作業台（FX）</h3>
+      <div class="note">E8の選考モードと自己資金モードの2つで、論理を試行錯誤します。原価0・無料の日足だけを使います。</div>
+      <div class="acts"><a href="./lab.html" style="text-decoration:none;display:inline-block;padding:6px 11px;border:1px solid var(--nb-rule);border-radius:9px;color:var(--nb-text);font-size:11.5px">作業台をひらく</a></div>
+    </div>
+
+    <div class="card">
       <h3>AIモデルの使い分け</h3>
       ${rows.length ? `<dl class="kv">${rows.map((r) => `<dt>${esc(r.name)}</dt><dd>${esc(r.status || '—')}</dd>`).join('')}</dl>` : '<div class="empty">提供元の状態を取得できませんでした。</div>'}
       ${names.length ? `<details class="fold"><summary>見えているモデル（${names.length}）</summary><div class="body">${esc(names.join('\n'))}</div></details>` : ''}

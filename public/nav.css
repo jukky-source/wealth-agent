@@ -114,14 +114,20 @@ input.i:focus, textarea.i:focus, select.i:focus{ outline:none; border-color:rgba
 .toast2.on{ opacity:1 }
 @media (min-width:760px){ .bnav{ max-width:720px; margin:0 auto; border-left:1px solid var(--nb-rule); border-right:1px solid var(--nb-rule) } }
 
-/* --- シェル確定：iOSの動的ツールバー・セーフエリア・二重持ち上げ対策 ---
-   下部ナビの実寸は nav.js が --bnav-h に書き込む（セーフエリア込み）。
-   .app の padding と composer の margin を二重に足していたため、
-   入力欄とタブの間に黒い余白が出ていた。 */
+/* --- シェル確定：下タブを「重ねる」のをやめて、縦の並びの1段として置く ---
+   以前は .bnav を fixed で重ね、その高さ（--bnav-h）を入力欄の下マージンに
+   足していた。高さの測り方しだいで黒い余白が出たり消えたりする作りだった。
+   いまは body を縦のflexにして [アプリ本体][タブ] を並べるだけなので、
+   余白を計算する必要がない（セーフエリアはタブ自身の padding が持つ）。 */
 html,body{ height:100%; overflow:hidden; overscroll-behavior:none }
-body.has-bnav .app{ height:100dvh; min-height:0; padding-bottom:0 }
+body.has-bnav{ display:flex; flex-direction:column; height:100dvh; min-height:0 }
+body.has-bnav .app{ flex:1 1 auto; min-height:0; height:auto; padding-bottom:0 }
 body.has-bnav .main-col{ min-height:0 }
-body.has-bnav .bar{ padding-top:calc(env(safe-area-inset-top, 0px) + 10px) }
-body.has-bnav .views{ bottom:var(--bnav-h, 64px) }
+body.has-bnav .bar, body.has-bnav .composer{ flex:none }
+body.has-bnav .splash{ position:fixed }
+body.has-bnav .composer{ margin-bottom:8px }
 body.has-bnav .chips{ padding-bottom:6px }
-@supports not (height:100dvh){ body.has-bnav .app{ height:100% } }
+body.has-bnav .bnav{ position:static; flex:0 0 auto }
+body.has-bnav .views{ position:static; flex:1 1 auto; min-height:0 }
+.toast2{ bottom:calc(env(safe-area-inset-bottom, 0px) + 74px) }
+@supports not (height:100dvh){ body.has-bnav{ height:100% } }
