@@ -525,7 +525,8 @@ export class AIRouter {
         note: `本日のAI呼び出し上限に達しました。${wait} 以降に再開します（進捗は保存済み）。` };
     }
 
-    const order = this.routingOrder(role, prefer);
+    const rolePref = prefer || (await this.rolePrefFromSettings(role));
+    const order = this.routingOrder(role, rolePref);
     const live = order.filter((p) => PROVIDERS[p] && this.available(p));
     const errors = [];
 
@@ -667,6 +668,17 @@ export class AIRouter {
       out[p] = p === 'workersai' ? (PROVIDERS.workersai.models || []).map((m) => m.id) : await this.discoveredModels(p);
     }
     return out;
+  }
+
+  // 役割ごとの優先提供元（設定 ai:model_roles の JSON）。無ければ null。
+  async rolePrefFromSettings(role) {
+    try {
+      const row = await this.store.first("SELECT value FROM settings WHERE key='ai:model_roles'");
+      const raw = row && (row.value !== undefined ? row.value : row['value']);
+      const map = raw ? JSON.parse(raw) : null;
+      const v = map && map[role];
+      return typeof v === 'string' && v ? v : null;
+    } catch { return null; }
   }
 
   routingOrder(role, prefer) {

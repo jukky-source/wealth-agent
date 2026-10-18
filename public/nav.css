@@ -8,9 +8,9 @@
   --nb-mono:'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --nb-sans:'Noto Sans JP', -apple-system, 'Hiragino Kaku Gothic ProN', 'Yu Gothic', sans-serif;
 }
-body.has-bnav .app{ padding-bottom: calc(58px + env(safe-area-inset-bottom)) }
-body.has-bnav .composer{ margin-bottom: calc(58px + env(safe-area-inset-bottom)) }
-body.has-bnav .thread{ padding-bottom: 96px }
+body.has-bnav .app{ padding-bottom: 0 }
+body.has-bnav .composer{ margin-bottom: calc(var(--bnav-h, 64px) + 10px) }
+body.has-bnav .thread{ padding-bottom: 18px }
 
 .bnav{
   position:fixed; left:0; right:0; bottom:0; z-index:60;
@@ -31,7 +31,7 @@ body.has-bnav .thread{ padding-bottom: 96px }
 .bnav button:active{ background:rgba(240,167,58,.10) }
 
 .views{
-  position:fixed; left:0; right:0; top:0; bottom:calc(58px + env(safe-area-inset-bottom));
+  position:fixed; left:0; right:0; top:0; bottom:var(--bnav-h, 64px);
   overflow-y:auto; -webkit-overflow-scrolling:touch; background:var(--nb-bg);
   color:var(--nb-text); font-family:var(--nb-sans); z-index:50;
 }
@@ -107,9 +107,21 @@ input.i:focus, textarea.i:focus, select.i:focus{ outline:none; border-color:rgba
 .bar i{ display:block; height:100%; background:var(--nb-teal) }
 .note{ font-size:11px; color:var(--nb-muted); line-height:1.65; margin-top:8px }
 .toast2{
-  position:fixed; left:50%; transform:translateX(-50%); bottom:calc(74px + env(safe-area-inset-bottom));
+  position:fixed; left:50%; transform:translateX(-50%); bottom:calc(var(--bnav-h, 64px) + 14px);
   background:#1B2530; border:1px solid var(--nb-rule); color:var(--nb-text);
   padding:9px 14px; border-radius:11px; font-size:12.5px; z-index:70; opacity:0; transition:opacity .18s; pointer-events:none
 }
 .toast2.on{ opacity:1 }
 @media (min-width:760px){ .bnav{ max-width:720px; margin:0 auto; border-left:1px solid var(--nb-rule); border-right:1px solid var(--nb-rule) } }
+
+/* --- シェル確定：iOSの動的ツールバー・セーフエリア・二重持ち上げ対策 ---
+   下部ナビの実寸は nav.js が --bnav-h に書き込む（セーフエリア込み）。
+   .app の padding と composer の margin を二重に足していたため、
+   入力欄とタブの間に黒い余白が出ていた。 */
+html,body{ height:100%; overflow:hidden; overscroll-behavior:none }
+body.has-bnav .app{ height:100dvh; min-height:0; padding-bottom:0 }
+body.has-bnav .main-col{ min-height:0 }
+body.has-bnav .bar{ padding-top:calc(env(safe-area-inset-top, 0px) + 10px) }
+body.has-bnav .views{ bottom:var(--bnav-h, 64px) }
+body.has-bnav .chips{ padding-bottom:6px }
+@supports not (height:100dvh){ body.has-bnav .app{ height:100% } }
