@@ -282,7 +282,13 @@ async function viewSettings(root) {
       <div class="acts"><a href="./lab.html" style="text-decoration:none;display:inline-block;padding:6px 11px;border:1px solid var(--nb-rule);border-radius:9px;color:var(--nb-text);font-size:11.5px">作業台をひらく</a></div>
     </div>
 
-    <div class="card">
+            <div class="card">
+          <h3>画面のずれを測る</h3>
+          <p>端末の実測値（上余白・可視の高さ）を出します。見切れの報告に使います。</p>
+          <p id="waMeasureOut" style="color:#8CA0B3;font-size:12px">まだ測っていません。</p>
+          <button onclick="window.waMeasure&&window.waMeasure()" style="background:#131A22;color:#DFE8F0;border:1px solid #22303F;border-radius:8px;padding:8px 12px;font:inherit">測る</button>
+        </div>
+<div class="card">
       <h3>AIモデルの使い分け</h3>
       ${rows.length ? `<dl class="kv">${rows.map((r) => `<dt>${esc(r.name)}</dt><dd>${esc(r.status || '—')}</dd>`).join('')}</dl>` : '<div class="empty">提供元の状態を取得できませんでした。</div>'}
       ${names.length ? `<details class="fold"><summary>見えているモデル（${names.length}）</summary><div class="body">${esc(names.join('\n'))}</div></details>` : ''}
@@ -648,5 +654,12 @@ else boot();
   [1500, 2800, 4500].forEach((ms) => setTimeout(enhance, ms));
   const nav = document.getElementById('bnav');
   if (nav) nav.addEventListener('click', () => { setTimeout(enhance, 300); setTimeout(enhance, 1000); });
+  // 端末の実測値をサーバへ送る（見た目のずれを後から直すため。トークンは送らない）
+  setTimeout(() => {
+    try {
+      const m = window.__waMeasure || {};
+      fetch('/api/selfreport', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...m, innerW: innerWidth, screenW: screen.width, dpr: devicePixelRatio, standalone: !!navigator.standalone, path: location.pathname, shellH: Math.round((document.getElementById('app') || document.body).getBoundingClientRect().height), note: 'auto' }) }).catch(() => {});
+    } catch (e) {}
+  }, 1600);
   window.addEventListener('load', () => setTimeout(enhance, 700));
 })();
