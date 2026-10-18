@@ -68,6 +68,7 @@ function memStore(seed = {}) {
       q(/key LIKE 'f_%'/, (r) => String(r.key || '').startsWith('f_'));
       q(/url IS NOT NULL/, (r) => r.url);
       q(/kind = 'revenue'/, (r) => r.kind === 'revenue');
+      q(/basis <> 'self_test'/, (r) => r.basis !== 'self_test');
       q(/status IN \('analyzed','handoff'\)/, (r) => r.status === 'analyzed' || r.status === 'handoff');
       q(/kind = 'distribute' AND state = 'done'/, (r) => r.kind === 'distribute' && r.state === 'done');
       if (/SUM\(amount\)/i.test(sql)) {
