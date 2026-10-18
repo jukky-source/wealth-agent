@@ -2,7 +2,7 @@
 // Backed by SQLite/D1 with an FTS5 index; falls back to LIKE search if FTS is
 // unavailable.
 
-import { id as newId, nowIso, j, safeJson, hash } from '../util.js';
+import { id as newId, nowIso, j, safeJson, hash, likePattern} from '../util.js';
 
 export const MEMORY_KINDS = [
   'goal', 'preference', 'prohibition', 'experience', 'failure', 'success',
@@ -57,9 +57,9 @@ export class Memory {
             WHERE memories_fts MATCH ? ORDER BY rank LIMIT ?`, fts, limit * 3);
       } catch { rows = []; }
       if (!rows.length) {
-        const like = `%${terms[0]}%`;
+        const like = String(terms[0] || '').slice(0, 64);
         rows = await this.store.all(
-          `SELECT * FROM memories WHERE text LIKE ? ORDER BY importance DESC, created_at DESC LIMIT ?`,
+          `SELECT * FROM memories WHERE instr(text, ?) > 0 ORDER BY importance DESC, created_at DESC LIMIT ?`,
           like, limit * 3);
       }
     } else {

@@ -2,7 +2,7 @@
 // Retrieval is FTS5 keyword search over chunks (works with zero AI budget);
 // answers are only produced from retrieved chunks, always with citations.
 
-import { id as newId, nowIso, j, truncate, hash } from '../util.js';
+import { id as newId, nowIso, j, truncate, hash, likePattern} from '../util.js';
 import { BASIS } from '../truth.js';
 
 const CHUNK_CHARS = 900;
@@ -47,7 +47,7 @@ export function createKnowledge({ store, router }) {
       if (!hits.length) {
         hits = await store.all(
           `SELECT c.*, d.name AS doc_name FROM doc_chunks c JOIN documents d ON d.id=c.doc_id
-            WHERE c.text LIKE ? LIMIT ?`, `%${terms[0]}%`, limit);
+            WHERE instr(c.text, ?) > 0 LIMIT ?`, String(terms[0] || '').slice(0, 64), limit);
       }
     }
     // score by term overlap for stable ordering

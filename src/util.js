@@ -115,3 +115,10 @@ export function stableSort(arr, keyFn) {
     return a[1] - b[1];
   }).map(([v]) => v);
 }
+
+
+/** SQLite/D1 の LIKE に渡すパターン。長すぎる語やワイルドカードは安全側に倒す。 */
+export function likePattern(s, max = 64) {
+  const t = String(s == null ? '' : s).replace(/[%_\\]/g, ' ').trim().slice(0, max);
+  return `%${t}%`;
+}
