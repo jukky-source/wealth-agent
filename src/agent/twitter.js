@@ -21,29 +21,53 @@ export const NITTER_INSTANCES = ['https://nitter.kareem.one', 'https://nitter.me
 
 // 監視するアカウント。2026-10-18 に FxTwitter で1件ずつ実在を確かめ、直近20投稿を
 // 実際に採点して「有益情報が出る」ことを確認したものだけを入れる（当てずっぽうのIDは入れない）。
-//   topic=perk : 特典・ポイント還元（期限と実額が本文にあるもの）
-//   topic=ai   : AI で実際に金が動く機会（賞金・グラント・ハッカソン・有料募集・無料クレジット）
-// 除外（理由つき）: poikatsu_lab / point_katsu = 紹介コード・アフィリ誘導が主体、PERAGARU1 = 株式投資であって
-//   ポイ活ではない、karpathy / simonw 等の研究・製品ニュース勢 = 有益だが「金の機会」ではないので台帳に貯まらない。
+//   topic=perk   : 日本の「この案件ポイントつく」「これ激安」を出す個人アカウント（公式・企業は入れない）
+//   topic=ai     : 海外の「このリポジトリ/AI/活用法えぐい」を出す発見系（採点は discScore）
+//   topic=bounty : 報奨金。コードで片付くものは delegate=code、本人の操作が要るものは delegate=human
+// 除外（理由つき・2026-10-18 実測）: googlejapan / GooglePlay / akiko_lawson / famima_now / RakutenJP /
+//   au_official / docomo / paypay_official / Ponta_official / SoftBank = 公式・企業アカウント（本人の指示で除外）、
+//   enjoy_point_ = au 運営メディア、money_forward = 企業メディア、PERAGARU1 = 株式投資、point_katsu = 紹介コード主体。
 export const WATCH_ENTRIES = [
-  { handle: 'googlejapan', topic: 'perk' },
-  { handle: 'GooglePlay', topic: 'perk' },
-  { handle: 'akiko_lawson', topic: 'perk' },
-  { handle: 'famima_now', topic: 'perk' },
-  { handle: 'RakutenJP', topic: 'perk' },
-  { handle: 'au_official', topic: 'perk' },
-  { handle: 'docomo', topic: 'perk' },
-  { handle: 'enjoy_point_', topic: 'perk' },
+  // 日本・お得／ポイ活（個人。フォロワー数ではなく「有益情報が出るか」で採用）
+  { handle: 'tororo05304029', topic: 'perk' },
+  { handle: 'haiji_doctor', topic: 'perk' },
+  { handle: 'Shinpoi_OTOKU', topic: 'perk' },
+  { handle: 'saatyaan_poi', topic: 'perk' },
+  { handle: 'poikatu_yarou', topic: 'perk' },
+  { handle: 'POIKATSU_OTAKE', topic: 'perk' },
+  { handle: 'poikatsu_lab', topic: 'perk' },
   { handle: 'poi_nem', topic: 'perk' },
-  { handle: 'devpost', topic: 'ai' },
-  { handle: 'SuperteamEarn', topic: 'ai' },
-  { handle: 'kaggle', topic: 'ai' },
-  { handle: 'bugcrowd', topic: 'ai' },
-  { handle: 'googleaidevs', topic: 'ai' },
-  { handle: 'indiehackers', topic: 'ai' },
+  { handle: 'pika_otoku', topic: 'perk' },
+  { handle: 'otoku_lab', topic: 'perk' },
+  // 海外・発見（リポジトリ／AI／ツール／活用法）
+  { handle: 'tom_doerr', topic: 'ai' },
+  { handle: 'dr_cintas', topic: 'ai' },
+  { handle: '_akhaliq', topic: 'ai' },
+  { handle: 'hwchase17', topic: 'ai' },
+  { handle: 'TheTuringPost', topic: 'ai' },
+  { handle: 'AIHighlight', topic: 'ai' },
+  { handle: 'rlancemartin', topic: 'ai' },
+  { handle: 'helloiamleonie', topic: 'ai' },
+  { handle: 'karpathy', topic: 'ai' },
+  { handle: 'FutureStacked', topic: 'ai' },
+  { handle: 'hasantoxr', topic: 'ai' },
+  { handle: 'gregisenberg', topic: 'ai' },
+  { handle: 'rowancheung', topic: 'ai' },
+  { handle: 'emollick', topic: 'ai' },
   { handle: 'trq212', topic: 'ai' },
-  { handle: 'tibo_maker', topic: 'ai' },
-  { handle: 'levelsio', topic: 'ai' },
+  { handle: 'svpino', topic: 'ai' },
+  { handle: 'jerryjliu0', topic: 'ai' },
+  { handle: 'simonw', topic: 'ai' },
+  { handle: 'steipete', topic: 'ai' },
+  { handle: 'OfficialLoganK', topic: 'ai' },
+  { handle: 'TheRundownAI', topic: 'ai' },
+  { handle: 'petergyang', topic: 'ai' },
+  // 報奨金（金額が動く募集のみ）
+  { handle: 'devpost', topic: 'bounty' },
+  { handle: 'kaggle', topic: 'bounty' },
+  { handle: 'immunefi', topic: 'bounty' },
+  { handle: 'gitcoin', topic: 'bounty' },
+  { handle: 'ethglobal', topic: 'bounty' },
 ];
 
 /** 監視アカウントの handle 一覧（互換用）。env TW_WATCH で差し替え可。 */
@@ -75,6 +99,19 @@ const PERK_RE = /(キャンペーン|特典|プレゼント|抽選|応募|配布
 const DEADLINE_RE = /(期限|締切|まで|本日|今日|残り|最終日|〜\d|\d+\/\d+)/;
 const AMOUNT_RE = /\d+\s*(円|%|％|pt|ポイント|倍)/i;
 const NOISE_RE = /(副業|儲か|稼げる|稼ぐ方法|投資|仮想通貨|FX|アフィリ|無在庫|情報商材|フォロワー増)/;
+// 紹介コード・アフィリを含む投稿。有益でも中立ではないので印を付ける（中身が薄ければ採点で落ちる）。
+const REFERRAL_RE = /(紹介コード|招待コード|リファラル|referral|invite code|お互い(に)?(得|とく)|友達紹介|アフィリ|#PR|【PR】|PR\b)/;
+
+// topic=ai（発見枠）: 海外の「このリポジトリ/AI/活用法えぐい」。具体物があるものだけ高得点、誇大・暗号は0点。
+const DISC_NOISE = /(airdrop|presale|token sale|nft drop|100x|guaranteed|whitelist|casino|betting|情報商材|無在庫|絶対に稼げ|不労所得)/i;
+const DISC_STRONG = /(github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+|open[- ]?sourc|self[- ]?host|MIT licen|apache[- ]?2|benchmark|state of the art|SOTA|outperform|we (just )?(built|released|launched)|i (just )?(built|released|launched)|new (model|library|framework|tool|paper)|how to|tutorial|workflow|prompt(ing)? (technique|pattern)|free tier|for free|no cost)/i;
+const DISC_WEAK = /(\bAI\b|LLM|agent|model|tool|demo|API|CLI|SDK|library|framework|local|GPU|fine[- ]?tun|RAG|MCP)/i;
+
+// topic=bounty（報奨金枠）: 金額が動く募集だけ。コードで片付くものは delegate=code。
+const BOUNTY_KIND = /(bounty|bounties|grant|hackathon|ハッカソン|competition|contest|prize|賞金|懸賞|reward|報奨|報酬|paid|funding|issue)/i;
+const BOUNTY_MONEY = /(\$\s?\d|\d[\d,]*\s*(usd|usdc|usdt|dollars|ドル|円)|賞金|prize|bounty|reward|報酬|grant)/i;
+const BOUNTY_TIME = /(deadline|closes|closing|apply by|due|ends|締切|期限|まで|最終日|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2})/i;
+const CODE_TASK = /(github\.com\/[^\s]+\/(issues|pull)\/\d+|bug fix|fix(es)? the|implement|write (a|the) (script|function|patch|test)|pull request|unit test|refactor|TypeScript|Python|JavaScript|Rust|Go\b)/i;
 
 // AI で実際に金が動く機会だけを拾う（topic=ai）。研究・製品ニュースは貯めない。
 const OPP_KIND = /(bounty|bounties|grant|grants|hackathon|ハッカソン|competition|コンペ|contest|prize|賞金|懸賞|助成|ミッション|mission|fund|資金|credits?|クレジット|free tier|無料枠|free plan|無料プラン|hiring|we're hiring|募集|paid|報酬|謝礼|freelanc|仕事|プログラム)/i;
@@ -94,9 +131,40 @@ export function isOpportunityTweet(p = {}, { minScore = 3 } = {}) {
   return oppScore(p) >= minScore;
 }
 
-/** topic ごとの採点。perk=特典、ai=金が動く機会。 */
+/** アフィリ・紹介コードを含む投稿か（有益でも中立ではないので印を付ける）。 */
+export function isAffiliate(p = {}) { return REFERRAL_RE.test(`${p.text || ''} ${p.title || ''}`); }
+
+/** 発見枠の採点。具体物（リポジトリ／リリース／手順／ベンチ）があるものだけ高得点。 */
+export function discScore(p = {}) {
+  const t = `${p.text || ''} ${p.title || ''}`;
+  if (!t.trim() || DISC_NOISE.test(t)) return 0;
+  const strong = (t.match(new RegExp(DISC_STRONG.source, 'gi')) || []).length;
+  const weak = (t.match(new RegExp(DISC_WEAK.source, 'gi')) || []).length;
+  let s = strong * 2 + Math.min(weak, 3);
+  if (/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+/.test(t)) s += 2;
+  if (/https?:\/\//.test(t)) s += 1;
+  if (t.length < 40) s -= 1;
+  return Math.max(0, s);
+}
+
+/** 報奨金枠の採点。金額が無いものは0点。 */
+export function bountyScore(p = {}) {
+  const t = `${p.text || ''} ${p.title || ''}`;
+  if (!t.trim() || DISC_NOISE.test(t)) return 0;
+  if (!BOUNTY_MONEY.test(t)) return 0;
+  return 1 + (BOUNTY_KIND.test(t) ? 1 : 0) + (BOUNTY_TIME.test(t) ? 1 : 0) + (CODE_TASK.test(t) ? 2 : 0);
+}
+
+/** その報奨金を「私が全部やれる」か。code=コードで片付く（受け取りだけ人）/ human=本人の操作が必須。 */
+export function bountyDelegate(p = {}) {
+  return CODE_TASK.test(`${p.text || ''} ${p.title || ''}`) ? 'code' : 'human';
+}
+
+/** topic ごとの採点。perk=日本の特典、ai=海外の発見、bounty=報奨金。 */
 export function trackScore(p = {}, topic = 'perk') {
-  return topic === 'ai' ? oppScore(p) : tweetScore(p);
+  if (topic === 'bounty') return bountyScore(p);
+  if (topic === 'ai' || topic === 'discovery') return discScore(p);
+  return tweetScore(p);
 }
 
 function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, Number(n) || lo)); }
@@ -215,10 +283,11 @@ export function watchEntries(env = null) {
   if (typeof raw === 'string' && raw.trim()) {
     return raw.split(',').map((s) => s.trim()).filter(Boolean).map((s) => {
       const parts = s.split(':');
-      return { handle: String(parts[0] || '').replace(/^@/, ''), topic: parts[1] === 'ai' ? 'ai' : 'perk' };
-    }).filter((e) => e.handle).slice(0, 24);
+      const tp = String(parts[1] || '');
+      return { handle: String(parts[0] || '').replace(/^@/, ''), topic: /^(ai|discovery)$/.test(tp) ? 'ai' : (tp === 'bounty' ? 'bounty' : 'perk') };
+    }).filter((e) => e.handle).slice(0, 60);
   }
-  return WATCH_ENTRIES.slice(0, 24);
+  return WATCH_ENTRIES.slice(0, 60);
 }
 
 /** 監視アカウントの handle 一覧（互換用）。 */
@@ -374,9 +443,10 @@ export async function listTweets(store, { limit = 40 } = {}) {
 }
 
 /** 1回ぶんの巡回。取れた数・落ちた理由を必ず残す（「取れなかった」を隠さない）。 */
-export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entries = null, handles = null, queries = null, perHandle = 20, minScore = 3, max = 40, now = null } = {}) {
+export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entries = null, handles = null, queries = null, perHandle = 20, minScore = 3, max = 55, now = null } = {}) {
   const at = now || nowIso();
   const watch = entries || (handles ? handles.map((h) => ({ handle: h, topic: 'perk' })) : watchEntries(env));
+  const normTopic = (t) => (t === 'ai' || t === 'discovery') ? 'ai' : (t === 'bounty' ? 'bounty' : 'perk');
   const qs = queries || queryList(env);
   const sources = [];
   const errors = [];
@@ -385,7 +455,7 @@ export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entri
 
   for (const e of watch) {
     const h = e.handle;
-    const topic = e.topic === 'ai' ? 'ai' : 'perk';
+    const topic = normTopic(e.topic);
     const fx = await fxStatuses(h, { count: perHandle, fetchImpl });
     if (fx.ok) {
       fetched += fx.posts.length;
@@ -407,12 +477,13 @@ export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entri
     else { sources.push({ provider: 'google_news', query: q, posts: 0, error: nr.error }); errors.push(`google_news:${q}:${nr.error}`); }
   }
 
-  // topic ごとに枠を分ける（perk の高得点が AI 枠を押し出さないように）。
+  // topic ごとに枠を分ける（得点の尺度が違うので、混ぜて上位を取ると片方が消える）。
   const sorter = (a, b) => b.score - a.score || String(b.created_at || '').localeCompare(String(a.created_at || ''));
   const scored = all.map((p) => ({ ...p, score: trackScore(p, p.topic) })).filter((p) => p.score >= minScore);
   const ranked = [
-    ...scored.filter((p) => p.topic !== 'ai').sort(sorter).slice(0, 25),
-    ...scored.filter((p) => p.topic === 'ai').sort(sorter).slice(0, 15),
+    ...scored.filter((p) => p.topic === 'perk').sort(sorter).slice(0, 25),
+    ...scored.filter((p) => p.topic === 'ai').sort(sorter).slice(0, 20),
+    ...scored.filter((p) => p.topic === 'bounty').sort(sorter).slice(0, 10),
   ].sort(sorter).slice(0, max);
   const saved = await saveTweets(store, ranked, { now: at });
   return { at, watch: watch.map((e) => e.handle), queries: qs, fetched, candidates: all.length, kept: saved.inserted, ranked, sources, errors };
@@ -423,7 +494,7 @@ export async function tryTwitter(store, { env = null, fetchImpl = fetch, now = n
   const r = await sweepTwitter(store, { env, fetchImpl, now });
   let ingested = null;
   try {
-    const perksOnly = r.ranked.filter((p) => p.topic !== 'ai');
+    const perksOnly = r.ranked.filter((p) => p.topic === 'perk');
     if (perksOnly.length) {
       const pkm = await import('./perks.js');
       ingested = await pkm.ingestPerks(store, toPerkItems(perksOnly), { now: r.at, max: 40 });
@@ -436,14 +507,18 @@ export async function twitterSummary(store) {
   await ensureTwitterTable(store);
   const total = await store.first(`SELECT COUNT(*) AS n FROM ${T}`);
   const byProvider = await store.all(`SELECT provider, COUNT(*) AS n FROM ${T} GROUP BY provider ORDER BY n DESC`);
-  const byTopic = await store.all(`SELECT CASE WHEN topic='ai' THEN 'ai' ELSE 'perk' END AS topic, COUNT(*) AS n FROM ${T} GROUP BY 1 ORDER BY n DESC`);
+  const byTopic = await store.all(`SELECT CASE WHEN topic='bounty' THEN 'bounty' WHEN topic IN ('ai','discovery') THEN 'ai' ELSE 'perk' END AS topic, COUNT(*) AS n FROM ${T} GROUP BY 1 ORDER BY n DESC`);
   const best = await store.first(`SELECT MAX(score) AS s FROM ${T}`);
   return {
     total: Number((total && total.n) || 0),
     by_provider: (byProvider || []).map((r) => ({ provider: r.provider, n: Number(r.n) })),
     by_topic: (byTopic || []).map((r) => ({ topic: r.topic, n: Number(r.n) })),
     best_score: Number((best && best.s) || 0),
-    watch: watchList(null), watch_ai: WATCH_ENTRIES.filter((e) => e.topic === 'ai').map((e) => e.handle), queries: queryList(null),
+    watch: watchList(null),
+    watch_perk: WATCH_ENTRIES.filter((e) => e.topic === 'perk').map((e) => e.handle),
+    watch_ai: WATCH_ENTRIES.filter((e) => e.topic === 'ai').map((e) => e.handle),
+    watch_bounty: WATCH_ENTRIES.filter((e) => e.topic === 'bounty').map((e) => e.handle),
+    queries: queryList(null),
   };
 }
 
@@ -451,7 +526,8 @@ export function twitterText(rows = []) {
   if (!rows.length) return 'X（Twitter）の巡回: まだ何も貯まっていない。';
   const L = [`X（Twitter）の巡回: ${rows.length}件`, ''];
   for (const r of rows.slice(0, 30)) {
-    L.push(`[${r.score}/${r.topic === 'ai' ? 'AI' : '特典'}] @${r.handle || '-'} (${r.provider}) ${String(r.text || '').slice(0, 140)}`);
+    const label = r.topic === 'ai' ? '発見' : (r.topic === 'bounty' ? '報酬' + (bountyDelegate(r) === 'code' ? '/代行可' : '/人の操作') : '特典');
+    L.push(`[${r.score}/${label}]${isAffiliate(r) ? '[アフィリ]' : ''} @${r.handle || '-'} (${r.provider}) ${String(r.text || '').slice(0, 140)}`);
     if (r.url) L.push(`      ${r.url}`);
   }
   return L.join('\n');
@@ -472,9 +548,11 @@ export function twitterHelp() {
     'やらないこと: 投稿・返信・引用・DM（読み取り専用）。自動フォロー/いいね。ログインCookieの利用。',
     '',
     '監視アカウント（実在と「有益情報が出る」ことを1件ずつ実測して採用。当てずっぽうのIDは入れない）:',
-    '  特典（topic=perk）: ' + WATCH_ENTRIES.filter((e) => e.topic === 'perk').map((e) => '@' + e.handle).join(' '),
-    '  AIビジネス（topic=ai）: ' + WATCH_ENTRIES.filter((e) => e.topic === 'ai').map((e) => '@' + e.handle).join(' '),
-    '  env TW_WATCH で差し替え可（`handle:ai` でAI枠）。',
+    '  日本・お得（topic=perk）: ' + WATCH_ENTRIES.filter((e) => e.topic === 'perk').map((e) => '@' + e.handle).join(' '),
+    '  海外・発見（topic=ai）: ' + WATCH_ENTRIES.filter((e) => e.topic === 'ai').map((e) => '@' + e.handle).join(' '),
+    '  報奨金（topic=bounty）: ' + WATCH_ENTRIES.filter((e) => e.topic === 'bounty').map((e) => '@' + e.handle).join(' '),
+    '  env TW_WATCH で差し替え可（`handle:ai` 発見枠 / `handle:bounty` 報奨金枠）。',
+    '  採点の尺度は topic ごとに違う: perk=金額+期限+特典の4点満点 / ai=具体物の有無（リポジトリ+2、リンク+1）/ bounty=金額+期限+コードで片付くか(+2)。',
     '',
     'エンドポイント:',
     '  GET /api/twitter            : 巡回状況の要約＋貯まった投稿',
