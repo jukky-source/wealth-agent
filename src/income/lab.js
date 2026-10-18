@@ -1091,6 +1091,14 @@ export async function labBoardRanked(store, { mode = 'own', limit = 30, scan = n
   return { ...ranked, duplicates: Math.max(0, ranked.raw - ranked.distinct), all: raw.map((r) => mapLabRow(r, mode)) };
 }
 
+/** 門を通った個体だけの順位表。合格は fitness 順の上位に居るとは限らないので別に引く。 */
+export async function labPassBoard(store, { mode = 'own', limit = 12 } = {}) {
+  const want = clamp(num(limit, 12), 1, 100);
+  const rows = await store.all(`SELECT id,symbol,strategy_key,params_json,metrics_json,fitness,verdict,gates_json,date_from,date_to,bars,created_at,mutation
+    FROM ${T} WHERE tag=? AND verdict='pass' ORDER BY fitness DESC, created_at DESC, id DESC LIMIT ?`, `lab:${mode}`, clamp(want * 6, want, 600)).catch(() => []);
+  return rankLabRows(rows.map((r) => mapLabRow(r, mode)), want).rows;
+}
+
 export async function labBoard(store, opts = {}) {
   const r = await labBoardRanked(store, opts);
   return r.rows;
