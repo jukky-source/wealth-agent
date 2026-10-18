@@ -6,7 +6,7 @@ import { validateOrder } from './fulfill.js';
 import { deliver } from './a2a.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
-const TOOL = { brief: 'buy_research_brief', 'data-clean': 'buy_data_clean', 'code-review': 'buy_code_review', 'surface-report': 'buy_surface_report' };
+const TOOL = { brief: 'buy_research_brief', 'data-clean': 'buy_data_clean', 'code-review': 'buy_code_review', 'surface-report': 'buy_surface_report', 'rea-report': 'buy_rea_report' };
 const RESOURCE = Object.fromEntries(Object.entries(TOOL).map(([k, v]) => [v, k]));
 
 export function toolList() {
@@ -27,6 +27,24 @@ export function toolList() {
     name: 'perk_search',
     description: '日本のお得情報を本文から検索して返す（実額・期限・出典URLつき）。【無料】最大5件。',
     inputSchema: { type: 'object', properties: { q: { type: 'string', description: '検索語（例: Google Play, ローソン, ポイント還元）' }, limit: { type: 'number', description: '件数（既定5・最大5）' } }, required: ['q'] },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  });
+  tools.push({
+    name: 'rea_inspect',
+    description: 'REA: 対象の「表面」を解析し、できること（根拠つき）と入口の候補と、分からなかったことを返す。URL ならサイト/API/MCP を、ローカルのパス（.asar/.exe/.so/.apk 等）なら実行手順を返す。【無料】要約版。全件＋根拠の全文は buy_rea_report（0.5 USDC）。認証回避・課金回避・DRM解除はしない。',
+    inputSchema: { type: 'object', properties: { url: { type: 'string', description: '公開URL（サイト・API・MCP）' }, target: { type: 'string', description: 'ローカルのパス。Worker では実行できないので手順を返す' } } },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  });
+  tools.push({
+    name: 'rea_plan',
+    description: 'REA: ローカルのファイル種別（elf / pe / macho / asar / apk / jar / js）ごとの解析手順を、実行せずに返す。【無料】実行するのは手元の tools/rea-cli.mjs。',
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', description: 'elf / pe / macho / asar / apk / jar / js / unknown' } } },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  });
+  tools.push({
+    name: 'rea_runs',
+    description: 'REA: 直近の解析の状態遷移（queued → fetching → parsing → probing → evidence → done/blocked）を返す。【無料】観測用。',
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: '件数（既定20・最大50）' } } },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   });
   tools.push({
@@ -88,6 +106,23 @@ export async function handleMcp(request, env, url, deps = {}) {
     if (!args.url) return ok(id, { content: [{ type: 'text', text: 'url が必要です' }], isError: true });
     const s = await inspectSurface(args.url, {});
     const text = surfaceBrief(s, { full: false }) + `\n\n【無料枠】要約版。全件＋根拠の全文＋実装メモは buy_surface_report（${SURFACE_PRICE_USDC} USDC）。`;
+    return ok(id, { content: [{ type: 'text', text }], isError: false });
+  }
+  if (name === 'rea_inspect' || name === 'rea_plan' || name === 'rea_runs') {
+    const { inspectRea, reaBrief, reaPlan, listRuns, REA_PRICE_USDC, ACTION_RULES } = await import('./rea.js');
+    if (name === 'rea_plan') {
+      const kind = String(args.kind || 'unknown');
+      return ok(id, { content: [{ type: 'text', text: JSON.stringify({ kind, plan: reaPlan(kind), action_rules: ACTION_RULES }, null, 2) }], isError: false });
+    }
+    if (name === 'rea_runs') {
+      if (!deps.store) return ok(id, { content: [{ type: 'text', text: 'このツールはストア付きで起動していないため使えません' }], isError: true });
+      const runs = await listRuns(deps.store, Number(args.limit) || 20);
+      return ok(id, { content: [{ type: 'text', text: runs.length ? JSON.stringify(runs, null, 2) : 'まだ実行がありません' }], isError: false });
+    }
+    const target = String(args.url || args.target || '');
+    if (!target) return ok(id, { content: [{ type: 'text', text: 'url（または target）が必要です' }], isError: true });
+    const s = await inspectRea(target, {});
+    const text = reaBrief(s, { full: false }) + `\n\n【無料枠】要約版。全件＋根拠の全文＋実行手順の全文は buy_rea_report（${REA_PRICE_USDC} USDC）。`;
     return ok(id, { content: [{ type: 'text', text }], isError: false });
   }
   const resource = RESOURCE[name];

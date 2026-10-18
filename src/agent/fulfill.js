@@ -355,6 +355,7 @@ export async function fulfillOrder(resource, input, deps = {}) {
     else if (resource === 'regex') out = fulfillRegex(input);
     else if (resource === 'diff') out = fulfillDiff(input);
     else if (resource === 'surface-report') out = await fulfillSurfaceReport(input, deps);
+    else if (resource === 'rea-report') out = await fulfillReaReport(input, deps);
     else return { ok: false, error: 'unknown_resource' };
     // 出典も所見も無い報告は納品しない。中身が空のまま渡すのは、買い手から見れば
     // 「金を取って何も渡さない」のと同じ。決済済みなら返金・再納品の判断に回す。
@@ -383,6 +384,38 @@ async function fulfillSurfaceReport(input = {}, deps = {}) {
       findings: (s.endpoints || []).slice(0, 40).map((e) => `${e.path} 〔${e.evidence}〕`),
       gaps: s.unknown || [],
       sources: [s.target, s.openapi && s.openapi.url, s.robots && s.robots.url].filter(Boolean).map((u) => ({ title: u, url: u })),
+      report: s,
+    },
+  };
+}
+
+// REA 解析レポート（有料・0.5 USDC）。rea.js の無料要約と同じ解析を、全件＋根拠の全文＋実行手順で返す。
+// ローカルのファイルは Worker から読めないので、実行せず「そのまま流せる手順」を納品物にする。
+async function fulfillReaReport(input = {}, deps = {}) {
+  const { inspectRea, reaBrief } = await import('./rea.js');
+  const target = input.url || input.target || '';
+  const s = await inspectRea(target, { fetchImpl: deps.fetchImpl || fetch });
+  if (!s.ok) {
+    return { ok: false, resource: 'rea-report', status: 'paid_not_delivered', deliverable: { kind: 'rea-report', summary: `解析できませんでした: ${s.reason || '不明'}`, findings: [], gaps: [s.reason || '接続できません'], sources: [] } };
+  }
+  const findings = [];
+  for (const c of s.capabilities || []) findings.push(`できること: ${c.name} 〔${c.confidence}〕 ← ${c.evidence}`);
+  for (const e of (s.endpoints || []).slice(0, 40)) findings.push(`入口候補: ${e.path} 〔${e.evidence}〕`);
+  for (const f of s.js?.flags || []) findings.push(`機能フラグ: ${f.name} = ${f.value}`);
+  for (const h of s.js?.hosts || []) findings.push(`外部ホスト: ${h}`);
+  for (const sec of s.js?.secretShapes || []) findings.push(`秘密の形: ${sec.label}（値は出さない）`);
+  for (const p of s.plan || []) findings.push(`手順: ${p.step}〔${p.tool}〕 ${p.cmd}`);
+  return {
+    ok: true, resource: 'rea-report', status: 'delivered',
+    deliverable: {
+      kind: 'rea-report',
+      summary: `${s.target} は ${s.kind}（実行 ${s.mode}、状態 ${s.state}、完成度 ${s.score}/10、できること ${(s.capabilities || []).length}件、分からなかったこと ${(s.unknown || []).length}件、認証 ${s.auth}）`,
+      brief: reaBrief(s, { full: true }),
+      findings: findings.slice(0, 120),
+      gaps: s.unknown || [],
+      sources: [s.target, s.api?.openapi?.url, s.robots?.url].filter(Boolean).map((u) => ({ title: u, url: u })),
+      runbook: s.plan || [],
+      action_rules: s.action_rules || [],
       report: s,
     },
   };

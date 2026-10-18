@@ -349,7 +349,8 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
           try { store = wire(env).store; } catch {}
           return new Response(JSON.stringify(await todayDigest(store, { publicOnly: true })), { headers: { 'content-type': 'application/json; charset=utf-8' } });
         }
-        const pretty = url.pathname === '/today' ? '/today.html' : (url.pathname === '/surface' ? '/surface.html' : url.pathname);
+        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html' };
+        const pretty = PRETTY[url.pathname] || url.pathname;
         const res = await env.ASSETS.fetch(pretty === url.pathname ? request : new Request(new URL(pretty, url.origin).toString(), request));
         if (res.status === 404) {
           const indexUrl = new URL('/index.html', url.origin);
@@ -397,7 +398,8 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      if (url.pathname !== '/api/surface' && url.pathname !== '/api/surface/help' && url.pathname !== '/api/today/public') return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
+      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs'];
+      if (!OPEN.includes(url.pathname)) return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
     // 自己診断: この実行環境（Cloudflare の egress）から検索経路が実際に何を返すかを測る。
@@ -753,6 +755,22 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       const brief = surfaceBrief(s, { full: false });
       if (url.searchParams.get('format') === 'text') return new Response(brief, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
       return json({ ok: s.ok, brief, report: s, paid: { resource: 'surface-report', price_usdc: SURFACE_PRICE_USDC, endpoint: `${url.origin}/api/x402/surface-report`, mcp_tool: 'buy_surface_report' }, guardrails: GUARDRAILS });
+    }
+
+    // REA（全種別の表面解析）。ローカルのファイルは実行せず、そのまま流せる手順を返す（handoff）。
+    if (url.pathname === '/api/rea' || url.pathname === '/api/rea/help' || url.pathname === '/api/rea/plan' || url.pathname === '/api/rea/runs') {
+      const { inspectRea, reaBrief, reaHelp, reaPlan, REA_PRICE_USDC, ACTION_RULES, recordRun, listRuns } = await import('./agent/rea.js');
+      if (url.pathname.endsWith('/help')) return json({ ok: true, help: reaHelp(), price_usdc: REA_PRICE_USDC, action_rules: ACTION_RULES });
+      if (url.pathname.endsWith('/plan')) { const kind = url.searchParams.get('kind') || 'unknown'; return json({ ok: true, kind, plan: reaPlan(kind), action_rules: ACTION_RULES }); }
+      if (url.pathname.endsWith('/runs')) return json({ ok: true, runs: await listRuns(deps.store, Number(url.searchParams.get('limit')) || 20) });
+      let target = url.searchParams.get('url') || url.searchParams.get('target') || '';
+      if (!target && request.method === 'POST') { try { const b = await request.json(); target = b.url || b.target || ''; } catch {} }
+      if (!target) return json({ ok: false, error: 'url（または target）が必要です', help: reaHelp() }, 400);
+      const s = await inspectRea(target, {});
+      try { if (deps.store) await recordRun(deps.store, s); } catch {}
+      const brief = reaBrief(s, { full: false });
+      if (url.searchParams.get('format') === 'text') return new Response(brief, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      return json({ ok: s.ok, brief, report: s, plan: s.plan || null, paid: { resource: 'rea-report', price_usdc: REA_PRICE_USDC, endpoint: `${url.origin}/api/x402/rea-report`, mcp_tool: 'buy_rea_report' }, action_rules: ACTION_RULES });
     }
 
     if (url.pathname === '/api/report' && request.method === 'GET') {
