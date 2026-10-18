@@ -87,7 +87,11 @@ export const PROVIDERS = [
   },
   {
     id: 'google_news', kind: 'rss', base: 'https://news.google.com/rss/search', auth: 'none', cost: 0,
-    note: 'site:x.com を含むクエリで100件返る。ニュースに載った投稿だけが拾える。',
+    note: 'site:x.com を含むクエリで100件返る。ニュースに載った投稿だけが拾える。503 のときは2回まで再試行し、それでも駄目なら Bing News に切り替える。',
+  },
+  {
+    id: 'bing_news', kind: 'rss', base: 'https://www.bing.com/news/search?format=RSS', auth: 'none', cost: 0,
+    note: 'Google News が 503 のときの代替（実測 2026-10-18: 200）。件数は Google より少ない。',
   },
 ];
 
@@ -387,6 +391,21 @@ export function newsRssUrl(query, { hl = 'ja', gl = 'JP', ceid = 'JP:ja' } = {})
 }
 
 /** Google News RSS によるキーワード監視（無料経路に投稿検索が無いことの代替）。 */
+/** Bing News の RSS（鍵なし）。Google News が 503 のときの代替経路。 */
+export async function bingNewsRss(query, { fetchImpl = fetch, gl = 'JP', hl = 'ja' } = {}) {
+  const q = String(query || '').trim();
+  if (!q) return { ok: false, provider: 'bing_news', error: 'query_required', posts: [] };
+  try {
+    const url = `https://www.bing.com/news/search?q=${encodeURIComponent(q)}&format=RSS&setmkt=${gl}-${hl}`;
+    const res = await fetchImpl(url, { headers: { 'user-agent': UA, accept: '*/*' } });
+    if (!res.ok) return { ok: false, provider: 'bing_news', query: q, error: `http_${res.status}`, posts: [] };
+    const posts = parseRss(await res.text(), { provider: 'bing_news', handle: null });
+    return { ok: true, provider: 'bing_news', query: q, posts };
+  } catch (e) {
+    return { ok: false, provider: 'bing_news', query: q, error: 'fetch_failed', message: String(e && e.message || e), posts: [] };
+  }
+}
+
 export async function newsRss(query, { fetchImpl = fetch, hl, gl, ceid } = {}) {
   const q = String(query || '').trim();
   if (!q) return { ok: false, provider: 'google_news', error: 'query_required', posts: [] };
@@ -394,8 +413,17 @@ export async function newsRss(query, { fetchImpl = fetch, hl, gl, ceid } = {}) {
     const url = newsRssUrl(q, { hl, gl, ceid });
     // Google News は Accept を細かく指定すると 503 を返す（実測 2026-10-18: 素の */* なら 200・100件）。
     let res = await fetchImpl(url, { headers: { 'user-agent': UA, accept: '*/*' } });
-    if (!res.ok) res = await fetchImpl(url, { headers: { 'user-agent': UA, accept: '*/*' } });
-    if (!res.ok) return { ok: false, provider: 'google_news', query: q, error: `http_${res.status}`, posts: [] };
+    // Google News は Cloudflare 側の一時拒否で 503 を返すことがある（実測 2026-10-18: 3クエリ全部503）。
+    for (let i = 0; i < 2 && !res.ok; i++) {
+      await new Promise((r) => setTimeout(r, 350));
+      res = await fetchImpl(url, { headers: { 'user-agent': UA, accept: '*/*' } });
+    }
+    if (!res.ok) {
+      // 代替: Bing News の RSS（鍵なし・原価0）。Google が落ちてもキーワード監視を止めない。
+      const b = await bingNewsRss(q, { fetchImpl });
+      if (b.ok) return b;
+      return { ok: false, provider: 'google_news', query: q, error: `http_${res.status}`, posts: [], fallback_error: b.error };
+    }
     const posts = parseRss(await res.text(), { provider: 'google_news', handle: null });
     return { ok: true, provider: 'google_news', query: q, posts };
   } catch (e) {
@@ -426,7 +454,7 @@ export async function saveTweets(store, posts = [], { now = null } = {}) {
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       String(p.tweet_id), p.handle || null, p.provider || null, p.url || null, p.title || null,
       p.text || null, p.created_at || null, Number(p.score || trackScore(p, p.topic)), Number(p.likes || 0), Number(p.reposts || 0), at,
-      p.topic === 'ai' ? 'ai' : 'perk',
+      (p.topic === 'ai' || p.topic === 'discovery') ? 'ai' : (p.topic === 'bounty' ? 'bounty' : 'perk'),
     );
     inserted += Number((r && r.meta && r.meta.changes) || 0);
   }
@@ -473,7 +501,7 @@ export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entri
 
   for (const q of qs) {
     const nr = await newsRss(q, { fetchImpl });
-    if (nr.ok) { fetched += nr.posts.length; all.push(...nr.posts.map((p) => ({ ...p, topic: 'perk' }))); sources.push({ provider: 'google_news', query: q, posts: nr.posts.length }); }
+    if (nr.ok) { fetched += nr.posts.length; all.push(...nr.posts.map((p) => ({ ...p, topic: 'perk' }))); sources.push({ provider: nr.provider || 'google_news', query: q, posts: nr.posts.length }); }
     else { sources.push({ provider: 'google_news', query: q, posts: 0, error: nr.error }); errors.push(`google_news:${q}:${nr.error}`); }
   }
 
@@ -484,7 +512,7 @@ export async function sweepTwitter(store, { env = null, fetchImpl = fetch, entri
     ...scored.filter((p) => p.topic === 'perk').sort(sorter).slice(0, 25),
     ...scored.filter((p) => p.topic === 'ai').sort(sorter).slice(0, 20),
     ...scored.filter((p) => p.topic === 'bounty').sort(sorter).slice(0, 10),
-  ].sort(sorter).slice(0, max);
+  ].sort(sorter).slice(0, Math.max(Number(max) || 0, 55)); // topic ごとに枠を切った後なので、全体の上限で低得点topicを落とさない
   const saved = await saveTweets(store, ranked, { now: at });
   return { at, watch: watch.map((e) => e.handle), queries: qs, fetched, candidates: all.length, kept: saved.inserted, ranked, sources, errors };
 }

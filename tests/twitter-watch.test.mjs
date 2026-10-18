@@ -41,6 +41,7 @@ ok('watchList keeps compat', JSON.stringify(watchList({ TW_WATCH: '@foo,bar:ai' 
 const posts = {
   perk_acct: [{ id: '1', text: '対象商品を2個購入で100円引き 10/19まで', created_at: '2026-10-17T00:00:00Z' }],
   ai_acct: [{ id: '2', text: 'We just released an open-source CLI: https://github.com/acme/tool - MIT license, free tier', created_at: '2026-10-17T00:00:00Z' }],
+  bounty_acct: [{ id: '4', text: 'Bounty $500: fix the parser in https://github.com/x/y/issues/12, apply by 10/30', created_at: '2026-10-17T00:00:00Z' }],
   quiet: [{ id: '3', text: 'hello world', created_at: '2026-10-17T00:00:00Z' }],
 };
 const fetchImpl = async (url) => {
@@ -53,8 +54,9 @@ const store = {
   run: async (sql, ...args) => { if (/INSERT/.test(sql)) saved.push(args); return { meta: { changes: 1 } }; },
   all: async () => [], first: async () => ({ n: 0 }),
 };
-const r = await sweepTwitter(store, { fetchImpl, entries: [{ handle: 'perk_acct', topic: 'perk' }, { handle: 'ai_acct', topic: 'ai' }, { handle: 'quiet', topic: 'ai' }], queries: [], now: '2026-10-18T00:00:00Z' });
-ok('sweep kept 2', r.kept === 2 && saved.length === 2);
+const r = await sweepTwitter(store, { fetchImpl, entries: [{ handle: 'perk_acct', topic: 'perk' }, { handle: 'ai_acct', topic: 'ai' }, { handle: 'bounty_acct', topic: 'bounty' }, { handle: 'quiet', topic: 'ai' }], queries: [], now: '2026-10-18T00:00:00Z' });
+ok('sweep kept 3', r.kept === 3 && saved.length === 3);
+ok('sweep stores bounty as bounty', saved.some((a) => a[a.length - 1] === 'bounty'));
 ok('sweep tags topic', saved.some((a) => a[a.length - 1] === 'ai') && saved.some((a) => a[a.length - 1] === 'perk'));
 ok('sweep records per-source hits', r.sources.find((s) => s.handle === 'quiet').hits === 0);
 ok('sweep records errors array', Array.isArray(r.errors) && r.errors.length === 0);
