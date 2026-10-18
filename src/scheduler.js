@@ -223,6 +223,22 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'playbook', error: e.message }); }
 
+    // 5c-2b) 集めた情報（X / Reddit / scout）を「試せるネタ」に変換して、読み取りだけで1回試す。
+    //      収集で終わらせないための連結部分。同じ URL は1件だけ・原価0。
+    try {
+      const prevIng = await setting(store, 'playbook:ingest_at', null);
+      const dueIng = !prevIng || (Date.now() - new Date(prevIng).getTime() >= Math.max(20, Number(env.PLAYBOOK_INGEST_EVERY_MINUTES || 60)) * 60e3);
+      if (dueIng && (!env || env.PLAYBOOK_INGEST_ENABLED !== 'false')) {
+        const pbx = await import('./agent/playbook.js');
+        const ing = await pbx.ingestFindings(store, { limit: Number(env.PLAYBOOK_INGEST_N || 8) });
+        const tried = await pbx.tryPlaybooks(store, { limit: Number(env.PLAYBOOK_TRIES_PER_TICK || 2) });
+        await setSetting(store, 'playbook:ingest_at', nowIso());
+        report.steps.push({ step: 'playbook_ingest', scanned: ing.scanned, inserted: ing.inserted, tried: tried.tried, verdicts: tried.rows.map((x) => x.kind + ':' + x.verdict) });
+      } else {
+        report.steps.push({ step: 'playbook_ingest', skipped: dueIng ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'playbook_ingest', error: e.message }); }
+
     // 5c-3) 有益情報 — 特典・ポイ活・割引を出典つきで貯め、出典ページを読んで実額と終了を確認する（原価0）。
     try {
       const everyMin = Math.max(30, Number(env.PERKS_EVERY_MINUTES || 360));
