@@ -349,7 +349,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
           try { store = wire(env).store; } catch {}
           return new Response(JSON.stringify(await todayDigest(store, { publicOnly: true })), { headers: { 'content-type': 'application/json; charset=utf-8' } });
         }
-        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html', '/loop': '/loop.html' };
+        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html', '/loop': '/loop.html', '/lab': '/lab.html' };
         const pretty = PRETTY[url.pathname] || url.pathname;
         const res = await env.ASSETS.fetch(pretty === url.pathname ? request : new Request(new URL(pretty, url.origin).toString(), request));
         if (res.status === 404) {
@@ -398,7 +398,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/rea/queue'];
+      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/rea/queue'];
       if (!OPEN.includes(url.pathname)) return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
@@ -713,6 +713,19 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
         }
         if (sub === 'tick') return json({ ok: true, ...(await lab.labTick({ store: deps.store, env })) });
         if (sub === 'auto') return json({ ok: true, ...(await lab.labAuto({ store: deps.store, env })) });
+        //   GET  /api/lab/loop         : 試行錯誤の自浄ループの状態（?format=text）
+        //   POST /api/lab/loop         : その場で1ラウンド（?mode=own|e8）
+        //   GET  /api/lab/loop/public  : 認証なしの要約
+        if (sub === 'loop' || sub === 'loop/public') {
+          const loopMod = await import('./income/labLoop.js');
+          if (sub === 'loop' && request.method === 'POST') {
+            const mode = url.searchParams.get('mode') || 'own';
+            return json({ ok: true, round: await loopMod.labLoopRound({ store: deps.store, env, mode }) });
+          }
+          const st = await loopMod.labLoopStatus(deps.store, env);
+          if (url.searchParams.get('format') === 'text') return json({ ok: true, text: loopMod.labLoopText(st), ...st });
+          return json({ ok: true, ...st });
+        }
         const st = await lab.labStatus(deps.store, env);
         if (url.searchParams.get('format') === 'text') {
           return new Response(lab.labText(st), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
