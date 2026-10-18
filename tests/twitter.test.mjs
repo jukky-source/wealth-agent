@@ -2,7 +2,7 @@
 import {
   parseRss, decodeXml, stripTags, normalizeTweet, tweetScore, isBeneficialTweet,
   rankTweets, toPerkItems, watchList, queryList, newsRssUrl,
-  fxStatuses, fxSearch, nitterRss, sweepTwitter, tryTwitter, saveTweets, ensureTwitterTable, listTweets, twitterSummary,, DEFAULT_WATCH } from '../src/agent/twitter.js';
+  fxStatuses, fxSearch, nitterRss, sweepTwitter, tryTwitter, saveTweets, ensureTwitterTable, listTweets, twitterSummary, DEFAULT_WATCH } from '../src/agent/twitter.js';
 
 let pass = 0; let fail = 0;
 function ok(name, cond, extra = '') {
