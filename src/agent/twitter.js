@@ -264,7 +264,10 @@ export async function newsRss(query, { fetchImpl = fetch, hl, gl, ceid } = {}) {
   const q = String(query || '').trim();
   if (!q) return { ok: false, provider: 'google_news', error: 'query_required', posts: [] };
   try {
-    const res = await fetchImpl(newsRssUrl(q, { hl, gl, ceid }), { headers: { 'user-agent': UA, accept: 'application/rss+xml, application/xml, text/xml, */*' } });
+    const url = newsRssUrl(q, { hl, gl, ceid });
+    // Google News は Accept を細かく指定すると 503 を返す（実測 2026-10-18: 素の */* なら 200・100件）。
+    let res = await fetchImpl(url, { headers: { 'user-agent': UA, accept: '*/*' } });
+    if (!res.ok) res = await fetchImpl(url, { headers: { 'user-agent': UA, accept: '*/*' } });
     if (!res.ok) return { ok: false, provider: 'google_news', query: q, error: `http_${res.status}`, posts: [] };
     const posts = parseRss(await res.text(), { provider: 'google_news', handle: null });
     return { ok: true, provider: 'google_news', query: q, posts };
