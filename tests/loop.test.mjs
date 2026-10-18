@@ -157,7 +157,7 @@ await t('selfHeal: 詰まりを記録し、置き場の掲載エントリを「�
 await t('verifyListings: 掲載面を実際に取りに行き、載っていれば live と数える', async () => {
   const ff = fakeFetch({ 'https://raw.githubusercontent.com/punkpeye/awesome-remote-mcp-servers/main/README.md': { body: '- [wealth-agent](https://wealth-agent.wealthagent-app.workers.dev) `https://wealth-agent.wealthagent-app.workers.dev/mcp`' } });
   const r = await verifyListings({ fetchImpl: ff });
-  assert.equal(r.checked, 2);
+  assert.equal(r.checked, 3);
   assert.ok(r.live_keys.includes('awesome-remote-mcp-servers'), JSON.stringify(r));
   assert.equal(r.live, 1);
 });

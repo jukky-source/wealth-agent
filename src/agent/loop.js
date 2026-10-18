@@ -53,6 +53,13 @@ export const LISTINGS = [
     url: 'https://glama.ai/mcp/connectors/io.github.jukky-source/wealth-agent',
     needle: 'wealth-agent',
   },
+  {
+    // 提出しただけでは数えない。審査を通って実際に載ったら、ここが live になる。
+    key: 'x402-list',
+    name: 'x402-list（$1 審査待ち）',
+    url: 'https://x402-list.com/api/v1/services?q=wealth-agent',
+    needle: 'wealth-agent.wealthagent-app.workers.dev',
+  },
 ];
 
 /** 掲載面を実際に取得して、自分のエンドポイントが載っているかを確かめる。 */
