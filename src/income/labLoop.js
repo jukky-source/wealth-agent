@@ -13,7 +13,7 @@ const num = (v, d = 0) => { const x = Number(v); return Number.isFinite(x) ? x :
 
 // ラウンドID。util に採番ヘルパが無いのでここで作る。
 const rid = () => `lbr_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-import { labBoardRanked, pickChampion, labSearch, labCatalog, labAuto } from './lab.js';
+import { labBoardRanked, labPassBoard, pickChampion, labSearch, labCatalog, labAuto } from './lab.js';
 
 export const LAB_LOOP_VERSION = 'labloop-1.0';
 export const LR = 'lab_rounds';
@@ -172,12 +172,15 @@ export async function labLoopRound({ store, env = {}, mode = 'own', now = null }
   await ensureLoopTable(store);
   const at = now || nowIso();
   const before = await labBoardRanked(store, { mode, limit: 12 }).catch(() => ({ rows: [], distinct: 0, raw: 0 }));
-  const champBefore = pickChampion(before.rows, mode);
+  // 門を通った個体は fitness 順の上位に居るとは限らない（実測: own の合格は最大1.65、不合格は2.37まで）。
+  // 合格だけの順位表を別に引かないと「王者が居ない」と誤認する。
+  const passBefore = await labPassBoard(store, { mode, limit: 12 }).catch(() => []);
+  const champBefore = pickChampion(passBefore, mode) || pickChampion(before.rows, mode);
   const wall = gateWall(before.rows);
   const hist = safeJson((await store.first(`SELECT value FROM settings WHERE key=?`, LL_KEY).catch(() => null))?.value, null) || { rounds: 0, stall: 0, byWall: {} };
   const action = wallFix(wall, { stall: num(hist.stall, 0) });
   const rnd = seededRandom(`labloop-${mode}-${String(at).slice(0, 16)}`);
-  const seeds = targetedSeeds(mode, action, before.rows, rnd, env);
+  const seeds = targetedSeeds(mode, action, [...passBefore, ...before.rows], rnd, env);
   const n = clamp(num(env.LAB_LOOP_N, num(env.LAB_SEARCH_N, 6)), 1, 12);
   const settings = mode === 'e8'
     ? { profile: env.E8_PROFILE || 'p10', accountSize: num(env.E8_ACCOUNT, 100000), scale: num(env.E8_SCALE, 0.75), trials: 120 }
@@ -196,7 +199,8 @@ export async function labLoopRound({ store, env = {}, mode = 'own', now = null }
   let auto = null;
   try { auto = await labAuto({ store, env, now: at }); } catch (e) { auto = { error: String((e && e.message) || e).slice(0, 200) }; }
   const after = await labBoardRanked(store, { mode, limit: 12 }).catch(() => ({ rows: [], distinct: 0, raw: 0 }));
-  const champAfter = pickChampion(after.rows, mode);
+  const passAfter = await labPassBoard(store, { mode, limit: 12 }).catch(() => []);
+  const champAfter = pickChampion(passAfter, mode) || pickChampion(after.rows, mode);
   const fb = champBefore ? num(champBefore.fitness, -1e9) : -1e9;
   const fa = champAfter ? num(champAfter.fitness, -1e9) : -1e9;
   const beforeKeys = before.rows.map((r) => `${r.symbol}|${r.key}`);
@@ -211,8 +215,8 @@ export async function labLoopRound({ store, env = {}, mode = 'own', now = null }
     wall: wall.key, wall_why: wall.why,
     action: action.key, action_of: action.of, escalated: !!action.escalated,
     hypothesis: action.hypothesis,
-    before: { champion: brief(champBefore), distinct: before.distinct, raw: before.raw, pass: wall.pass, fails: wall.fails, wall: wall.key },
-    after: { champion: brief(champAfter), distinct: after.distinct, raw: after.raw, pass: wallAfter.pass, fails: wallAfter.fails, wall: wallAfter.key },
+    before: { champion: brief(champBefore), distinct: before.distinct, raw: before.raw, pass: wall.pass, fails: wall.fails, wall: wall.key, passRows: passBefore.length },
+    after: { champion: brief(champAfter), distinct: after.distinct, raw: after.raw, pass: wallAfter.pass, fails: wallAfter.fails, wall: wallAfter.key, passRows: passAfter.length },
     result: {
       evaluated: run ? run.summary.evaluated : 0, passed: run ? run.summary.passedGates : 0,
       seeds: seeds.length, best: run && run.summary.best ? run.summary.best : null,
