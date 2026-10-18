@@ -56,7 +56,7 @@ await t('価格と版', () => { assert.equal(REA_PRICE_USDC, 0.5); assert.equal(
 const fake = (routes) => async (u) => {
   const key = String(u).replace('https://a.test', '');
   const r = routes[key] || { status: 404, body: '', ct: 'text/plain' };
-  return { status: r.status, headers: new Headers({ 'content-type': r.ct, ...(r.h || {}) }), text: async () => r.body, url: String(u) };
+  return { status: r.status, headers: new Headers({ 'content-type': r.ct, ...(r.h || {}) }), text: async () => r.body, json: async () => JSON.parse(r.body), url: String(u) };
 };
 
 await t('inspectRea: 公開サイトを解析し、根拠と状態遷移を残す', async () => {
@@ -101,7 +101,7 @@ await t('inspectRea: MCP があれば種別 mcp に上がる', async () => {
     if (String(u).endsWith('/mcp')) {
       const body = JSON.parse(o.body);
       const result = body.method === 'initialize' ? { protocolVersion: '2025-06-18', serverInfo: { name: 'x', version: '1' } } : { tools: [{ name: 'a' }, { name: 'b' }] };
-      return { status: 200, headers: new Headers({ 'content-type': 'application/json' }), text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), url: String(u) };
+      return { status: 200, headers: new Headers({ 'content-type': 'application/json' }), text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }), json: async () => ({ jsonrpc: '2.0', id: body.id, result }), url: String(u) };
     }
     return fake({ '/': { status: 200, ct: 'text/html', body: '<title>t</title>' } })(u, o);
   };

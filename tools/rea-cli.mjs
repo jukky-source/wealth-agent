@@ -394,7 +394,8 @@ function parseJs(path, code) {
   out.endpoints = uniq([...code.matchAll(/["'`](\/(?:api|v\d|graphql|rest|mcp|rpc|oauth|auth|admin|internal)[A-Za-z0-9_\-./{}$:?=&%]{0,120})["'`]/g)].map((m) => m[1].split('?')[0]), 40);
   for (const m of code.matchAll(/https?:\/\/[A-Za-z0-9._-]{4,60}/g)) out.hosts.push(m[0].replace(/^https?:\/\//, '').split('/')[0]);
   out.hosts = uniq(out.hosts, 30);
-  out.flags = uniq([...code.matchAll(/["']([a-z][A-Za-z0-9_]*(?:[Ff]lag|[Ee]xperiment|[Bb]eta|[Ee]nabl)[A-Za-z0-9_]*)["']\s*[:=]\s*(true|false|1|0)/g)].map((m) => `${m[1]}=${m[2]}`), 25);
+  const FLAG_KW = /(flag|feature|experiment|beta|enabl|toggle|rollout|gate|canary|variant)/i;
+  out.flags = uniq([...code.matchAll(/["']?([A-Za-z_$][A-Za-z0-9_$.]{2,44})["']?\s*[:=]\s*(true|false|1|0)\b/g)].filter((m) => FLAG_KW.test(m[1])).map((m) => `${m[1]}=${m[2]}`), 25);
   out.envNames = uniq([...code.matchAll(/(?:process\.env|import\.meta\.env)\.([A-Z][A-Z0-9_]{2,40})/g)].map((m) => m[1]), 25);
   out.sourcemaps = uniq([...code.matchAll(/sourceMappingURL=([^\s*'"`]+)/g)].map((m) => m[1]), 5);
   const shapes = [[/sk-[A-Za-z0-9]{20,}/, 'sk- で始まる鍵らしき文字列'], [/ghp_[A-Za-z0-9]{20,}/, 'GitHub トークンらしき文字列'], [/AIza[0-9A-Za-z_-]{20,}/, 'Google API キーらしき文字列'], [/eyJ[A-Za-z0-9_-]{10,}\./, 'JWT らしき文字列'], [/AKIA[0-9A-Z]{16}/, 'AWS 鍵IDらしき文字列']];
