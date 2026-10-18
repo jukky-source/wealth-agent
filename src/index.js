@@ -780,12 +780,33 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
         const { reaQueueHelp, REA_QUEUE_VERSION } = await import('./agent/reaQueue.js');
         return json({ ok: true, version: LOOP_VERSION, help: loopHelp(), rea_queue: { version: REA_QUEUE_VERSION, help: reaQueueHelp() } });
       }
+      if (url.pathname === '/api/rea/queue' && request.method === 'POST') {
+        const { enqueueFromFindings, autoAnalyze } = await import('./agent/reaQueue.js');
+        const enq = await enqueueFromFindings(deps.store, { limit: Number(url.searchParams.get('limit')) || 12 });
+        const an = await autoAnalyze(deps.store, { limit: Number(url.searchParams.get('n')) || 3 });
+        return json({ ok: true, enqueued: enq.inserted, scanned: enq.scanned, analyzed: an.analyzed, rows: an.rows });
+      }
       if (url.pathname === '/api/rea/queue') {
         const { queueSummary, listTargets } = await import('./agent/reaQueue.js');
         const summary = await queueSummary(deps.store);
         const targets = (await listTargets(deps.store, { limit: Number(url.searchParams.get('limit')) || 15 }))
           .map((t) => ({ target: t.target, source: t.source, status: t.status, score: t.score, at: t.last_at || t.created_at, result: t.result_json || null }));
         return json({ ok: true, summary, targets });
+      }
+      if (url.pathname === '/api/loop' && request.method === 'POST') {
+        const { selfHeal } = await import('./agent/loop.js');
+        const { enqueueFromFindings, autoAnalyze } = await import('./agent/reaQueue.js');
+        const mode = url.searchParams.get('mode') || 'both';
+        const out = { ok: true, at: new Date().toISOString(), mode };
+        if (mode !== 'heal') {
+          out.enqueued = (await enqueueFromFindings(deps.store, { limit: 12 })).inserted;
+          out.analyzed = (await autoAnalyze(deps.store, { limit: Number(url.searchParams.get('n')) || 3 })).rows;
+        }
+        if (mode !== 'queue') {
+          const r = await selfHeal(deps.store, { env, maxRetry: 3 });
+          out.heal = { bottleneck: r.bottleneck, actions: r.actions };
+        }
+        return json(out);
       }
       const { loopSummary, loopText } = await import('./agent/loop.js');
       const body = await loopSummary(deps.store, { env });
