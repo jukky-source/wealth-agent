@@ -26,6 +26,12 @@ export async function todayDigest(store, { now = null, publicOnly = false } = {}
     self_test_usd: await q1("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE basis = 'self_test'"),
     rows: await q1('SELECT COUNT(*) FROM ledger'),
   };
+  const loop = await mod('./loop.js', 'loopSummary', store, { env: null });
+  const whyZero = loop && loop.bottleneck ? {
+    stage: loop.bottleneck.stage, key: loop.bottleneck.key, why: loop.bottleneck.why,
+    fix: loop.bottleneck.fix, level: loop.bottleneck.level,
+    stages: (loop.stages || []).map((s) => ({ stage: s.stage, key: s.key, n: s.n })),
+  } : null;
   const body = {
     ok: true, at, day: at.slice(0, 10),
     picked: {
@@ -43,6 +49,7 @@ export async function todayDigest(store, { now = null, publicOnly = false } = {}
     },
     learned,
     money,
+    why_zero: whyZero,
     gaps: [
       '実際の売上は 0（ledger の入金行はすべて自己テスト basis=self_test）',
       '報酬の受け取りは人間の1タップが必要（自動化しない）',
@@ -63,5 +70,6 @@ export function todayText(d = {}) {
     `試した: ${t.count}件（最終 ${t.last_run_at || '-'} / 取込 ${t.last_ingest_at || '-'}）`,
     `分かった: ${JSON.stringify(d.learned || {})}`,
     `お金: 売上 $${m.revenue_usd}（自己テスト $${m.self_test_usd} は別枠・記録 ${m.rows}行）`,
-  ].join('\n');
+    d.why_zero ? `詰まり: ${d.why_zero.stage} — ${d.why_zero.why}` : null,
+  ].filter(Boolean).join('\n');
 }

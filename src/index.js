@@ -349,7 +349,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
           try { store = wire(env).store; } catch {}
           return new Response(JSON.stringify(await todayDigest(store, { publicOnly: true })), { headers: { 'content-type': 'application/json; charset=utf-8' } });
         }
-        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html' };
+        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html', '/loop': '/loop.html' };
         const pretty = PRETTY[url.pathname] || url.pathname;
         const res = await env.ASSETS.fetch(pretty === url.pathname ? request : new Request(new URL(pretty, url.origin).toString(), request));
         if (res.status === 404) {
@@ -398,7 +398,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs'];
+      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/rea/queue'];
       if (!OPEN.includes(url.pathname)) return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
@@ -771,6 +771,27 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       const brief = reaBrief(s, { full: false });
       if (url.searchParams.get('format') === 'text') return new Response(brief, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
       return json({ ok: s.ok, brief, report: s, plan: s.plan || null, paid: { resource: 'rea-report', price_usdc: REA_PRICE_USDC, endpoint: `${url.origin}/api/x402/rea-report`, mcp_tool: 'buy_rea_report' }, action_rules: ACTION_RULES });
+    }
+
+    // 自己修復ループ（なぜ収益0なのかを毎回測る）と REA 自動投入キューの状態。
+    if (url.pathname === '/api/loop' || url.pathname === '/api/loop/public' || url.pathname === '/api/loop/help' || url.pathname === '/api/rea/queue') {
+      if (url.pathname.endsWith('/help')) {
+        const { loopHelp, LOOP_VERSION } = await import('./agent/loop.js');
+        const { reaQueueHelp, REA_QUEUE_VERSION } = await import('./agent/reaQueue.js');
+        return json({ ok: true, version: LOOP_VERSION, help: loopHelp(), rea_queue: { version: REA_QUEUE_VERSION, help: reaQueueHelp() } });
+      }
+      if (url.pathname === '/api/rea/queue') {
+        const { queueSummary, listTargets } = await import('./agent/reaQueue.js');
+        const summary = await queueSummary(deps.store);
+        const targets = (await listTargets(deps.store, { limit: Number(url.searchParams.get('limit')) || 15 }))
+          .map((t) => ({ target: t.target, source: t.source, status: t.status, score: t.score, at: t.last_at || t.created_at, result: t.result_json || null }));
+        return json({ ok: true, summary, targets });
+      }
+      const { loopSummary, loopText } = await import('./agent/loop.js');
+      const body = await loopSummary(deps.store, { env });
+      if (url.pathname.endsWith('/public')) { body.recent = (body.recent || []).map((r) => ({ kind: r.kind, action: r.action, state: r.state, at: r.at })); body.public = true; }
+      if (url.searchParams.get('format') === 'text') return new Response(loopText(body), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      return json(body);
     }
 
     if (url.pathname === '/api/report' && request.method === 'GET') {

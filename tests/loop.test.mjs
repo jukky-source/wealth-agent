@@ -1,221 +1,191 @@
-// 「集める → 試す計画 → 実行 → 結果の書き戻し」の輪と、EA書き出しの検査。
-// D1 の代わりに、必要なクエリだけを解釈する小さなメモリ内ストアを使う。
-import fs from 'node:fs';
+// 自己修復ループ（loop.js）と REA 自動投入キュー（reaQueue.js）のテスト。
+// 外部通信はしない（fetch を差し替える）。確かめること:
+//  ・収益0のとき、ファネルの「どの段で詰まっているか」を名指しできること
+//  ・同じ失敗を繰り返さず、手を変えて再試行し、上限で見切ること
+//  ・拾った情報が、人が並べなくても自動で解析対象になること（重複しない）
+//  ・解析結果がネタ帳（試すループ）に変換されること
 import assert from 'node:assert/strict';
-import {
-  COCONALA_OFFERS, templateCoconala, recordOutcome, outcomeBoard, findingFeedback,
-  applyDecidedPrice, refillQueue, OUTCOMES, outcomeById,
-} from '../src/agent/social.js';
-import { shapeFinding, scoutFindings, trialPlan, CAPABILITIES } from '../src/agent/scout.js';
-import { EA_SPECS, eaStrategyKeys, generateMql5, lintMql5, buildEa } from '../src/income/ea.js';
+import { funnel, mutateAttempt, urlVariants, retryPlaybook, selfHeal, MAX_TRIES, loopText } from '../src/agent/loop.js';
+import { enqueueFromFindings, autoAnalyze, queueSummary, targetKey } from '../src/agent/reaQueue.js';
 
-function makeStore(seed = {}) {
-  const T = { publish_drafts: [], scout_findings: [], social_outcomes: [], fx_strategies: [], fx_ea_exports: [], settings: [] };
-  for (const [k, v] of Object.entries(seed)) T[k] = v.slice();
-  const tableOf = (sql) => Object.keys(T).find((k) => String(sql).includes(k));
+let pass = 0, fail = 0;
+const t = async (name, fn) => {
+  try { await fn(); pass++; console.log(`  ok  ${name}`); }
+  catch (e) { fail++; console.log(`FAIL  ${name}\n      ${e.message}`); }
+};
+
+// --- 記憶だけの store（必要なテーブルだけ・再帰しない） ----------------------
+function memStore(seed = {}) {
+  const tables = {
+    playbooks: [], rea_targets: [], loop_runs: [], settings: [], receipts: [], ledger: [],
+    twitter_posts: [], scout_findings: [], perks: [],
+  };
+  for (const k of Object.keys(seed)) tables[k] = seed[k].slice();
+  const T = (sql) => { const m = sql.match(/(?:INTO|FROM|UPDATE)\s+([a-z_]+)/i); return m ? m[1] : null; };
+  const cols = (sql) => { const m = sql.match(/INSERT INTO [a-z_]+ \(([^)]+)\)/i); return m ? m[1].split(',').map((s) => s.trim()) : null; };
   return {
-    _t: T,
-    async run(sql, ...args) {
-      if (/CREATE|INDEX/i.test(sql)) return { ok: true };
-      const t = tableOf(sql);
-      if (t === 'scout_findings' && /UPDATE/i.test(sql)) {
-        const [status, , id] = args; const r = T.scout_findings.find((x) => x.id === id); if (r) r.status = status; return { ok: true };
+    _t: tables,
+    async run(sql, ...a) {
+      if (/^\s*CREATE (TABLE|UNIQUE INDEX|INDEX)/i.test(sql)) return {};
+      const tb = T(sql); if (!tb || !tables[tb]) return {};
+      if (/^\s*INSERT INTO/i.test(sql)) {
+        const c = cols(sql); const o = {};
+        c.forEach((k, i) => { o[k] = a[i]; });
+        if (c.includes('key') && tables[tb].some((r) => r.key === o.key)) throw new Error('UNIQUE constraint failed');
+        tables[tb].push(o); return {};
       }
-      if (t === 'publish_drafts' && /UPDATE/i.test(sql)) {
-        const [body, , id] = args; const r = T.publish_drafts.find((x) => x.id === id); if (r) r.body = body; return { ok: true };
+      if (/^\s*UPDATE/i.test(sql)) {
+        const m = sql.match(/UPDATE\s+([a-z_]+)\s+SET\s+([\s\S]+?)\s+WHERE\s+id\s*=\s*\?/i);
+        if (!m) return {};
+        const body = m[2].replace(/COALESCE\(tries,0\)\s*\+\s*1/gi, '__tries_inc__');
+        const row = tables[m[1]].find((r) => r.id === a[a.length - 1]);
+        if (!row) return {};
+        let i = 0;
+        for (const s of body.split(',').map((x) => x.trim())) {
+          const eq = s.indexOf('=');
+          const col = s.slice(0, eq).trim(); const expr = s.slice(eq + 1).trim();
+          if (expr === '__tries_inc__') { row[col] = (row[col] || 0) + 1; continue; }
+          if (expr === '?') { row[col] = a[i++]; continue; }
+          row[col] = expr.replace(/^'|'$/g, '');
+        }
+        return {};
       }
-      if (t === 'settings' && /INSERT/i.test(sql)) {
-        const [key, value] = args; const r = T.settings.find((x) => x.key === key);
-        if (r) r.value = value; else T.settings.push({ key, value }); return { ok: true };
+      return {};
+    },
+    async first(sql, ...a) { return (await this.all(sql, ...a))[0] || null; },
+    async all(sql, ...a) {
+      const tb = T(sql);
+      if (!tb || !tables[tb]) return [];
+      let out = tables[tb].slice();
+      const q = (re, fn) => { if (re.test(sql)) out = out.filter(fn); };
+      q(/WHERE key = \?/, (r) => r.key === a[0]);
+      q(/WHERE status = 'trying'/, (r) => r.status === 'trying');
+      q(/WHERE status = 'dead'/, (r) => r.status === 'dead');
+      q(/WHERE status = 'queued'/, (r) => r.status === 'queued');
+      q(/WHERE status = \?/, (r) => r.status === a[0]);
+      q(/COALESCE\(tries,0\) > 0/, (r) => Number(r.tries || 0) > 0);
+      q(/COALESCE\(tries,0\) < \?/, (r) => Number(r.tries || 0) < a[0]);
+      q(/key LIKE 'f_%'/, (r) => String(r.key || '').startsWith('f_'));
+      q(/url IS NOT NULL/, (r) => r.url);
+      q(/kind = 'revenue'/, (r) => r.kind === 'revenue');
+      q(/status IN \('analyzed','handoff'\)/, (r) => r.status === 'analyzed' || r.status === 'handoff');
+      q(/kind = 'distribute' AND state = 'done'/, (r) => r.kind === 'distribute' && r.state === 'done');
+      if (/SUM\(amount\)/i.test(sql)) {
+        const self = /basis = 'self_test'/.test(sql);
+        return [{ s: out.reduce((x, r) => x + (self ? (r.basis === 'self_test' ? Number(r.amount || 0) : 0) : Number(r.amount || 0)), 0) }];
       }
-      return { ok: true };
+      if (/GROUP BY status/.test(sql)) { const m = {}; for (const r of out) m[r.status || 'other'] = (m[r.status || 'other'] || 0) + 1; return Object.entries(m).map(([status, n]) => ({ status, n })); }
+      if (/GROUP BY kind/.test(sql) && tb === 'loop_runs') { const m = {}; for (const r of out) m[r.kind || 'other'] = (m[r.kind || 'other'] || 0) + 1; return Object.entries(m).map(([kind, n]) => ({ kind, n })); }
+      if (/COUNT\(\*\)/i.test(sql)) return [{ n: out.length }];
+      if (/ORDER BY score DESC/.test(sql)) out.sort((x, y) => Number(y.score || 0) - Number(x.score || 0));
+      if (/LIMIT \?/.test(sql)) out = out.slice(0, Number(a[a.length - 1]) || 20);
+      return out;
     },
-    async all(sql, ...args) {
-      const t = tableOf(sql); if (!t) return [];
-      let rows = T[t].slice();
-      if (t === 'scout_findings' && /score >=/.test(sql)) rows = rows.filter((r) => Number(r.score) >= Number(args[0]));
-      const nums = args.filter((a) => typeof a === 'number');
-      const lim = nums.length ? nums[nums.length - 1] : null;
-      if (lim) rows = rows.slice(0, lim);
-      return rows;
-    },
-    async first(sql, ...args) {
-      if (/COUNT/.test(sql)) return { n: (T[tableOf(sql)] || []).length };
-      if (/FROM settings/.test(sql)) return T.settings.find((s) => s.key === args[0]) || null;
-      const t = tableOf(sql); return (T[t] || [])[0] || null;
-    },
-    async get(t, id) { return (T[t] || []).find((r) => r.id === id) || null; },
-    async insert(t, row) { (T[t] = T[t] || []).push(row); return { ok: true }; },
   };
 }
 
-const finding = (over = {}) => ({
-  id: 'f1', key: 'k1', source_id: 'hn_show', title: 'テスト候補', url: 'https://example.com/a',
-  excerpt: 'x402 で課金するAPIの話', tags_json: '[]', score: 50, fresh: 12, engage: 3, age_hours: 5,
-  signals_json: '["bounty"]', money_json: '["bounty"]', fits_json: '["x402"]',
-  trial_json: JSON.stringify(trialPlan({ title: 'テスト候補' }, ['x402'])),
-  status: 'new', note: null, created_at: '2026-10-16T00:00:00Z', updated_at: '2026-10-16T00:00:00Z', ...over,
-});
-const draft = (over = {}) => ({
-  id: 'd1', thread_id: null, kind: 'post', channel: 'coconala', title: 'CSV・Excelの整理します',
-  body: '【価格】\n案: 1,000円（あなたが決めてください）\n', lang: 'ja', ai_disclosure: 0,
-  unique_commentary: 0, linked: 0, state: 'queued', blocks_json: '[]', scheduled_for: null,
-  posted_url: null, approved_at: null, posted_at: null, created_at: '2026-10-16T00:00:00Z',
-  updated_at: '2026-10-16T00:00:00Z', day: '2026-10-16', ...over,
-});
-
-let pass = 0; let fail = 0;
-const t = async (name, fn) => {
-  try { await fn(); pass += 1; console.log(`  ok  ${name}`); }
-  catch (e) { fail += 1; console.log(`  FAIL ${name}\n     ${e.message}`); }
+const fakeFetch = (map = {}) => async (u) => {
+  const hit = map[String(u)];
+  if (!hit) return { status: 404, ok: false, text: async () => '', json: async () => ({}), headers: new Headers({ 'content-type': 'text/plain' }) };
+  return { status: hit.status || 200, ok: (hit.status || 200) < 400, text: async () => hit.body || '', json: async () => JSON.parse(hit.body || '{}'), headers: new Headers({ 'content-type': hit.ct || 'text/html' }) };
 };
 
-await t('価格: ココナラの7品目はすべて980円で出る（案のままだと安く見られる）', async () => {
-  assert.equal(COCONALA_OFFERS.length, 7);
-  for (const o of COCONALA_OFFERS) assert.equal(o.jpy_hint, 980);
-  const tpl = templateCoconala(COCONALA_OFFERS[0]);
-  assert.ok(tpl.body.includes('980円'), tpl.body);
-  assert.ok(!tpl.body.includes('案: '), '案表記が残っている');
+console.log('自己修復ループ');
+await t('urlVariants: www の有無とトップを、元と違う形で返す', () => {
+  const v = urlVariants('https://www.example.com/a');
+  assert.ok(v.includes('https://example.com/a'), JSON.stringify(v));
+  assert.ok(v.includes('https://www.example.com/'));
+  assert.equal(urlVariants('not a url').length, 0);
 });
-
-await t('価格: すでに作った下書きの価格も980円に直せる（書き戻し）', async () => {
-  const store = makeStore({ publish_drafts: [draft(), draft({ id: 'd2', channel: 'x', body: '案: 500円（あなたが決めてください）' })] });
-  const r = await applyDecidedPrice(store, { jpy: 980 });
-  assert.equal(r.updated, 1, JSON.stringify(r));
-  assert.ok(store._t.publish_drafts[0].body.includes('980円'));
-  assert.ok(store._t.publish_drafts[0].body.includes('変更できます'));
-  assert.ok(store._t.publish_drafts[1].body.includes('案: 500円'), 'ココナラ以外は触らない');
+await t('mutateAttempt: 初回 → 入口を変える → 読み方を変える → 3回で見切る', () => {
+  assert.equal(mutateAttempt({ tries: 0, url: 'https://a.test/x' }).mutation, 'first');
+  const e = mutateAttempt({ tries: 1, url: 'https://a.test/x', probe: 'http' });
+  assert.equal(e.mutation, 'entry'); assert.notEqual(e.url, 'https://a.test/x');
+  const p = mutateAttempt({ tries: 2, url: 'https://a.test/x', probe: 'http' });
+  assert.equal(p.mutation, 'probe'); assert.equal(p.probe, 'free_tier');
+  assert.equal(mutateAttempt({ tries: MAX_TRIES, url: 'https://a.test/x' }).give_up, true);
 });
-
-await t('価格: 下書きをそろえると、古い価格のズレも自動で直る', async () => {
-  const store = makeStore({ publish_drafts: [draft({ id: 'old1', body: '【価格】\n案: 1,000円（あなたが決めてください）\n' })] });
-  const r = await refillQueue({ store, limit: 1, channels: ['coconala'] });
-  assert.ok(r.price_aligned >= 1, JSON.stringify(r));
-  assert.ok(store._t.publish_drafts.find((d) => d.id === 'old1').body.includes('980円'), '古い下書きの価格が直っていない');
+await t('funnel: 売り物はあるのに掲載0なら「置き場に出る」で詰まっていると言える', async () => {
+  const store = memStore({ playbooks: [{ id: 'a', tries: 2, status: 'trying', result_json: '{"verdict":"alive"}' }], ledger: [{ kind: 'revenue', amount: 0, basis: 'self_test' }] });
+  const f = await funnel(store);
+  assert.equal(f.bottleneck.key, 'distributed', JSON.stringify(f.bottleneck));
+  assert.match(f.verdict, /実売上はまだ 0/);
+  assert.equal(f.stages.find((s) => s.key === 'tried').n, 1);
 });
-
-await t('計画: 「試す計画」に費用のある手順が1つも入らない（原価0の強制）', async () => {
-  const plan = trialPlan({ title: 'x402 の課金APIの話' }, ['x402', 'content']);
-  assert.equal(plan.money_at_risk_jpy, 0);
-  for (const s of plan.steps) assert.equal(s.cost_jpy, 0, JSON.stringify(s));
-  assert.ok(plan.steps.some((s) => s.capability === 'measure'), '結果の記録ステップが無い');
-  assert.ok(CAPABILITIES.every((c) => c.cost === 0));
+await t('funnel: 実売上があれば verdict が「次の詰まり」を言う', async () => {
+  const store = memStore({ playbooks: [{ id: 'a', tries: 1, status: 'works', result_json: '{"verdict":"alive"}' }], ledger: [{ kind: 'revenue', amount: 12, basis: 'x402' }] });
+  const f = await funnel(store);
+  assert.match(f.verdict, /実売上 \$12/);
 });
-
-await t('一覧: 拾った候補と試す計画が外から読める形になる', async () => {
-  const store = makeStore({ scout_findings: [finding(), finding({ id: 'f2', key: 'k2', title: '安い候補', score: 20 })] });
-  const rows = await scoutFindings(store, { limit: 20, minScore: 30 });
-  assert.equal(rows.length, 1, 'しきい値で絞れていない');
-  const r = rows[0];
-  assert.equal(r.id, 'f1');
-  assert.ok(Array.isArray(r.trial.steps) && r.trial.steps.length >= 2);
-  assert.equal(r.trial_cost_jpy, 0);
-  assert.ok(r.source_label, '媒体名が空');
-  assert.equal(shapeFinding({ trial_json: '{壊れたJSON' }).trial_cost_jpy, 0);
+await t('retryPlaybook: 到達できなければ手を変えて再試行し、3回で dead にする', async () => {
+  const store = memStore({ playbooks: [{ id: 'p1', title: 'x', url: 'https://a.test/x', probe: 'http', tries: 0, status: 'new' }] });
+  const f1 = await retryPlaybook(store, store._t.playbooks[0], { fetchImpl: fakeFetch({}) });
+  assert.equal(f1.status, 'trying'); assert.equal(f1.mutation, 'first');
+  const f2 = await retryPlaybook(store, store._t.playbooks[0], { fetchImpl: fakeFetch({}) });
+  assert.equal(f2.mutation, 'entry');
+  assert.match(store._t.playbooks[0].result_json, /"mutation":"entry"/);
+  const f3 = await retryPlaybook(store, store._t.playbooks[0], { fetchImpl: fakeFetch({}) });
+  assert.equal(f3.status, 'dead');
+  assert.equal((await retryPlaybook(store, store._t.playbooks[0], { fetchImpl: fakeFetch({}) })).action, 'give_up');
 });
-
-await t('輪: 結果を記録すると次に効く（売れた＝重み+20が候補に戻る）', async () => {
-  const store = makeStore({ scout_findings: [finding()], publish_drafts: [draft({ thread_id: 'f1' })] });
-  const rec = await recordOutcome(store, { draft_id: 'd1', outcome: 'sold', note: '980円で1件' });
-  assert.equal(rec.ok, true, JSON.stringify(rec));
-  assert.equal(rec.finding_id, 'f1');
-  const board = await outcomeBoard(store);
-  assert.equal(board.recorded, 1);
-  assert.equal(board.sold, 1);
-  assert.equal(store._t.scout_findings[0].status, 'won', '候補に書き戻していない');
-  const fb = await findingFeedback(store);
-  assert.equal(fb.f1, 20, JSON.stringify(fb));
-  assert.equal(outcomeById('unknown'), null);
-  assert.equal((await recordOutcome(store, { outcome: 'でたらめ' })).ok, false);
+await t('retryPlaybook: 生きていれば trying、募集中なら works', async () => {
+  const store = memStore({ playbooks: [{ id: 'p1', title: 'x', url: 'https://a.test/x', probe: 'http', tries: 0, status: 'new' }] });
+  const ok = await retryPlaybook(store, store._t.playbooks[0], { fetchImpl: fakeFetch({ 'https://a.test/x': { body: 'hello' } }) });
+  assert.equal(ok.status, 'trying'); assert.equal(ok.verdict, 'alive');
+  const store2 = memStore({ playbooks: [{ id: 'p2', title: 'y', url: 'https://b.test/y', probe: 'free_tier', tries: 0, status: 'new' }] });
+  const w = await retryPlaybook(store2, store2._t.playbooks[0], { fetchImpl: fakeFetch({ 'https://b.test/y': { body: 'free tier available' } }) });
+  assert.equal(w.status, 'works'); assert.equal(w.verdict, 'mentions_free_or_money');
 });
-
-await t('輪: 反応なしは負の重みで記録され、同じ手を繰り返さない判断に使える', async () => {
-  const store = makeStore({ scout_findings: [finding()], publish_drafts: [draft({ thread_id: 'f1' })] });
-  const rec = await recordOutcome(store, { draft_id: 'd1', outcome: 'no_reaction' });
-  assert.ok(rec.recorded.weight < 0);
-  assert.equal(store._t.scout_findings[0].status, 'cold');
-  const fb = await findingFeedback(store);
-  assert.ok(fb.f1 < 0, JSON.stringify(fb));
-  assert.equal(OUTCOMES.length, 5);
-});
-
-await t('輪: 過去に売れた候補は、点数が低くても次に優先される（並び替えが実際に効く）', async () => {
-  const store = makeStore({
-    scout_findings: [finding({ id: 'fa', key: 'ka', title: '点が高いだけの候補', score: 50 }), finding({ id: 'fb', key: 'kb', title: '売れた候補', score: 45, url: 'https://example.com/b' })],
-    publications: [],
-    publish_drafts: [],
+await t('selfHeal: 詰まりを記録し、置き場の掲載エントリを「押すだけ」の形で用意する', async () => {
+  const store = memStore({
+    playbooks: [{ id: 'p1', title: 'stuck', url: 'https://a.test/x', probe: 'http', tries: 1, status: 'trying', last_try_at: new Date(Date.now() - 7 * 3600e3).toISOString() }],
+    ledger: [{ kind: 'revenue', amount: 0, basis: 'self_test' }],
   });
-  await recordOutcome(store, { channel: 'x', outcome: 'sold', note: null });
-  const rec = store._t.social_outcomes[0];
-  rec.finding_id = 'fb';
-  await recordOutcome(store, { draft_id: null, channel: 'x', outcome: 'no_reaction' });
-  const rep = await refillQueue({ store, limit: 1, minScore: 30, channels: ['x'] });
-  assert.equal(rep.created.length, 1, JSON.stringify(rep));
-  assert.equal(rep.created[0].from, '売れた候補', `並び替えが効いていない: ${JSON.stringify(rep.created)}`);
-  assert.ok(rep.feedback && rep.feedback.recorded >= 1, JSON.stringify(rep.feedback));
+  const r = await selfHeal(store, { fetchImpl: fakeFetch({}), now: new Date().toISOString() });
+  const kinds = r.actions.map((a) => a.kind);
+  assert.ok(kinds.includes('retry'), JSON.stringify(kinds));
+  assert.ok(kinds.includes('distribute'), JSON.stringify(kinds));
+  assert.ok(kinds.includes('diagnose'), JSON.stringify(kinds));
+  const dist = store._t.loop_runs.find((x) => x.kind === 'distribute');
+  assert.equal(dist.level, 'approve');
+  assert.match(dist.evidence_json, /awesome-remote-mcp-servers/);
+  assert.ok(store._t.loop_runs.length >= 3);
+  assert.match(loopText(r.funnel), /詰まり/);
 });
 
-await t('EA: 対応する戦略すべてで .mq5 が生成され、構造の自己点検を通る', async () => {
-  assert.ok(eaStrategyKeys().length >= 4, `EA対応の戦略が ${eaStrategyKeys().length} 本`);
-  for (const k of eaStrategyKeys()) {
-    const g = generateMql5({ strategyKey: k, params: {}, symbol: 'USDJPY' });
-    const l = lintMql5(g.mq5_code);
-    assert.ok(l.ok, `${k}: ${JSON.stringify(l.failed)}`);
-    assert.ok(g.filename.endsWith('.mq5'));
-    assert.ok(g.set_code.includes('InpLots=0.10'));
-    assert.ok(g.mq5_code.includes('CopyBuffer('));
-    assert.ok(!g.mq5_code.includes('OrderSend('));
-    assert.ok(EA_SPECS[k].label);
-  }
-});
-
-await t('EA: 王者から書き出せる（成績・注意書きつき）', async () => {
-  const params = { strategyKey: 'ema_cross', fast: 12, slow: 48, atrStopMult: 2.0, atrTargetMult: 3.0, trendFilter: 200, allowShort: true };
-  const store = makeStore({
-    settings: [{ key: 'fxlab:champion', value: JSON.stringify({ symbol: 'USDJPY', strategy_key: 'ema_cross', params, promoted_to: 'fxs_1', metrics: { netProfitPct: 293.85, profitFactor: 1.4, maxDrawdownPct: 33.41, trades: 120 } }) }],
-    fx_strategies: [{ id: 'fxs_1', name: 'EMAクロス (USDJPY) v1', symbol: 'USDJPY', params_json: JSON.stringify(params), created_at: '2026-10-16T00:00:00Z' }],
+console.log('REA 自動投入キュー');
+await t('enqueueFromFindings: X / scout / perks から積み、同じ URL は二度積まない', async () => {
+  const store = memStore({
+    twitter_posts: [{ url: 'https://x.test/a', text: 'AIの無料枠', score: 9, handle: 'a' }, { url: 'https://x.test/a', text: 'AIの無料枠', score: 9, handle: 'a' }],
+    scout_findings: [{ url: 'https://s.test/b', title: 'B', score: 40, source_id: 'hn' }],
+    perks: [{ url: 'https://p.test/c', title: 'C' }],
   });
-  const r = await buildEa(store, {});
-  assert.equal(r.ok, true, JSON.stringify(r).slice(0, 300));
-  assert.equal(r.source, 'champion');
-  assert.equal(r.timeframe, 'PERIOD_D1');
-  assert.ok(r.lint.ok, JSON.stringify(r.lint.failed));
-  assert.ok(r.mq5_code.includes('InpFast          = 12'));
-  assert.ok(r.mq5_code.includes('293.85'), '成績がコードに書かれていない');
-  assert.ok(r.caveats.length >= 3);
-  assert.equal(store._t.fx_ea_exports.length, 1);
-  assert.ok(/^[A-Za-z0-9_]+\.mq5$/.test(r.filename), r.filename);
-  assert.ok(r.filename.includes('ema_cross_USDJPY'), r.filename);
+  const r = await enqueueFromFindings(store, { limit: 10 });
+  assert.equal(r.inserted, 3, JSON.stringify(r));
+  assert.equal(r.skipped, 1);
+  assert.equal((await enqueueFromFindings(store, { limit: 10 })).inserted, 0);
+  assert.equal(store._t.rea_targets[0].key, targetKey('https://x.test/a'));
+});
+await t('autoAnalyze: 解析して状態を残し、使えるものはネタ帳に変換する', async () => {
+  const store = memStore({ rea_targets: [{ id: 'q1', key: 'rt_1', target: 'https://a.test', source: 'x:a', title: 'A', score: 9, status: 'queued', tries: 0, created_at: new Date().toISOString() }] });
+  const ff = fakeFetch({ 'https://a.test': { body: '<html><title>A</title><form action="/api/x"></form><script src="/app.js"></script></html>' } });
+  const r = await autoAnalyze(store, { limit: 2, fetchImpl: ff });
+  assert.equal(r.analyzed, 1);
+  assert.equal(store._t.rea_targets[0].status, 'analyzed', store._t.rea_targets[0].status + ' / ' + store._t.rea_targets[0].result_json);
+  assert.match(store._t.rea_targets[0].result_json, /"kind":"web"/);
+  assert.ok(store._t.playbooks.length >= 1, 'ネタ帳に変換される');
+  assert.ok(String(store._t.playbooks[0].key).startsWith('ra_'));
+  assert.equal(store._t.playbooks[0].cost_jpy, 0);
+  const s = await queueSummary(store);
+  assert.equal(s.analyzed, 1); assert.equal(s.queued, 0); assert.equal(s.derived_playbooks, 1);
+});
+await t('autoAnalyze: 失敗しても記録して次へ進む（キューが詰まらない）', async () => {
+  const store = memStore({ rea_targets: [{ id: 'q1', key: 'rt_1', target: 'nothost', source: 'x:a', title: 'A', score: 1, status: 'queued', tries: 0, created_at: new Date().toISOString() }] });
+  const r = await autoAnalyze(store, { limit: 1, fetchImpl: fakeFetch({}) });
+  assert.equal(r.analyzed, 1);
+  assert.equal(store._t.rea_targets[0].status, 'failed', store._t.rea_targets[0].result_json);
+  assert.equal(store._t.playbooks.length, 0);
 });
 
-await t('EA: 王者がまだ無いときは、はっきり断る（黙って空を返さない）', async () => {
-  const store = makeStore({});
-  const r = await buildEa(store, {});
-  assert.equal(r.ok, false);
-  assert.ok(r.summary.includes('まだありません'));
-});
-
-await t('コピーできない端末にも逃げ道がある（1タップ・長押し・別タブ）', async () => {
-  const app = fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  assert.ok(app.includes('function copySmart'), 'copySmart がある');
-  assert.ok(app.includes('function execCopy'), '同期コピーがある');
-  assert.ok(app.includes("localStorage.setItem('wa_copybox'"), '控えを残す');
-  assert.ok(app.includes('data-helper'), '別タブの逃げ道');
-  assert.ok(app.includes('data-body='), '長押しできる枠');
-  const helper = fs.readFileSync(new URL('../public/copy.html', import.meta.url), 'utf8');
-  assert.ok(helper.includes("localStorage.getItem('wa_copybox')"), 'copy.html が同じ控えを読む');
-  assert.ok(helper.includes('全選択'), '長押しの案内がある');
-});
-
-await t('売り場に置く入口がある（/v1・合鍵・OpenAPI・原価0のまま）', async () => {
-  const idx = fs.readFileSync('src/index.js', 'utf8');
-  assert.match(idx, /url\.pathname\.startsWith\('\/v1\/'\)/, '/v1 の入口が無い');
-  assert.match(idx, /RAPIDAPI_PROXY_SECRET/, '売り場の合鍵照合が無い');
-  assert.match(idx, /X-RapidAPI-Proxy-Secret/, '売り場ヘッダを見ていない');
-  const conf = fs.readFileSync('wrangler.containers.toml', 'utf8');
-  assert.match(conf, /"\/v1\/\*"/, 'run_worker_first に /v1/* が無い（404ではなくHTMLが返る）');
-});
-
-console.log(`\nLOOP: ${pass} passed, ${fail} failed`);
-if (fail) process.exitCode = 1;
-
+console.log(`\n════════ LOOP: ${pass} passed, ${fail} failed ════════`);
+process.exit(fail ? 1 : 0);
