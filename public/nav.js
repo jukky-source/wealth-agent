@@ -18,11 +18,21 @@ const STATE_JA = {
 const badgeCls = (s) => (['running', 'planning', 'testing', 'verifying', 'improving'].includes(s) ? 'run'
   : (s === 'completed' ? 'done' : (s === 'failed' || s === 'cancelled' ? 'fail' : 'wait')));
 
+function looksLikeToken(v) { return typeof v === 'string' && v.length >= 16 && /^[A-Za-z0-9_.:\-]+$/.test(v); }
+function fromUrl() {
+  // 端末のつなぎ方（?token= / #token= / ?t= など）が変わっても拾えるようにする。
+  const bags = [new URLSearchParams(location.search), new URLSearchParams(String(location.hash || '').replace(/^#\/?/, ''))];
+  for (const b of bags) {
+    for (const [k, v] of b.entries()) if (/token|^t$/i.test(k) && looksLikeToken(v)) return v;
+    for (const v of b.values()) if (looksLikeToken(v) && !/^#/.test(v)) return v;
+  }
+  return '';
+}
 function token() {
-  const q = new URLSearchParams(location.search);
-  const t = q.get('token') || q.get('t') || q.get('access_token');
+  const t = fromUrl();
   if (t) { try { localStorage.setItem('wa_token', t); } catch { /* 端末が拒否しても続行 */ } return t; }
-  for (const k of ['wa_token', 'wealth_agent_token', 'owner_token', 'wa:token', 'token']) {
+  try { for (const s of [sessionStorage, localStorage]) for (const k of ['wa_token', 'token', 'access_token']) { const v = s.getItem(k); if (looksLikeToken(v)) return v; } } catch { /* noop */ }
+  for (const k of ['wa_token', 'owner_token', 'token']) {
     try { const v = localStorage.getItem(k); if (v && v.length > 8) return v; } catch { /* noop */ }
   }
   try {
@@ -39,7 +49,7 @@ async function api(path, { method = 'GET', body = null, timeout = 25000 } = {}) 
   const t = setTimeout(() => ctl.abort(), timeout);
   try {
     const res = await fetch(path, {
-      method, signal: ctl.signal,
+      method, signal: ctl.signal, credentials: 'same-origin',
       headers: { authorization: `Bearer ${token()}`, ...(body ? { 'content-type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
