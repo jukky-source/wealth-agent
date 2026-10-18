@@ -119,8 +119,19 @@ export function createEngine(deps) {
   // -------------------------------------------------------------------------
   // The tick
   // -------------------------------------------------------------------------
-  async function tick({ maxSteps = cfg.maxStepsPerTick, source = 'manual', agentId = null } = {}) {
+  async function tick({ maxSteps = cfg.maxStepsPerTick, source = 'manual', agentId = null, budgetMs = null } = {}) {
     const started = Date.now();
+    // 1ティックの壁時計の上限。Workers の実行時間に近づく前に必ず切り上げ、
+    // どこまで進んだかは保存済みなので次のティックが続きから進める。
+    const budget = Math.max(5000, Number(budgetMs || (env && env.ENGINE_BUDGET_MS) || 45000));
+    const deadline = started + budget;
+    let budgetHit = false;
+
+    // 前回のティックが時間切れで途中になっていた作業を拾い直す（進捗を失わない）
+    try {
+      const cutoff = new Date(Date.now() - 180000).toISOString();
+      await store.run(`UPDATE tasks SET state='queued', next_action='時間切れで切り上げた作業を再開します', updated_at=? WHERE state IN ('running','verifying','testing','planning') AND updated_at < ?`, nowIso(), cutoff);
+    } catch { /* 拾い直しに失敗しても止めない */ }
     // Fleet scoping: when an agent id is given, this tick only advances that
     // agent's missions (plus unassigned ones it may claim). Runs created during
     // the slice are stamped with the agent id so the log can be filtered.
@@ -159,7 +170,8 @@ export function createEngine(deps) {
     const results = [];
 
     for (const mission of missions) {
-      const r = await runMissionSlice(mission, { character, steps: perTick, source });
+      if (Date.now() >= deadline) { budgetHit = true; results.push({ mission_id: mission.id, status: 'deferred_time_budget' }); continue; }
+      const r = await runMissionSlice(mission, { character, steps: perTick, source, deadline });
       results.push(r);
     }
 
@@ -176,17 +188,20 @@ export function createEngine(deps) {
     router.endTick();
     return {
       ran: true, durationMs: Date.now() - started, source, agent_id: agentId || null,
-      missions: results,
+      missions: results, budget_ms: budget,
+      budget_exhausted: budgetHit || results.some((r) => r.status === 'deferred_time_budget'),
       quota: await router.budgetExceeded() ? 'exhausted' : 'ok',
     };
   }
 
   /** Run up to `steps` steps for one mission. */
-  async function runMissionSlice(mission, { character, steps, source }) {
+  async function runMissionSlice(mission, { character, steps, source, deadline = Infinity }) {
     let done = 0;
     const trace = [];
 
     for (let s = 0; s < steps; s++) {
+      // 上限に達したら「ここまで」を記録して返す（途中で殺されない・進捗は残る）
+      if (Date.now() >= deadline) { trace.push({ step: s, skipped: 'time_budget' }); break; }
       const memos = await memory.digest(`${mission.title} ${mission.goal}`, { scope: `mission:${mission.id}`, limit: 10 });
       const sel = await selectNextTask(store, { character, mission, memories: memos });
 
@@ -231,7 +246,14 @@ export function createEngine(deps) {
       }
 
       const freshTask = await store.get('tasks', task.id);
-      const outcome = await runTaskAttempt(
+      // 1歩が長すぎる場合の見張り。上限を超えたら切り上げ、タスクは実行待ちに戻す
+      // （途中で殺されて「running のまま」になるのを防ぐ）。
+      const stepBudget = Math.max(15000, Number((env && env.ENGINE_STEP_BUDGET_MS) || 75000));
+      let stepTimer = null;
+      const stepTimeout = new Promise((resolve) => {
+        stepTimer = setTimeout(() => resolve({ outcome: 'time_budget' }), Math.max(1000, Math.min(stepBudget, deadline - Date.now())));
+      });
+      const outcome = await Promise.race([stepTimeout, runTaskAttempt(
         { store, memory, tools, router, research, fx, rewards, sidehustle, ranking, knowledge, dataAnalysis, codeAgent, browser, workflows, env },
         { task: freshTask, mission, character, verify: verifyResult, remember: (t, o) => memory.write({
           kind: o.success ? 'success' : 'failure',
@@ -243,8 +265,15 @@ export function createEngine(deps) {
           data: { task_id: t.id, tool: o.method },
         }),
         },
-      );
+      )]);
 
+      clearTimeout(stepTimer);
+      if (outcome && outcome.outcome === 'time_budget') {
+        await store.update('tasks', freshTask.id, { state: 'queued', next_action: '1歩が長すぎたため切り上げました。次のティックで続きから実行します', updated_at: nowIso() });
+        await checkpoint(`mission:${mission.id}`, 'time_budget', { task_id: freshTask.id });
+        trace.push({ task_id: freshTask.id, title: freshTask.title, outcome: 'time_budget' });
+        return { mission_id: mission.id, status: 'deferred_time_budget', note: '1歩が長すぎたため切り上げました（進捗は保存済み・次回続行）', trace };
+      }
       trace.push({ task_id: freshTask.id, title: freshTask.title, outcome: outcome.outcome, detail: truncate(outcome.result?.summary || outcome.result?.error || '', 160) });
       done++;
 

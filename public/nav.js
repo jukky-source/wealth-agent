@@ -595,7 +595,51 @@ else boot();
     }
   }
 
-  function enhance(){ injectApprovals(); injectRoles(); }
+  // ---- 3) 実行ログ（1歩ずつ何をしたか） ----
+  async function injectLog(){
+    const wrap = document.querySelector('#views .vwrap');
+    if (!wrap || document.body.dataset.tab !== 'auto') return;
+    let card = wrap.querySelector('[data-enh="log"]');
+    if (!card) {
+      card = document.createElement('section');
+      card.className = 'card'; card.dataset.enh = 'log';
+      card.innerHTML = '<h3>実行ログ（1歩ずつ）</h3><div data-body class="empty">読み込み中…</div>' +
+        '<div class="note">エージェントが実際に行った作業の記録です（新しい順）。「詳細」をタップすると中身が開きます。</div>';
+      wrap.appendChild(card);
+      card.querySelector('[data-body]').addEventListener('click', (e) => { if (e.target.closest('button[data-again]')) load(); });
+    }
+    const body = card.querySelector('[data-body]');
+    async function load(){
+      try {
+        const j = await req('/api/engine/log?limit=30');
+        const steps = j.steps || [];
+        if (!steps.length) { body.className = 'empty'; body.textContent = 'まだ記録がありません。'; return; }
+        body.className = '';
+        body.innerHTML = steps.map((s) => {
+          const d = s.detail == null ? '' : (typeof s.detail === 'string' ? s.detail : JSON.stringify(s.detail));
+          const short = d.length > 240 ? d.slice(0, 240) + '…' : d;
+          return '<div class="row"><div class="t">' + esc(s.title) + '</div><div class="m">' +
+            (s.state ? '<span class="badge ' + (s.kind === 'checkpoint' ? 'done' : 'run') + '">' + esc(s.state) + '</span>' : '') +
+            '<span>' + esc(s.kind === 'checkpoint' ? '区切り' : '作業') + '</span>' +
+            '<code>' + esc(String(s.at).slice(0, 16).replace('T', ' ')) + '</code></div>' +
+            (short ? '<details class="fold"><summary>詳細</summary><div class="body">' + esc(short) + '</div></details>' : '') + '</div>';
+        }).join('');
+      } catch (e) {
+        body.className = 'err';
+        body.innerHTML = '<b>実行ログを取得できませんでした</b><div>' + esc(e.message) + '</div><div class="acts"><button data-again="1">再試行</button></div>';
+      }
+    }
+    await load();
+  }
+  function enhance(){ injectApprovals(); injectRoles(); injectLog(); }
+  setInterval(() => { if (document.body.dataset.tab === 'auto') injectLog(); }, 15000);
+  // 画面が非同期で組み直されても差し込み直す（設定画面は取得後に再構築される）
+  const viewsEl = document.getElementById('views');
+  if (viewsEl && window.MutationObserver) {
+    let mt = 0;
+    new MutationObserver(() => { clearTimeout(mt); mt = setTimeout(enhance, 120); }).observe(viewsEl, { childList: true, subtree: false });
+  }
+  [1500, 2800, 4500].forEach((ms) => setTimeout(enhance, ms));
   const nav = document.getElementById('bnav');
   if (nav) nav.addEventListener('click', () => { setTimeout(enhance, 300); setTimeout(enhance, 1000); });
   window.addEventListener('load', () => setTimeout(enhance, 700));

@@ -188,7 +188,26 @@ export function createApi(deps) {
   on('POST', '/api/engine/pause', async (req, body) => engine.control('pause', { note: body.reason }));
   on('POST', '/api/engine/resume', async () => engine.control('resume'));
   on('POST', '/api/engine/stop', async (req, body) => engine.control('stop', { note: body.reason }));
-  on('POST', '/api/engine/tick', async (req, body) => engine.tick({ maxSteps: body.steps || 3, source: 'api' }));
+  on('POST', '/api/engine/tick', async (req, body) => engine.tick({ maxSteps: body.steps || 3, source: 'api', budgetMs: body.budgetMs || null }));
+  // 実行ログ: 「1歩ずつ何をしたか」。作業(runs)と区切り(checkpoints)を時系列で返す。
+  on('GET', '/api/engine/log', async (req) => {
+    const limit = Math.max(5, Math.min(80, Number(req.query.get('limit') || 30)));
+    const runs = await store.all('SELECT * FROM runs ORDER BY created_at DESC LIMIT ?', limit).catch(() => []);
+    const ckps = await store.all('SELECT * FROM checkpoints ORDER BY created_at DESC LIMIT ?', limit).catch(() => []);
+    const steps = [
+      ...runs.map((r) => ({
+        at: r.finished_at || r.created_at || r.started_at, kind: 'run',
+        state: r.status || r.state || '', title: r.summary || r.title || r.tool_name || '作業',
+        detail: r.error ? String(r.error) : (safeJson(r.result, null) || safeJson(r.result_json, null)),
+        task_id: r.task_id || null, agent_id: r.agent_id || null,
+      })),
+      ...ckps.map((c) => ({ at: c.created_at, kind: 'checkpoint', state: c.state || '',
+        title: `${c.scope || ''} / ${c.state || ''}`, detail: safeJson(c.payload, null) })),
+    ].filter((s) => s.at).sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, limit);
+    const state = await engine.engineState().catch(() => ({}));
+    const lr = await store.all("SELECT value FROM settings WHERE key='scheduler:last_run' LIMIT 1").catch(() => []);
+    return { steps, state, last_run: safeJson(lr[0] && lr[0].value, null), counts: { runs: runs.length, checkpoints: ckps.length } };
+  });
   on('POST', '/api/scheduler/tick', async (req, body) => scheduler.scheduledTick({ source: 'api' }));
 
   // ---------------------------------------------------------------- character
