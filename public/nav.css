@@ -136,3 +136,7 @@ body.has-bnav .bar{ padding-top: calc(env(safe-area-inset-top, 0px) + 16px) }
 
 /* iOS: ステータスバーに潜り込ませない（env() が 0 を返す埋め込みブラウザでもヘッダーを沈めない） */
 html.ios body.has-bnav .bar{padding-top:58px;padding-top:calc(max(env(safe-area-inset-top,0px),52px) + 6px)}
+/* 実測した上端余白（JS が --wa-top を入れる）。env() が 0 を返す埋め込みブラウザでも沈めない。 */
+html.wa-shell body.has-bnav .bar{ padding-top: calc(var(--wa-top, 0px) + 16px) }
+/* 高さも実測（可視ビューポート）に合わせる。dvh が実際に見えている高さとずれる環境の対策。 */
+html.wa-shell body.has-bnav{ height: var(--wa-h, 100dvh) }

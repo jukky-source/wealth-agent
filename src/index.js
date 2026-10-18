@@ -398,7 +398,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/improve/public', '/api/rea/queue'];
+      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/improve/public', '/api/rea/queue', '/api/selfreport'];
       if (!OPEN.includes(url.pathname)) return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
@@ -821,6 +821,23 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     }
 
     // 自己修復ループ（なぜ収益0なのかを毎回測る）と REA 自動投入キューの状態。
+    if (url.pathname === '/api/selfreport' && request.method === 'POST') {
+      const st = (deps && deps.store) || null;
+      if (!st) return json({ ok: false, error: 'no_store' }, 500);
+      let b = {};
+      try { b = await request.json(); } catch { b = {}; }
+      const cl = (v, max) => Math.max(-max, Math.min(max, Math.round(Number(v) || 0)));
+      const rec = {
+        at: new Date().toISOString(),
+        ua: String(b.ua || '').slice(0, 180), platform: String(b.platform || '').slice(0, 40),
+        standalone: b.standalone ? 1 : 0, path: String(b.path || '').slice(0, 120), note: String(b.note || '').slice(0, 60),
+        inner_h: cl(b.innerH, 6000), inner_w: cl(b.innerW, 6000), vv_h: cl(b.vvH, 6000),
+        screen_h: cl(b.screenH, 6000), screen_w: cl(b.screenW, 6000), avail_h: cl(b.availH, 6000),
+        inset_top: cl(b.insetTop, 600), inset_bottom: cl(b.insetBottom, 600), shell_h: cl(b.shellH, 6000), dpr: Number(b.dpr) || 0,
+      };
+      await st.run('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at', ['device:report', JSON.stringify(rec), rec.at]);
+      return json({ ok: true, saved: 'settings:device:report' });
+    }
     if (url.pathname === '/api/loop' || url.pathname === '/api/loop/public' || url.pathname === '/api/loop/help' || url.pathname === '/api/rea/queue') {
       if (url.pathname.endsWith('/help')) {
         const { loopHelp, LOOP_VERSION } = await import('./agent/loop.js');
