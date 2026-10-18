@@ -208,6 +208,7 @@ export const X402_CATALOG = [
   { resource: 'csv-json', price_usdc: 20_000, free_tier: true, label_ja: 'CSV⇔JSON 変換', description: 'Convert tabular data between CSV/TSV and a JSON array of objects, in either direction, with detected delimiter and typed columns. Use it when a tool returns CSV but your pipeline needs JSON (or the reverse) and you do not want to run a parser yourself.', unit: '件' },
   { resource: 'regex', price_usdc: 10_000, free_tier: true, label_ja: '正規表現の一括抽出', description: 'Apply one regular expression to a text blob on the server and return every match with its index and capture groups. Deterministic, so the same input always returns the same answer. Useful for log triage, field extraction and validation at scale.', unit: '件' },
   { resource: 'diff', price_usdc: 10_000, free_tier: true, label_ja: 'テキスト差分', description: 'Return the line-level diff between two texts as added/removed/unified hunks with counts. Use it to review a patch, compare two API responses, or decide whether two documents actually differ before spending tokens on them.', unit: '件' },
+  { resource: 'rea-report', price_usdc: 500_000, label_ja: 'REA 解析レポート（全種別）', description: 'Full-surface analysis of a target: a website, an API, a shipped JS bundle, or (as a prepared runbook) a local artifact such as an ELF/PE/.NET/Mach-O binary, an Electron app.asar, an APK or a jar. Returns a capability map where every claim carries its evidence, the entry points found, feature flags and client-side secret shapes (shapes only, never values), and an explicit list of what could not be determined. Read-only: the target is never executed, a 401/403 is recorded as auth_required and never bypassed, and the response is never resold. Use it to plan an integration, document an undocumented API, or triage a vendor before you build on it.', unit: '件' },
   { resource: 'surface-report', price_usdc: 250_000, label_ja: '公開表面の解析レポート', description: 'Inspect one publicly reachable website or API and return a machine-readable capability report: the entry points it exposes (endpoints, forms, feeds, MCP tools), the evidence behind every finding, and an explicit list of what could not be determined. Only public responses are read; a 401/403 is recorded as auth_required and never bypassed. Use it to plan an integration, document an undocumented API, or triage a vendor before you build on it.', unit: '件' },
 ];
 
@@ -479,12 +480,14 @@ export const INPUT_SCHEMAS = {
   brief: { type: 'object', properties: { question: { type: 'string', description: 'The question to research (5-400 chars, any language)' } }, required: ['question'] },
   'data-clean': { type: 'object', properties: { data: { type: 'string', description: 'Table as CSV / TSV text or a JSON array of objects (max 60,000 chars)' }, format: { type: 'string', enum: ['csv', 'tsv', 'json'], description: 'Optional input format; auto-detected when omitted' } }, required: ['data'] },
   'code-review': { type: 'object', properties: { code: { type: 'string', description: 'Source code to review (10-60,000 chars)' }, language: { type: 'string', description: 'Optional language hint, e.g. javascript, python, go' } }, required: ['code'] },
+  'rea-report': { type: 'object', properties: { url: { type: 'string', description: 'Public https URL to analyze (website, API or MCP server)' }, target: { type: 'string', description: 'Alternative: a local file path (app.asar, *.exe, *.so, *.apk). The analysis cannot run server-side, so a ready-to-run runbook is returned instead' }, focus: { type: 'string', description: 'Optional: what you want to learn, e.g. "how do I call their API"' } } },
   'surface-report': { type: 'object', properties: { url: { type: 'string', description: 'Public https URL to inspect (site root or any public page on it)' }, focus: { type: 'string', description: 'Optional: what you want to learn, e.g. "how do I call their API"' } }, required: ['url'] },
 };
 export const INPUT_EXAMPLES = {
   brief: { question: 'x402 に対応した facilitator を比較して' },
   'data-clean': { data: 'name,price\nA,100\nA,100\nB,' },
   'code-review': { code: 'function add(a,b){ return a+b }', language: 'javascript' },
+  'rea-report': { url: 'https://glama.ai' },
   'surface-report': { url: 'https://example.com' },
 };
 

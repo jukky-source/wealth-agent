@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>REA — 対象の表面を解析する</title>
+<style>
+  :root{
+    --bg:#0C1116; --panel:#131A22; --rule:#22303F; --text:#DFE8F0; --muted:#8CA0B3;
+    --amber:#F0A73A; --teal:#4FC9A6; --red:#E4685A; --blue:#5AA6E4;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:'Noto Sans JP',-apple-system,'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.7}
+  .wrap{max-width:1040px;margin:0 auto;padding:40px 24px 80px;
+    background-image:repeating-linear-gradient(to bottom,transparent 0 31px,rgba(34,48,63,.35) 31px 32px);
+    background-attachment:local}
+  header.top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:26px;margin:0;letter-spacing:.02em}
+  .tag{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--amber);border:1px solid var(--rule);padding:3px 8px;border-radius:2px}
+  .sub{color:var(--muted);font-size:14px;margin:0 0 26px}
+  nav.links{display:flex;gap:16px;font-family:var(--mono);font-size:12px;margin-bottom:26px;flex-wrap:wrap}
+  nav.links a{color:var(--blue);text-decoration:none;border-bottom:1px dotted var(--rule)}
+  .panel{background:var(--panel);border:1px solid var(--rule);border-radius:3px;padding:18px;margin-bottom:20px}
+  .panel h2{font-size:13px;font-family:var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  input[type=text]{flex:1 1 320px;min-width:220px;background:#0A0E13;border:1px solid var(--rule);color:var(--text);
+    font-family:var(--mono);font-size:13px;padding:11px 12px;border-radius:2px}
+  input[type=text]:focus{outline:none;border-color:var(--amber)}
+  button{background:var(--amber);color:#14100A;border:0;font-family:var(--mono);font-size:12px;letter-spacing:.06em;
+    text-transform:uppercase;padding:11px 18px;border-radius:2px;cursor:pointer}
+  button.ghost{background:transparent;color:var(--muted);border:1px solid var(--rule)}
+  .spine{display:flex;gap:0;margin:14px 0 4px;flex-wrap:wrap}
+  .node{flex:1 1 110px;border-top:2px solid var(--rule);padding:9px 6px 0;font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .node b{display:block;font-size:10px;letter-spacing:.1em;color:var(--muted)}
+  .node.on{border-top-color:var(--amber);color:var(--text)}
+  .node.done{border-top-color:var(--teal);color:var(--teal)}
+  .node.bad{border-top-color:var(--red);color:var(--red)}
+  .score{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin:0 0 6px}
+  .score .big{font-family:var(--mono);font-size:34px;color:var(--amber)}
+  .meta{font-family:var(--mono);font-size:12px;color:var(--muted);word-break:break-all}
+  ul{list-style:none;padding:0;margin:0}
+  li{padding:7px 0;border-bottom:1px solid rgba(34,48,63,.5);font-size:14px}
+  li:last-child{border-bottom:0}
+  .k{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--teal);margin-right:6px}
+  .k.warn{color:var(--amber)} .k.bad{color:var(--red)} .k.dim{color:var(--muted)}
+  .ev{color:var(--muted);font-size:13px;display:block;margin-top:2px;word-break:break-word}
+  code,pre{font-family:var(--mono);font-size:12px}
+  pre{background:#0A0E13;border:1px solid var(--rule);border-radius:2px;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid rgba(34,48,63,.6);vertical-align:top}
+  th{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .lv{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:2px;border:1px solid var(--rule);white-space:nowrap}
+  .lv.allow{color:var(--teal);border-color:rgba(79,201,166,.4)}
+  .lv.approve{color:var(--blue);border-color:rgba(90,166,228,.4)}
+  .lv.handoff{color:var(--amber);border-color:rgba(240,167,58,.4)}
+  .lv.never{color:var(--red);border-color:rgba(228,104,90,.4)}
+  .empty{color:var(--muted);font-size:13px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  @media(max-width:760px){.two{grid-template-columns:1fr}}
+  footer{margin-top:34px;color:var(--muted);font-size:12px;font-family:var(--mono)}
+  a{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>REA</h1><span class="tag">v2.0</span><span class="tag">読み取り専用</span>
+  </header>
+  <p class="sub">対象の「表面」を解析して、<b>できること・根拠・分からなかったこと</b>を返す。URL ならサイト／API／MCP を、ローカルのファイルなら<b>実行せずに手順</b>を返す。</p>
+  <nav class="links">
+    <a href="/today">今日の台帳</a><a href="/surface">公開表面（Web限定）</a><a href="/api/rea/help">/api/rea/help</a><a href="/api/rea/runs">実行の記録</a>
+  </nav>
+
+  <div class="panel">
+    <h2>対象</h2>
+    <div class="row">
+      <input type="text" id="q" placeholder="https://example.com または ./resources/app.asar" value="https://example.com">
+      <button id="go">解析する</button>
+      <button class="ghost" id="clr">消す</button>
+    </div>
+    <div class="spine" id="spine"></div>
+    <p class="meta" id="statusline">待機中</p>
+  </div>
+
+  <div class="panel" id="result" style="display:none">
+    <h2>結果</h2>
+    <div class="score"><span class="big" id="score">–</span><span class="meta" id="kindline"></span></div>
+    <p class="meta" id="titleline"></p>
+    <div class="two">
+      <div>
+        <h2>できること（根拠つき）</h2>
+        <ul id="caps"></ul>
+      </div>
+      <div>
+        <h2>分からなかったこと</h2>
+        <ul id="unknown"></ul>
+      </div>
+    </div>
+    <h2 style="margin-top:22px">根拠</h2>
+    <ul id="evidence"></ul>
+    <div id="extra"></div>
+    <h2 style="margin-top:22px">権限（4段階）</h2>
+    <table><thead><tr><th>操作</th><th>扱い</th><th>意味</th></tr></thead><tbody id="rules"></tbody></table>
+  </div>
+
+  <div class="panel">
+    <h2>この道具が守ること</h2>
+    <ul>
+      <li><span class="k">読むだけ</span>公開されている応答と、人が指定したファイルだけ。<span class="ev">対象は実行しない。認証情報は使わない。</span></li>
+      <li><span class="k">止まる</span>401／403 は「要認証」と記録して、そこで止める。<span class="ev">突破はしない。</span></li>
+      <li><span class="k warn">値は出さない</span>鍵らしき文字列は「形」だけ記録する。<span class="ev">sk-… のように頭4文字で切って、値そのものは返さない。</span></li>
+      <li><span class="k bad">やらない</span>課金回避・コピープロテクト解除・再販。<span class="ev">参考元の売り文句（有料機能を無料で再現）は実装しない。</span></li>
+    </ul>
+  </div>
+
+  <footer>出典: 考え方は <a href="https://github.com/morluto/rea">morluto/rea</a> と同じ。中身は独立実装。ローカル解析は <code>node tools/rea-cli.mjs &lt;path&gt; --json</code>。</footer>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const STATES = ['queued','fetching','parsing','probing','evidence','done'];
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const li = (label, body, cls) => `<li><span class="k ${cls||''}">${esc(label)}</span>${esc(body)}</li>`;
+
+function drawSpine(current) {
+  const idx = STATES.indexOf(current);
+  const bad = current === 'blocked' || current === 'failed' || current === 'handoff';
+  $('spine').innerHTML = STATES.map((s, i) => {
+    const cls = bad && i === 0 ? 'bad' : (idx >= 0 && i < idx ? 'done' : (i === idx ? 'on' : ''));
+    return `<div class="node ${cls}"><b>${i+1}</b>${s}</div>`;
+  }).join('') + (bad ? `<div class="node bad"><b>!</b>${esc(current)}</div>` : '');
+}
+
+function show(r) {
+  $('result').style.display = '';
+  const rep = r.report || {};
+  drawSpine(rep.state || 'done');
+  $('score').textContent = (rep.score != null ? rep.score : '–') + '/10';
+  $('kindline').textContent = [rep.kind, rep.mode, rep.state, 'auth=' + (rep.auth || '?'), rep.server].filter(Boolean).join(' ／ ');
+  $('titleline').textContent = [rep.title || rep.target, rep.description].filter(Boolean).join(' — ');
+  const caps = rep.capabilities || [];
+  $('caps').innerHTML = caps.length ? caps.map((c) => li(c.confidence || 'med', c.name + ' ← ' + (c.evidence || ''), c.confidence === 'low' ? 'warn' : '')).join('') : '<li class="empty">判定できたことは無い</li>';
+  const unk = rep.unknown || [];
+  $('unknown').innerHTML = unk.length ? unk.map((u) => li('不明', u, 'warn')).join('') : '<li class="empty">特になし</li>';
+  const ev = rep.evidence || [];
+  $('evidence').innerHTML = ev.length ? ev.map((e) => li('根拠', e, 'dim')).join('') : '<li class="empty">根拠なし</li>';
+  const extra = [];
+  if (rep.plan && rep.plan.length) {
+    extra.push('<h2 style="margin-top:22px">実行手順（ローカルの rea-cli に渡す）</h2><ul>' +
+      rep.plan.map((p) => li(p.tool || 'step', p.step + ' — ' + p.cmd)).join('') + '</ul>' +
+      '<pre>node tools/rea-cli.mjs &lt;path&gt; --json</pre>');
+  }
+  if (rep.js && (rep.js.flags || []).length) extra.push('<h2 style="margin-top:22px">クライアント側のJS</h2><ul>' +
+    rep.js.flags.slice(0, 20).map((f) => li('flag', f.name + ' = ' + f.value)).join('') +
+    (rep.js.hosts || []).slice(0, 12).map((h) => li('host', h, 'dim')).join('') + '</ul>');
+  if (rep.endpoints && rep.endpoints.length) extra.push('<h2 style="margin-top:22px">入口の候補 ' + rep.endpoints.length + '件</h2><ul>' +
+    rep.endpoints.slice(0, 20).map((e) => li(e.external ? '外部' : 'path', e.path + ' 〔' + e.evidence + '〕')).join('') + '</ul>');
+  $('extra').innerHTML = extra.join('');
+
+  const rules = r.action_rules || [];
+  const JA = { allow: 'そのまま実行', approve: '人の承認が要る', handoff: '人へ渡す', never: '実装しない' };
+  $('rules').innerHTML = rules.map((x) => `<tr><td><code>${esc(x.action)}</code></td><td><span class="lv ${esc(x.level)}">${esc(JA[x.level] || x.level)}</span></td><td class="ev">${esc(x.note)}</td></tr>`).join('');
+}
+
+async function run() {
+  const t = $('q').value.trim();
+  if (!t) return;
+  $('statusline').textContent = '解析中…';
+  drawSpine('queued');
+  const isUrl = /^https?:\/\//i.test(t);
+  const u = '/api/rea?' + (isUrl ? 'url=' : 'target=') + encodeURIComponent(t);
+  try {
+    const r = await fetch(u).then((x) => x.json());
+    if (!r.report) { $('statusline').textContent = r.error || '解析できませんでした'; drawSpine('failed'); return; }
+    $('statusline').textContent = '完了: ' + (r.report.state || '') + ' ／ 有料版 ' + ((r.paid && r.paid.price_usdc) || 0.5) + ' USDC（x402）';
+    show(r);
+  } catch (e) {
+    $('statusline').textContent = '通信できませんでした: ' + e.message;
+    drawSpine('failed');
+  }
+}
+$('go').onclick = run;
+$('clr').onclick = () => { $('result').style.display = 'none'; $('q').value = ''; drawSpine(''); $('statusline').textContent = '待機中'; };
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') run(); });
+drawSpine('');
+</script>
+</body>
+</html>
