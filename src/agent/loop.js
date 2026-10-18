@@ -29,7 +29,7 @@ const ALIVE_RE = /'(alive|claimable|mentions_free_or_money|works)'/;
 /** 外部の決済リクエストだけを数える。自己テストを混ぜない（区別できない環境では null）。 */
 async function countExternal(store) {
   for (const sql of [
-    "SELECT COUNT(*) FROM receipts WHERE COALESCE(basis,'') <> 'self_test'",
+    "SELECT COUNT(*) FROM ledger WHERE kind = 'revenue' AND basis <> 'self_test'",
     "SELECT COUNT(*) FROM receipts WHERE COALESCE(is_test,0) = 0",
   ]) {
     try { const r = await store.first(sql); return Number(Object.values(r)[0] || 0); } catch { /* 列が無ければ次を試す */ }
