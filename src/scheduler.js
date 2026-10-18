@@ -19,6 +19,9 @@ export function createScheduler(deps) {
   async function scheduledTick({ source = 'cron', maxSteps = null } = {}) {
     const started = Date.now();
     const report = { source, at: nowIso(), steps: [] };
+    // 1回の実行の壁時計の上限。重い段は切り上げて次の cron に回す（進捗は保存済み）。
+    const budgetMs = Math.max(20000, Number((env && env.SCHEDULER_BUDGET_MS) || 120000));
+    const outOfTime = () => Date.now() - started > budgetMs;
 
     // 0) 稼ぎ方ストリームを保証（無ければ自動作成。目標入力は不要）
     try {
@@ -43,7 +46,7 @@ export function createScheduler(deps) {
 
     // 2) engine steps
     try {
-      const t = await engine.tick({ maxSteps: maxSteps || Number(env.ENGINE_STEPS_PER_TICK || 3), source });
+      const t = await engine.tick({ maxSteps: maxSteps || Number(env.ENGINE_STEPS_PER_TICK || 3), source, budgetMs: Math.max(10000, budgetMs - (Date.now() - started)) });
       report.steps.push({ step: 'engine_tick', ...t });
     } catch (e) { report.steps.push({ step: 'engine_tick', error: e.message }); }
 
@@ -85,6 +88,9 @@ export function createScheduler(deps) {
       else report.steps.push({ step: 'watch', checked: w.checked, fired: 0 });
     } catch (e) { report.steps.push({ step: 'watch', error: e.message }); }
 
+    if (outOfTime()) {
+      report.steps.push({ step: 'time_budget', skipped: 'heavy_stages', budget_ms: budgetMs });
+    } else {
     // 5b) スカウト（自律リサーチ）— 無料の巡回先だけを数箇所ずつ回し、稼げそうな
     //     話を点数化して残す。原価0。投稿・購入・アカウント作成はしない。
     //     毎tickやると外部に迷惑なので、既定3時間おきに間引く。
@@ -354,6 +360,8 @@ export function createScheduler(deps) {
         report.steps.push({ step: 'social_refill', skipped: due ? 'disabled' : 'not_due' });
       }
     } catch (e) { report.steps.push({ step: 'social_refill', error: e.message }); }
+
+    }
 
     // 6) goal（完了条件としての見張り）— 未達なら止めない。あと何が必要かを数え直し、
     //    エンジンが止まっていれば起こす。ここも重い処理はしない。
