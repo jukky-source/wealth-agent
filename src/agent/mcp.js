@@ -48,6 +48,18 @@ export function toolList() {
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   });
   tools.push({
+    name: 'agent_status',
+    description: 'このエージェントの収益ファネル（拾う→試す→生きていると確認→売り物→掲置→来訪→支払い）を実測値で返し、どこで詰まっているかと次に打つ手を示す。【無料】',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  });
+  tools.push({
+    name: 'rea_queue',
+    description: 'REA の自動投入キュー（X / Reddit / scout / perks から拾った解析対象）の件数と直近の結果を返す。【無料】',
+    inputSchema: { type: 'object', properties: { limit: { type: 'number', description: '件数（既定10・最大20）' } } },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  });
+  tools.push({
     name: 'surface_inspect',
     description: '公開URLを解析し、そのサービスが公開している入口（エンドポイント候補・フォーム・フィード・MCPツール）と根拠、そして分からなかったことを返す。【無料】要約版。全件＋根拠の全文は buy_surface_report（0.25 USDC）。認証回避はしない。',
     inputSchema: { type: 'object', properties: { url: { type: 'string', description: '公開 https URL' } }, required: ['url'] },
@@ -100,6 +112,18 @@ export async function handleMcp(request, env, url, deps = {}) {
     }
     const text = picked.length ? perkText(picked.slice(0, 5)) + '\n\n【無料枠】最大5件・要約。全件／条件・手順・人の操作の内訳は有料面（/api/perks）。' : '該当なし';
     return ok(id, { content: [{ type: 'text', text }], isError: false });
+  }
+  if (name === 'agent_status') {
+    if (!deps.store) return ok(id, { content: [{ type: 'text', text: 'このツールはストア付きで起動していないため使えません' }], isError: true });
+    const { loopSummary, loopText } = await import('./loop.js');
+    const s = await loopSummary(deps.store, { env });
+    return ok(id, { content: [{ type: 'text', text: loopText(s) }], isError: false });
+  }
+  if (name === 'rea_queue') {
+    if (!deps.store) return ok(id, { content: [{ type: 'text', text: 'このツールはストア付きで起動していないため使えません' }], isError: true });
+    const { queueSummary } = await import('./reaQueue.js');
+    const s = await queueSummary(deps.store);
+    return ok(id, { content: [{ type: 'text', text: JSON.stringify(s, null, 2) }], isError: false });
   }
   if (name === 'surface_inspect') {
     const { inspectSurface, surfaceBrief, SURFACE_PRICE_USDC } = await import('./surface.js');

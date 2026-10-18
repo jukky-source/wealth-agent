@@ -274,6 +274,39 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'twitter', error: e.message }); }
 
+    // 5c-6) REA の自動投入と自己修復ループ — 拾った情報を人が並べなくても解析に回し、
+    //       収益0の原因（どの段で落ちているか）を毎回測って、詰まった段に手を打つ。原価0。
+    try {
+      const reaEveryMin = Math.max(15, Number(env.REA_QUEUE_EVERY_MINUTES || 60));
+      const prevRea = await setting(store, 'rea:last_run_at', null);
+      const dueRea = !prevRea || (Date.now() - new Date(prevRea).getTime() >= reaEveryMin * 60e3);
+      if (dueRea && (!env || env.REA_QUEUE_ENABLED !== 'false')) {
+        const rq = await import('./agent/reaQueue.js');
+        const enq = await rq.enqueueFromFindings(store, { limit: Number(env.REA_QUEUE_ENQUEUE_N || 12) });
+        const an = await rq.autoAnalyze(store, { limit: Number(env.REA_QUEUE_N || 3) });
+        await setSetting(store, 'rea:last_run_at', nowIso());
+        report.steps.push({ step: 'rea_queue', enqueued: enq.inserted, analyzed: an.analyzed, states: an.rows.map((x) => x.kind + ':' + x.state), derived: an.rows.filter((x) => x.derived).length });
+      } else {
+        report.steps.push({ step: 'rea_queue', skipped: dueRea ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'rea_queue', error: e.message }); }
+
+    // 5c-7) 自己修復ループ — ファネルを実測して詰まりを名指しし、やり直し・見切り・補充を回す。
+    //       同じネタは3回で dead。掲載は「押すだけ」の形に整えて記録する（勝手に提出しない）。
+    try {
+      const loopEveryMin = Math.max(15, Number(env.LOOP_EVERY_MINUTES || 60));
+      const prevLoop = await setting(store, 'loop:last_run_at', null);
+      const dueLoop = !prevLoop || (Date.now() - new Date(prevLoop).getTime() >= loopEveryMin * 60e3);
+      if (dueLoop && (!env || env.LOOP_ENABLED !== 'false')) {
+        const { selfHeal } = await import('./agent/loop.js');
+        const r = await selfHeal(store, { env, maxRetry: Number(env.LOOP_RETRY_N || 3) });
+        await setSetting(store, 'loop:last_run_at', nowIso());
+        report.steps.push({ step: 'self_heal', bottleneck: r.bottleneck.stage, actions: r.actions.length, kinds: r.actions.map((a) => a.kind + ':' + a.state) });
+      } else {
+        report.steps.push({ step: 'self_heal', skipped: dueLoop ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'self_heal', error: e.message }); }
+
     // 5d) SNS下書きの自動補充 — scout が拾った実データから X / note / ココナラ の下書きを作る。
     //     投稿はしない（public_post=approval）。人は「押すだけ・貼るだけ」の材料だけ受け取る。
     try {
