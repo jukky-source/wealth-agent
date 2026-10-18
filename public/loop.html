@@ -96,10 +96,11 @@
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const tagCls = (lv) => (lv === 'allow' ? 'allow' : lv === 'approve' ? 'approve' : '');
 
+// 同期で取る: 画面を開いた瞬間（load イベント）に数値が入っている状態にする。
+function getJson(url) { try { const x = new XMLHttpRequest(); x.open('GET', url, false); x.send(); return JSON.parse(x.responseText); } catch (e) { return null; } }
 async function load() {
-  let d = null, q = null;
-  try { d = await (await fetch('/api/loop/public')).json(); } catch (e) { /* noop */ }
-  try { q = await (await fetch('/api/rea/queue')).json(); } catch (e) { /* noop */ }
+  const d = getJson('/api/loop/public');
+  const q = getJson('/api/rea/queue');
   if (!d || !d.ok) { document.getElementById('verdict').textContent = '取得できませんでした'; return; }
 
   document.getElementById('verdict').textContent = d.verdict || '—';
