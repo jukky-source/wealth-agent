@@ -461,3 +461,142 @@ function boot() {
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
 else boot();
+
+/* --- シェル高さの実測：下部ナビの実寸（セーフエリア込み）をCSS変数へ。
+       iOSの動的ツールバーでビューポートが変わっても入力欄とタブが重ならない。 --- */
+(function shellMetrics(){
+  const nav = document.getElementById('bnav');
+  if (!nav) return;
+  const apply = () => {
+    const h = Math.round(nav.getBoundingClientRect().height);
+    if (h > 0) document.documentElement.style.setProperty('--bnav-h', h + 'px');
+  };
+  apply();
+  window.addEventListener('resize', apply, { passive: true });
+  window.addEventListener('orientationchange', () => setTimeout(apply, 250), { passive: true });
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', apply, { passive: true });
+  if (window.ResizeObserver) new ResizeObserver(apply).observe(nav);
+  setTimeout(apply, 400);
+})();
+
+/* ============ 追加：承認の実行と役割別モデル（既存ビューに自己完結で差し込む） ============ */
+(function enhancements(){
+  const ROLE_JA = { chat:'会話', planner:'計画', executor:'実行', verifier:'検証', critic:'批評',
+                    summarizer:'要約', coder:'コード', optimizer:'最適化', reason:'推論' };
+  const PROVIDERS = ['workersai','gemini','groq','cerebras','mistral','openrouter'];
+
+  function tok(){
+    try { for (const s of [localStorage, sessionStorage]) for (const k of ['wa_token','token','access_token']) {
+      const v = s.getItem(k); if (v && v.length >= 16) return v; } } catch { /* noop */ }
+    return '';
+  }
+  async function req(path, opt){
+    const o = Object.assign({ credentials:'same-origin', headers:{ 'content-type':'application/json' } }, opt || {});
+    const t = tok(); if (t) o.headers.authorization = 'Bearer ' + t;
+    const res = await fetch(path, o);
+    let j = null; try { j = await res.json(); } catch { /* noop */ }
+    if (!res.ok) throw new Error((j && (j.error || j.message)) || ('HTTP ' + res.status));
+    return j;
+  }
+  function say(msg){
+    let el = document.getElementById('enhToast');
+    if (!el) { el = document.createElement('div'); el.id = 'enhToast'; el.className = 'toast2'; document.body.appendChild(el); }
+    el.textContent = msg; el.classList.add('on');
+    clearTimeout(say._t); say._t = setTimeout(() => el.classList.remove('on'), 2600);
+  }
+  function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  // ---- 1) 承認まち（押して決められる） ----
+  async function injectApprovals(){
+    const wrap = document.querySelector('#views .vwrap');
+    if (!wrap || document.body.dataset.tab !== 'tasks') return;
+    if (wrap.querySelector('[data-enh="approvals"]')) return;
+    const card = document.createElement('section');
+    card.className = 'card'; card.dataset.enh = 'approvals';
+    card.innerHTML = '<h3>承認まち</h3><div data-body class="empty">読み込み中…</div>';
+    wrap.prepend(card);
+    const body = card.querySelector('[data-body]');
+    const load = async () => {
+      try {
+        const j = await req('/api/approvals');
+        const pend = (j.approvals || []).filter((a) => a.status === 'pending');
+        if (!pend.length) { body.className = 'empty'; body.textContent = '承認まちはありません。エージェントは許可された範囲だけで動いています。'; return; }
+        body.className = ''; body.innerHTML = '';
+        for (const a of pend) {
+          const d = document.createElement('div'); d.className = 'row';
+          const p = a.payload && typeof a.payload === 'object' ? a.payload : {};
+          const why = p.reason || p.note || p.summary || p.title || '';
+          d.innerHTML = '<div class="t">' + esc(a.action || a.kind || '承認が必要な操作') + '</div>' +
+            '<div class="m"><span class="badge wait">承認まち</span>' +
+            (why ? '<span>' + esc(String(why).slice(0, 160)) + '</span>' : '') +
+            '<code>' + esc((a.requested_at || '').slice(0, 16).replace('T', ' ')) + '</code></div>';
+          const acts = document.createElement('div'); acts.className = 'acts';
+          const yes = document.createElement('button'); yes.className = 'pri'; yes.textContent = '承認する';
+          const no = document.createElement('button'); no.className = 'danger'; no.textContent = 'ことわる';
+          yes.onclick = async () => { yes.disabled = true; try { await req('/api/approvals/' + encodeURIComponent(a.id) + '/decide', { method:'POST', body: JSON.stringify({ decision:'approved' }) }); say('承認しました'); load(); } catch (e) { yes.disabled = false; say('失敗: ' + e.message); } };
+          no.onclick = async () => { no.disabled = true; try { await req('/api/approvals/' + encodeURIComponent(a.id) + '/decide', { method:'POST', body: JSON.stringify({ decision:'rejected' }) }); say('ことわりました'); load(); } catch (e) { no.disabled = false; say('失敗: ' + e.message); } };
+          acts.appendChild(yes); acts.appendChild(no); d.appendChild(acts);
+          body.appendChild(d);
+        }
+      } catch (e) {
+        body.className = 'err';
+        body.innerHTML = '<b>読み込めませんでした</b><div>' + esc(e.message) + '</div>';
+        const b = document.createElement('div'); b.className = 'acts';
+        const r = document.createElement('button'); r.textContent = '再試行'; r.onclick = load;
+        b.appendChild(r); body.appendChild(b);
+      }
+    };
+    load();
+  }
+
+  // ---- 2) 役割別モデル（ルーターが実際に読む設定） ----
+  async function readSettings(){
+    const j = await req('/api/settings');
+    const out = {};
+    const src = j.settings || j.items || j.values || j;
+    if (Array.isArray(src)) for (const r of src) out[r.key] = r.value;
+    else if (src && typeof src === 'object') for (const [k, v] of Object.entries(src)) out[k] = (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+    return out;
+  }
+  async function saveSetting(key, value){
+    const bodies = [{ key, value }, { key, value, upsert: true }, { settings: { [key]: value } }, { updates: { [key]: value } }];
+    let last = '';
+    for (const b of bodies) {
+      try { return await req('/api/settings', { method:'POST', body: JSON.stringify(b) }); } catch (e) { last = e.message; }
+    }
+    throw new Error(last);
+  }
+  async function injectRoles(){
+    const wrap = document.querySelector('#views .vwrap');
+    if (!wrap || document.body.dataset.tab !== 'settings') return;
+    if (wrap.querySelector('[data-enh="roles"]')) return;
+    const card = document.createElement('section');
+    card.className = 'card'; card.dataset.enh = 'roles';
+    card.innerHTML = '<h3>役割ごとの優先モデル</h3><div data-body class="empty">読み込み中…</div>' +
+      '<div class="note">役割ごとに「先に試す提供元」を決めます。実際の利用可否は無料枠と障害状況で自動的に切り替わります（使えないときは次の提供元へ）。</div>';
+    wrap.appendChild(card);
+    const body = card.querySelector('[data-body]');
+    let cur = {};
+    try { const s = await readSettings(); cur = JSON.parse(s['ai:model_roles'] || '{}') || {}; }
+    catch { /* 設定が取れなくても選べるようにする */ }
+    body.className = ''; body.innerHTML = '';
+    for (const [role, ja] of Object.entries(ROLE_JA)) {
+      const f = document.createElement('label'); f.className = 'fld';
+      f.innerHTML = '<span>' + esc(ja) + '（' + esc(role) + '）</span>';
+      const sel = document.createElement('select'); sel.className = 'i';
+      sel.innerHTML = '<option value="">おまかせ（無料優先で自動）</option>' +
+        PROVIDERS.map((p) => '<option value="' + p + '"' + (cur[role] === p ? ' selected' : '') + '>' + p + '</option>').join('');
+      sel.onchange = async () => {
+        if (sel.value) cur[role] = sel.value; else delete cur[role];
+        try { await saveSetting('ai:model_roles', JSON.stringify(cur)); say('保存しました: ' + ja + ' → ' + (sel.value || 'おまかせ')); }
+        catch (e) { say('保存できません: ' + e.message); }
+      };
+      f.appendChild(sel); body.appendChild(f);
+    }
+  }
+
+  function enhance(){ injectApprovals(); injectRoles(); }
+  const nav = document.getElementById('bnav');
+  if (nav) nav.addEventListener('click', () => { setTimeout(enhance, 300); setTimeout(enhance, 1000); });
+  window.addEventListener('load', () => setTimeout(enhance, 700));
+})();
