@@ -1,13 +1,14 @@
 // 監視アカウントの選定と、AIビジネス枠の採点のテスト（網に出ない）
-import { WATCH_ENTRIES, DEFAULT_WATCH, watchEntries, watchList, oppScore, isOpportunityTweet, trackScore, tweetScore, sweepTwitter } from '../src/agent/twitter.js';
+import { WATCH_ENTRIES, DEFAULT_WATCH, watchEntries, watchList, oppScore, isOpportunityTweet, trackScore, tweetScore, sweepTwitter, discScore, bountyScore, bountyDelegate, isAffiliate } from '../src/agent/twitter.js';
 
 let pass = 0, fail = 0;
 function ok(name, cond) { if (cond) { pass++; } else { fail++; console.log('FAIL ' + name); } }
 
 // 1) 監視リストは実測して採用したものだけ（handle と topic を持つ）
-ok('entries have handle+topic', WATCH_ENTRIES.every((e) => e.handle && (e.topic === 'perk' || e.topic === 'ai')));
+ok('entries have handle+topic', WATCH_ENTRIES.every((e) => e.handle && (e.topic === 'perk' || e.topic === 'ai' || e.topic === 'bounty')));
 ok('entries are unique', new Set(WATCH_ENTRIES.map((e) => e.handle.toLowerCase())).size === WATCH_ENTRIES.length);
-ok('has both topics', WATCH_ENTRIES.some((e) => e.topic === 'ai') && WATCH_ENTRIES.some((e) => e.topic === 'perk'));
+ok('has all three topics', WATCH_ENTRIES.some((e) => e.topic === 'ai') && WATCH_ENTRIES.some((e) => e.topic === 'perk') && WATCH_ENTRIES.some((e) => e.topic === 'bounty'));
+ok('no official/brand accounts', !WATCH_ENTRIES.some((e) => /^(googlejapan|GooglePlay|akiko_lawson|famima_now|RakutenJP|au_official|docomo|paypay_official|Ponta_official|SoftBank|enjoy_point_|money_forward)$/i.test(e.handle)));
 ok('DEFAULT_WATCH derives handles', DEFAULT_WATCH.length === WATCH_ENTRIES.length && DEFAULT_WATCH.includes('devpost'));
 
 // 2) AIビジネス枠: 金が動く機会だけ拾う
@@ -19,7 +20,16 @@ ok('isOpportunityTweet default', isOpportunityTweet({ text: 'hackathon with a $1
 ok('isOpportunityTweet rejects noise', isOpportunityTweet({ text: 'I shipped a new feature' }) === false);
 
 // 3) topic ごとの採点の振り分け
-ok('trackScore routes ai', trackScore({ text: 'hackathon $100,000 prize, ends 11/2' }, 'ai') >= 3);
+ok('discScore wants something concrete', discScore({ text: 'We just open-sourced a local AI agent: https://github.com/acme/agent - MIT license, runs on your laptop' }) >= 6);
+ok('discScore drops crypto hype', discScore({ text: 'airdrop guaranteed 100x, join the whitelist now' }) === 0);
+ok('discScore ignores empty talk', discScore({ text: 'hello world' }) < 3);
+ok('trackScore routes ai to discovery', trackScore({ text: 'Released an open-source benchmark for agents: https://github.com/acme/bench' }, 'ai') >= 3);
+ok('bountyScore wants money', bountyScore({ text: 'Bounty: $6,000 for a bug fix in https://github.com/x/y/issues/12, apply by 10/30' }) >= 5);
+ok('bountyScore drops moneyless chatter', bountyScore({ text: 'we are hiring soon' }) === 0);
+ok('bountyDelegate code', bountyDelegate({ text: 'Bounty $500: fix the parser in https://github.com/x/y/issues/12' }) === 'code');
+ok('bountyDelegate human', bountyDelegate({ text: 'Hackathon with $100,000 in prizes, ends 11/2' }) === 'human');
+ok('trackScore routes bounty', trackScore({ text: 'Grant of 2,000 USDC, deadline 12/1' }, 'bounty') >= 3);
+ok('isAffiliate flags referral', isAffiliate({ text: '紹介コードでお互い得です' }) === true);
 ok('trackScore routes perk', trackScore({ text: '対象商品を2個購入で100円引き 10/19まで' }, 'perk') >= 3);
 ok('tweetScore ignores opp-only text', tweetScore({ text: 'Hackathon with a $100,000 prize pool, apply by 10/30' }) < 3);
 
@@ -30,7 +40,7 @@ ok('watchList keeps compat', JSON.stringify(watchList({ TW_WATCH: '@foo,bar:ai' 
 // 5) 巡回: 2つの topic を別々に採点して貯める（fetch はスタブ）
 const posts = {
   perk_acct: [{ id: '1', text: '対象商品を2個購入で100円引き 10/19まで', created_at: '2026-10-17T00:00:00Z' }],
-  ai_acct: [{ id: '2', text: 'Bounty: $6,000 for creators, apply by 10/30', created_at: '2026-10-17T00:00:00Z' }],
+  ai_acct: [{ id: '2', text: 'We just released an open-source CLI: https://github.com/acme/tool - MIT license, free tier', created_at: '2026-10-17T00:00:00Z' }],
   quiet: [{ id: '3', text: 'hello world', created_at: '2026-10-17T00:00:00Z' }],
 };
 const fetchImpl = async (url) => {
