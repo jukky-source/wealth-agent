@@ -26,6 +26,17 @@ export async function ensureLoopTable(store) {
 // ---------------------------------------------------------------------------
 const ALIVE_RE = /'(alive|claimable|mentions_free_or_money|works)'/;
 
+/** 外部の決済リクエストだけを数える。自己テストを混ぜない（区別できない環境では null）。 */
+async function countExternal(store) {
+  for (const sql of [
+    "SELECT COUNT(*) FROM receipts WHERE COALESCE(basis,'') <> 'self_test'",
+    "SELECT COUNT(*) FROM receipts WHERE COALESCE(is_test,0) = 0",
+  ]) {
+    try { const r = await store.first(sql); return Number(Object.values(r)[0] || 0); } catch { /* 列が無ければ次を試す */ }
+  }
+  return null;
+}
+
 export async function funnel(store, { env = null } = {}) {
   const discovered = await q1(store, `SELECT COUNT(*) FROM playbooks`);
   const tried = await q1(store, `SELECT COUNT(*) FROM playbooks WHERE COALESCE(tries,0) > 0`);
@@ -33,7 +44,9 @@ export async function funnel(store, { env = null } = {}) {
   let products = 0;
   try { const { X402_CATALOG } = await import('./x402.js'); products = (X402_CATALOG || []).length; } catch { products = 0; }
   const distributed = await q1(store, `SELECT COUNT(*) FROM ${LT} WHERE kind = 'distribute' AND state = 'done'`);
-  const reached = await q1(store, `SELECT COUNT(*) FROM receipts`);
+  const reachedAll = await q1(store, `SELECT COUNT(*) FROM receipts`);
+  const reachedExt = await countExternal(store);
+  const reached = reachedExt == null ? reachedAll : reachedExt;
   const revenueUsd = await q1(store, `SELECT COALESCE(SUM(amount),0) FROM ledger WHERE kind = 'revenue' AND basis <> 'self_test'`);
   const selfTestUsd = await q1(store, `SELECT COALESCE(SUM(amount),0) FROM ledger WHERE basis = 'self_test'`);
   const reaAnalyzed = await q1(store, `SELECT COUNT(*) FROM rea_targets WHERE status IN ('analyzed','handoff')`).catch(() => 0);
@@ -44,7 +57,7 @@ export async function funnel(store, { env = null } = {}) {
     { stage: '生きていると確認', key: 'alive', n: alive, note: '到達できた／募集中と確認できた件数' },
     { stage: '売り物になる', key: 'products', n: products, note: '値札を付けて出せる品目（x402 カタログ）' },
     { stage: '置き場に出る', key: 'distributed', n: distributed, note: '買い手が見る場所に実際に載った件数（掲載は人の1タップ）' },
-    { stage: '人が来る', key: 'reached', n: reached, note: '外部からの決済リクエスト（receipts）' },
+    { stage: '人が来る', key: 'reached', n: reached, note: `外部からの決済リクエスト（自己テスト ${Math.max(0, reachedAll - reached)} 件は除く）` },
     { stage: '払う', key: 'paid', n: revenueUsd, unit: 'USD', note: '実売上（自己テストを除く）' },
   ];
 
@@ -70,6 +83,7 @@ export async function funnel(store, { env = null } = {}) {
   return {
     at: nowIso(), stages, breaks, bottleneck: { ...bottleneck, ...FIX },
     money: { revenue_usd: revenueUsd, self_test_usd: selfTestUsd },
+    receipts: { all: reachedAll, external: reached, separable: reachedExt != null },
     rea_analyzed: reaAnalyzed,
     verdict: revenueUsd > 0
       ? `実売上 $${revenueUsd}。次の詰まりは「${bottleneck.stage}」`

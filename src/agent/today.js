@@ -1,17 +1,23 @@
 // 「今日なにを拾い、何を試し、何が分かったか」だけを1画面ぶんのデータにする。
 // 実スキーマに合わせる: playbooks.result_json / last_try_at、ledger.amount・currency・basis。
 // お金は「自己テスト(self_test)」を売上から除いて別枠で出す（実際の売上と混ぜない）。
+import { twitterSummary } from './twitter.js';
+import { perkSummary } from './perks.js';
+import { playbookSummary } from './playbook.js';
+import { loopSummary } from './loop.js';
+import { setting } from './../db.js';
+
 export async function todayDigest(store, { now = null, publicOnly = false } = {}) {
   const at = now || new Date().toISOString();
   const q1 = async (sql, ...a) => { try { const r = await store.first(sql, ...a); return r ? Number(Object.values(r)[0] || 0) : null; } catch { return null; } };
   const qa = async (sql, ...a) => { try { return (await store.all(sql, ...a)) || []; } catch { return []; } };
   const mod = async (p, f, ...a) => { try { const m = await import(p); return await m[f](...a); } catch (e) { return { error: String((e && e.message) || e).slice(0, 140) }; } };
   const [tw, pk, pb, lastRun, ingestAt] = await Promise.all([
-    mod('./twitter.js', 'twitterSummary', store),
-    mod('./perks.js', 'perkSummary', store),
-    mod('./playbook.js', 'playbookSummary', store),
-    mod('./../db.js', 'setting', store, 'playbook:last_run_at', null),
-    mod('./../db.js', 'setting', store, 'playbook:ingest_at', null),
+    twitterSummary(store),
+    perkSummary(store),
+    playbookSummary(store),
+    setting(store, 'playbook:last_run_at', null),
+    setting(store, 'playbook:ingest_at', null),
   ]);
   const fromFindings = await qa("SELECT kind, status, title, tries, last_try_at, substr(COALESCE(result_json,''),1,300) AS result FROM playbooks WHERE key LIKE 'f_%' ORDER BY created_at DESC LIMIT 20");
   const triedRows = await qa("SELECT title, tries, last_try_at, substr(COALESCE(result_json,''),1,240) AS result FROM playbooks WHERE tries > 0 ORDER BY COALESCE(last_try_at, updated_at) DESC LIMIT 10");
@@ -26,7 +32,7 @@ export async function todayDigest(store, { now = null, publicOnly = false } = {}
     self_test_usd: await q1("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE basis = 'self_test'"),
     rows: await q1('SELECT COUNT(*) FROM ledger'),
   };
-  const loop = await mod('./loop.js', 'loopSummary', store, { env: null });
+  const loop = await loopSummary(store, { env: null });
   const whyZeroErr = loop && loop.error ? String(loop.error).slice(0, 200) : null;
   const whyZero = loop && loop.bottleneck ? {
     stage: loop.bottleneck.stage, key: loop.bottleneck.key, why: loop.bottleneck.why,
