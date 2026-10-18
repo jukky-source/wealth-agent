@@ -94,7 +94,11 @@ export async function funnel(store, { env = null } = {}) {
   const distributed = await q1(store, `SELECT COUNT(*) FROM ${LT} WHERE kind = 'distribute' AND state = 'done'`);
   const reachedAll = await q1(store, `SELECT COUNT(*) FROM receipts`);
   const reachedExt = await countExternal(store);
-  const reached = reachedExt == null ? reachedAll : reachedExt;
+  // 「人が来る」は receipts（＝支払い）ではなく、値札(402)を見に来た外部呼び出しで数える。
+  // 支払いまで行った数は次の段（paid）で別に数える。自分の動作確認は note='self_test' で外す。
+  const probes = await q1(store, `SELECT COUNT(*) FROM x402_hits WHERE COALESCE(note,'') <> 'self_test'`).catch(() => null);
+  const probeCallers = await q1(store, `SELECT COUNT(DISTINCT caller) FROM x402_hits WHERE COALESCE(note,'') <> 'self_test'`).catch(() => null);
+  const reached = probes == null ? (reachedExt == null ? reachedAll : reachedExt) : probes;
   const revenueUsd = await q1(store, `SELECT COALESCE(SUM(amount),0) FROM ledger WHERE kind = 'revenue' AND basis <> 'self_test'`);
   const selfTestUsd = await q1(store, `SELECT COALESCE(SUM(amount),0) FROM ledger WHERE basis = 'self_test'`);
   const reaAnalyzed = await q1(store, `SELECT COUNT(*) FROM rea_targets WHERE status IN ('analyzed','handoff')`).catch(() => 0);
@@ -105,7 +109,9 @@ export async function funnel(store, { env = null } = {}) {
     { stage: '生きていると確認', key: 'alive', n: alive, note: '到達できた／募集中と確認できた件数' },
     { stage: '売り物になる', key: 'products', n: products, note: '値札を付けて出せる品目（x402 カタログ）' },
     { stage: '置き場に出る', key: 'distributed', n: distributed, note: '買い手が見る場所に実際に載った件数（掲載は人の1タップ）' },
-    { stage: '人が来る', key: 'reached', n: reached, note: `外部からの決済リクエスト（自己テスト ${Math.max(0, reachedAll - reached)} 件は除く）` },
+    { stage: '人が来る', key: 'reached', n: reached, note: probes == null
+      ? `外部からの決済リクエスト（自己テスト ${Math.max(0, reachedAll - (reachedExt == null ? reachedAll : reachedExt))} 件は除く）`
+      : `値札(402)を見に来た外部呼び出し ${probes} 件 / 呼び手 ${probeCallers || 0} 人（自己テストは除外。支払いまで行った数は次の段）` },
     { stage: '払う', key: 'paid', n: revenueUsd, unit: 'USD', note: '実売上（自己テストを除く）' },
   ];
 
@@ -132,6 +138,7 @@ export async function funnel(store, { env = null } = {}) {
     at: nowIso(), stages, breaks, bottleneck: { ...bottleneck, ...FIX },
     money: { revenue_usd: revenueUsd, self_test_usd: selfTestUsd },
     receipts: { all: reachedAll, external: reached, separable: reachedExt != null },
+    hits: { challenges: probes, unique_callers: probeCallers },
     rea_analyzed: reaAnalyzed,
     verdict: revenueUsd > 0
       ? `実売上 $${revenueUsd}。次の詰まりは「${bottleneck.stage}」`

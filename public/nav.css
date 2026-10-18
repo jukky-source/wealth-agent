@@ -133,3 +133,6 @@ body.has-bnav .views{ position:static; flex:1 1 auto; min-height:0 }
 @supports not (height:100dvh){ body.has-bnav{ height:100% } }
 
 body.has-bnav .bar{ padding-top: calc(env(safe-area-inset-top, 0px) + 16px) }
+
+/* iOS: ステータスバーに潜り込ませない（env() が 0 を返す埋め込みブラウザでもヘッダーを沈めない） */
+html.ios body.has-bnav .bar{padding-top:58px;padding-top:calc(max(env(safe-area-inset-top,0px),52px) + 6px)}

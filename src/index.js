@@ -912,6 +912,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       }
       const header = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
       const { validateOrder, fulfillOrder, ORDER_SPECS } = await import('./agent/fulfill.js');
+      const { logHit } = await import('./agent/hits.js');
       if (!header) {
         // 値札には注文書（入力仕様）も添える。買い手はこれを見て本文を組み立てる。
         // 無料枠がある品目は、値札の中でもその入口を案内する（試してから買える）。
@@ -920,6 +921,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
           free_option: freeTierResources().includes(resource)
             ? { url: `${url.origin}/api/free/${resource}`, daily_limit_per_ip: freeLimitFor(env, resource), note: 'No payment needed up to the daily limit (per IP, per UTC day). Pay here only if you need the limit removed.' }
             : null };
+        await logHit(deps.store, request, { resource, kind: 'challenge', status: 402 });
         return new Response(JSON.stringify(priced), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
       }
       // 決済「前」に注文内容を検査する。満たさないものは請求せずに断る（払わせてから失敗しない）。
@@ -934,8 +936,10 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       if (!settled.ok) {
         // 保留は決済が確定していない状態。中身は渡さず、入金としても記録しない。
         const status = settled.error === 'facilitator_unreachable' ? 503 : 402;
+        await logHit(deps.store, request, { resource, kind: 'rejected', status, note: settled.error });
         return new Response(JSON.stringify({ ...ch.body, error: settled.error, detail: settled.detail || null, note: settled.note }), { status, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
       }
+      await logHit(deps.store, request, { resource, kind: 'paid', status: 200, note: settled.tx || null });
       const item = X402_CATALOG.find((i) => i.resource === resource);
       // 買い手の住所が自分の受取先と同じなら、それは自己購入（動作確認）。
       // 外部の売上と混ぜない印を付けて記録する。
