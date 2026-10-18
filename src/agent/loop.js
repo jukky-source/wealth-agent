@@ -48,13 +48,14 @@ export async function funnel(store, { env = null } = {}) {
     { stage: '払う', key: 'paid', n: revenueUsd, unit: 'USD', note: '実売上（自己テストを除く）' },
   ];
 
-  // いちばん詰まっている段 = 直前の段から半分以上落ちている最初の段
-  let bottleneck = null;
+  // 落ち込みを全部拾い、そのうち「支払いにいちばん近い段」を詰まりとして名指しする。
+  // （手前の段の停滞も breaks として残すので、両方見える）
+  const breaks = [];
   for (let i = 1; i < stages.length; i += 1) {
     const prev = stages[i - 1].n, cur = stages[i].n;
-    if (prev > 0 && cur < Math.max(1, Math.floor(prev * 0.5))) { bottleneck = stages[i]; break; }
-    if (prev === 0 && cur === 0) continue;
+    if (prev > 0 && cur < Math.max(1, Math.floor(prev * 0.5))) breaks.push({ from: stages[i - 1].key, stage: stages[i].key, from_n: prev, n: cur });
   }
+  let bottleneck = breaks.length ? stages.find((s) => s.key === breaks[breaks.length - 1].stage) : null;
   if (!bottleneck) bottleneck = stages[stages.length - 1];
 
   const FIX = {
@@ -67,7 +68,7 @@ export async function funnel(store, { env = null } = {}) {
   }[bottleneck.key] || { why: '段の数え方が足りない', fix: '観測を増やす', level: 'allow' };
 
   return {
-    at: nowIso(), stages, bottleneck: { ...bottleneck, ...FIX },
+    at: nowIso(), stages, breaks, bottleneck: { ...bottleneck, ...FIX },
     money: { revenue_usd: revenueUsd, self_test_usd: selfTestUsd },
     rea_analyzed: reaAnalyzed,
     verdict: revenueUsd > 0
