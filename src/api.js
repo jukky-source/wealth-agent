@@ -14,6 +14,7 @@ import { parseTable, toCsv, statColumns, qualityCheck } from './data/analyze.js'
 import { POLICY, reworkTask } from './agent/judge.js';
 import { activeMode, allModes, builtinModes, defaultChips, setActiveMode, upsertCustomMode } from './agent/modes.js';
 import { STREAMS, ensureStreams, streamProgress } from './agent/streams.js';
+import { MEMORY_KINDS } from './memory/memory.js';
 import { setupChecklist } from './agent/setup.js';
 import { convene, saveDecision, pickTopic, SEATS, DEFAULT_SEATS } from './agent/council.js';
 import { getEnvelope, setEnvelope, envelopeCard, checkEnvelope } from './agent/envelope.js';
@@ -653,6 +654,51 @@ export function createApi(deps) {
     return { memories: rows, stats: await memory.stats() };
   });
   on('GET', '/api/memory/guardrails', async () => ({ memories: await memory.guardrails('global') }));
+  // 記憶の手入れ（オーナーが読み・書き・直し・消せる）。鍵やトークンは記憶に残さない。
+  const SECRETISH = /(api[_-]?key|secret|bearer |token|password|passwd|private[_-]?key|mnemonic|seed phrase|sk-[A-Za-z0-9]{8,})/i;
+  on('POST', '/api/memory', async (req, body) => {
+    const kind = String(body?.kind || 'fact');
+    if (!MEMORY_KINDS.includes(kind)) return { ok: false, error: 'bad_kind', allowed: MEMORY_KINDS };
+    const text = truncate(String(body?.text || '').trim(), 600);
+    if (!text) return { ok: false, error: 'text_required' };
+    if (SECRETISH.test(text)) return { ok: false, error: 'secret_not_allowed', note: '鍵・トークン・パスワードは記憶に保存しません。サーバー側のシークレット（wrangler secret put）に置いてください。' };
+    const mid = await memory.write({ kind, text, scope: body?.scope || 'global', key: body?.key || null, evidence: 'user_stated', importance: Math.max(0, Math.min(100, Number(body?.importance) || 60)) });
+    return { ok: true, id: mid };
+  });
+  on('POST', '/api/memory/:id', async (req, body, p) => {
+    const row = await store.get('memories', p.id);
+    if (!row) return { ok: false, error: 'not_found' };
+    if (body?.action === 'delete' || body?.delete === true) {
+      try { await store.run('DELETE FROM memories_fts WHERE rowid IN (SELECT rowid FROM memories WHERE id=?)', p.id); } catch { /* FTS が無くても消せる */ }
+      await store.run('DELETE FROM memories WHERE id=?', p.id);
+      return { ok: true, deleted: true, id: p.id };
+    }
+    const text = body?.text == null ? row.text : truncate(String(body.text).trim(), 600);
+    if (!text) return { ok: false, error: 'text_required' };
+    if (SECRETISH.test(text)) return { ok: false, error: 'secret_not_allowed', note: '鍵・トークン・パスワードは記憶に保存しません。' };
+    const kind = MEMORY_KINDS.includes(String(body?.kind)) ? String(body.kind) : row.kind;
+    const importance = body?.importance == null ? row.importance : Math.max(0, Math.min(100, Number(body.importance) || 0));
+    await store.run('UPDATE memories SET text=?, kind=?, importance=?, created_at=? WHERE id=?', text, kind, importance, nowIso(), p.id);
+    await memory.reindex(p.id).catch(() => {});
+    return { ok: true, memory: { ...row, text, kind, importance } };
+  });
+
+  // 会話の指示 → 計画（タスク分解）→ その場で少し実行。
+  // 「話すだけで終わらない」ための入口。残りは cron が続きを進める。
+  on('POST', '/api/chat/plan', async (req, body) => {
+    const goal = truncate(String(body?.goal || body?.message || '').trim(), 400);
+    if (!goal) return { ok: false, error: 'goal_required' };
+    const r = await engine.createMission({
+      title: body?.title || truncate(goal, 60), goal,
+      constraints: body?.constraints || '', priority: body?.priority ?? 70, planNow: true,
+    });
+    let tick = null;
+    try { tick = await engine.tick({ maxSteps: Math.max(1, Math.min(3, Number(body?.steps) || 2)), source: 'chat_plan' }); }
+    catch (e) { tick = { error: String(e?.message || e) }; }
+    const tasks = await store.all(
+      'SELECT id,title,state,category,tool_name,next_action FROM tasks WHERE mission_id=? ORDER BY created_at ASC LIMIT 20', r.mission.id);
+    return { ok: true, mission: r.mission, created: (r.plan?.created || []).length, categories: r.plan?.categories || [], tasks, tick };
+  });
   on('GET', '/api/checkpoints', async (req) => {
     const scope = req.query.get('scope');
     const rows = scope
@@ -687,7 +733,7 @@ export function createApi(deps) {
     };
   });
   on('POST', '/api/settings', async (req, body) => {
-    const allowed = ['engine:state', 'ai:preferred', 'report:frequency', 'notify:webhook'];
+    const allowed = ['engine:state', 'ai:preferred', 'report:frequency', 'notify:webhook', 'ai:model_roles', 'ai:budget_usd_day', 'notify:email', 'budget:monthly_jpy'];
     if (!allowed.includes(body.key)) return { ok: false, error: 'key_not_allowed', allowed };
     await store.run(`INSERT INTO settings (key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`, body.key, typeof body.value === 'string' ? body.value : j(body.value), nowIso());
     return { ok: true };
