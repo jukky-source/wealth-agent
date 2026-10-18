@@ -27,6 +27,7 @@
     "test:jobs": "node tests/jobs.test.mjs",
     "test:pairing": "node --test tests/pairing.test.mjs",
     "test:loop": "node tests/loop.test.mjs",
+    "test:labloop": "node tests/labloop.test.mjs",
     "test:free": "node tests/freemium.test.mjs",
     "test:risk": "node tests/risk.test.mjs",
     "test:prop": "node tests/prop.test.mjs",

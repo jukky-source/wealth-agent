@@ -1026,24 +1026,74 @@ export async function labDeleteProject(store, name) {
 // ---------------------------------------------------------------------------
 // 順位表（D1 に積んだ候補から作る）
 // ---------------------------------------------------------------------------
-export async function labBoard(store, { mode = 'own', limit = 30 } = {}) {
-  const rows = await store.all(`SELECT symbol,strategy_key,params_json,metrics_json,fitness,verdict,gates_json,tag,date_from,date_to,bars,created_at
-    FROM ${T} WHERE tag=? ORDER BY fitness DESC LIMIT ?`, `lab:${mode}`, clamp(num(limit, 30), 1, 200)).catch(() => []);
-  return rows.map((r) => {
-    const m = safeJson(r.metrics_json, {}) || {};
-    const p = safeJson(r.params_json, {}) || {};
-    const spec = p.spec || null;
-    return {
-      symbol: r.symbol, key: r.strategy_key, fitness: r.fitness, verdict: r.verdict,
-      gatesPass: r.verdict === 'pass',
-      reasons: safeJson(r.gates_json, []) || [], at: r.created_at, bars: r.bars, from: r.date_from, to: r.date_to,
-      oosNetPct: (m.oos && m.oos.netProfitPct) ?? m.netProfitPct ?? null,
-      oosDdMtmPct: (m.oos && (m.oos.maxDrawdownPctMtm ?? m.oos.maxDrawdownPct)) ?? null,
-      objective: m.objective || null, mode: m.mode || mode,
-      label: m.label || (spec ? specLabel(spec) : null) || null,
-      spec,
-    };
-  });
+/** 順位の比較。同点は「新しい個体」を上に置く（挿入順で固定されないようにする）。 */
+export function labRowCmp(a, b) {
+  const f = num(b.fitness, -1e9) - num(a.fitness, -1e9);
+  if (f) return f;
+  const n = num(b.oosNetPct, -1e9) - num(a.oosNetPct, -1e9);
+  if (n) return n;
+  const t = String(b.at || '').localeCompare(String(a.at || ''));
+  if (t) return t;
+  return String(b.id || '').localeCompare(String(a.id || ''));
+}
+
+/** 同じ論理（銘柄×中身）は1本に畳んでから並べる。重複は「同じ結論を何度も作り直した分」で、
+ *  順位表を埋めて新しい個体を締め出す。実測で XAGUSD の同一論理が 88件・103件 重複していた。 */
+export function rankLabRows(rows = [], limit = 30) {
+  const best = new Map();
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    const k = `${r.symbol}|${r.key}`;
+    const cur = best.get(k);
+    if (!cur) { best.set(k, { row: r, dup: num(r.duplicates, 0) }); continue; }
+    cur.dup += 1 + num(r.duplicates, 0);
+    if (labRowCmp(r, cur.row) < 0) cur.row = r;
+  }
+  const list = [...best.values()].map((v) => ({ ...v.row, duplicates: v.dup }));
+  list.sort(labRowCmp);
+  return { rows: list.slice(0, clamp(num(limit, 30), 1, 200)), distinct: list.length, raw: (Array.isArray(rows) ? rows.length : 0) };
+}
+
+function mapLabRow(r, mode) {
+  const m = safeJson(r.metrics_json, {}) || {};
+  const p = safeJson(r.params_json, {}) || {};
+  const spec = p.spec || null;
+  return {
+    id: r.id, symbol: r.symbol, key: r.strategy_key, fitness: r.fitness, verdict: r.verdict,
+    gatesPass: r.verdict === 'pass',
+    reasons: safeJson(r.gates_json, []) || [], at: r.created_at, bars: r.bars, from: r.date_from, to: r.date_to,
+    mutation: r.mutation || null, duplicates: num(r.dup, 0),
+    oosNetPct: (m.oos && m.oos.netProfitPct) ?? m.netProfitPct ?? null,
+    oosDdMtmPct: (m.oos && (m.oos.maxDrawdownPctMtm ?? m.oos.maxDrawdownPct)) ?? null,
+    objective: m.objective || null, mode: m.mode || mode,
+    label: m.label || (spec ? specLabel(spec) : null) || null,
+    spec,
+  };
+}
+
+/** 順位表（同じ論理を畳んだ上での上位）。窓関数が無い環境では多めに引いて JS 側で畳む。 */
+export async function labBoardRanked(store, { mode = 'own', limit = 30, scan = null } = {}) {
+  const want = clamp(num(limit, 30), 1, 200);
+  const windowed = `SELECT * FROM (
+      SELECT id,symbol,strategy_key,params_json,metrics_json,fitness,verdict,gates_json,date_from,date_to,bars,created_at,mutation,
+        ROW_NUMBER() OVER (PARTITION BY symbol, strategy_key ORDER BY fitness DESC, created_at DESC, id DESC) rn,
+        COUNT(*) OVER (PARTITION BY symbol, strategy_key) dup
+      FROM ${T} WHERE tag=?
+    ) WHERE rn=1 ORDER BY fitness DESC, created_at DESC, id DESC LIMIT ?`;
+  const rows = await store.all(windowed, `lab:${mode}`, want).catch(() => null);
+  if (rows && rows.length) {
+    const mapped = rows.map((r) => mapLabRow(r, mode));
+    const dups = mapped.reduce((s, r) => s + num(r.duplicates, 0), 0) - mapped.length;
+    return { rows: mapped, distinct: mapped.length, raw: mapped.length + Math.max(0, dups), duplicates: Math.max(0, dups) };
+  }
+  const raw = await store.all(`SELECT id,symbol,strategy_key,params_json,metrics_json,fitness,verdict,gates_json,date_from,date_to,bars,created_at,mutation
+    FROM ${T} WHERE tag=? ORDER BY fitness DESC, created_at DESC, id DESC LIMIT ?`, `lab:${mode}`, clamp(num(scan, want * 12), want, 1500)).catch(() => []);
+  const ranked = rankLabRows(raw.map((r) => mapLabRow(r, mode)), want);
+  return { ...ranked, duplicates: Math.max(0, ranked.raw - ranked.distinct), all: raw.map((r) => mapLabRow(r, mode)) };
+}
+
+export async function labBoard(store, opts = {}) {
+  const r = await labBoardRanked(store, opts);
+  return r.rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,7 +1162,11 @@ export function pairCorr(a = {}, b = {}) {
  */
 export function labCollectionFrom(rows = [], { max = 6, maxCorr = 0.6, corrGate = true } = {}) {
   const seen = new Set(); const members = []; const skipped = []; const structs = new Set();
-  const sorted = rows.filter((r) => r && r.gatesPass && r.spec).sort((a, b) => num(b.fitness, 0) - num(a.fitness, 0));
+  // 同点なら新しい個体を先に採る。挿入順のままにすると、同じ顔ぶれが毎tick選ばれ続けて
+  // 「集合が入れ替わらない」（実測で E8 の集合が何tickも同一だった）。
+  const sorted = rows.filter((r) => r && r.gatesPass && r.spec).sort((a, b) => num(b.fitness, 0) - num(a.fitness, 0)
+    || String(b.at || '').localeCompare(String(a.at || ''))
+    || String(a.key || '').localeCompare(String(b.key || '')));
   for (const r of sorted) {
     if (members.length >= max) { skipped.push({ symbol: r.symbol, key: r.key, why: 'over_max' }); continue; }
     const k = `${r.symbol}|${r.key}`;
@@ -1163,6 +1217,8 @@ export async function labAuto({ store, env = {}, now = null, rows = null } = {})
   const prevKeys = ((prev && prev.members) || []).map((m) => `${m.symbol}|${m.key}`);
   const newKeys = members.map((m) => `${m.symbol}|${m.key}`);
   const changed = JSON.stringify(prevKeys) !== JSON.stringify(newKeys);
+  const entered = newKeys.filter((k) => !prevKeys.includes(k));
+  const left = prevKeys.filter((k) => !newKeys.includes(k));
   const minMembers = clamp(num(env.LAB_AUTO_MIN_MEMBERS, 2), 1, 8);
   const wrote = members.length >= minMembers;
   if (wrote) {
@@ -1182,7 +1238,7 @@ export async function labAuto({ store, env = {}, now = null, rows = null } = {})
     e8: {
       candidates: e8.length, passed: e8.filter((r) => r.gatesPass).length, champion: brief(e8Champ),
       collection: {
-        members: members.length, keys: newKeys, wrote, previous: prevKeys, changed, minMembers,
+        members: members.length, keys: newKeys, wrote, previous: prevKeys, changed, minMembers, entered, left,
         structures: new Set(members.map((m) => m.struct)).size,
         dropped_correlated: skipped.filter((s) => s.why === 'correlated').length,
         dropped_same_structure: skipped.filter((s) => s.why === 'same_structure').length,
@@ -1194,8 +1250,8 @@ export async function labAuto({ store, env = {}, now = null, rows = null } = {})
     },
     skipped: skipped.slice(0, 8),
     handoff: wrote
-      ? (changed ? 'E8実行部のロジック源を更新した（lab:collection）' : 'E8実行部のロジック源は前回と同じ')
-      : `門を通る個体が${members.length}本しか無いので前の集合を残した`,
+      ? (changed ? `E8実行部のロジック源を更新した（lab:collection / 入 ${entered.length}本 / 出 ${left.length}本）` : 'E8実行部のロジック源は前回と同じ（lab:collection / 門を通る顔ぶれが変わっていない）')
+      : `門を通る個体が${members.length}本しか無いので前の集合を残した（必要 ${minMembers}本）`,
   };
   const hist = safeJson((await store.first(`SELECT value FROM settings WHERE key=?`, LAB_AUTO_KEY).catch(() => null))?.value, null) || { entries: [] };
   hist.entries = [ledger, ...(hist.entries || [])].slice(0, LAB_AUTO_MAX_LOG);

@@ -199,6 +199,23 @@ export function createScheduler(deps) {
         report.steps.push({ step: 'lab', skipped: labDue ? 'disabled' : 'not_due' });
       }
     } catch (e) { report.steps.push({ step: 'lab', error: e.message }); }
+    // 5c-8) lab_loop : 試行錯誤をエージェント内で回す（測る→壁を名指し→手を変える→記録）
+    try {
+      const loopEveryMin = Math.max(5, Number(env.LAB_LOOP_EVERY_MINUTES || 15));
+      const loopLast = await setting(store, 'lab:loop_last_at', null);
+      const loopDue = !loopLast || (Date.now() - new Date(loopLast).getTime() >= loopEveryMin * 60e3);
+      if (loopDue && env && env.LAB_ENABLED === 'true') {
+        const { labLoopRound } = await import('./income/labLoop.js');
+        const rounds = [];
+        for (const mode of ['own', 'e8']) {
+          try { rounds.push(await labLoopRound({ store, env, mode })); } catch (e) { rounds.push({ mode, error: String((e && e.message) || e).slice(0, 160) }); }
+        }
+        await setSetting(store, 'lab:loop_last_at', nowIso());
+        report.steps.push({ step: 'lab_loop', rounds: rounds.map((r) => (r && r.verdict ? `${r.mode}:${r.verdict}(${r.wall}→${r.action})` : `${r.mode}:error`)) });
+      } else {
+        report.steps.push({ step: 'lab_loop', skipped: loopDue ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'lab_loop', error: e.message }); }
 
     // 5c-2) ネタ帳 — scout の実データから「こうやれば稼げる」を作り、読み取りだけで試す。
     //     営業・売り込みの下書きは作らない。原価0（先にお金が要る手順は入れない）。
