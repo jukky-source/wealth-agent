@@ -343,7 +343,14 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     if (!url.pathname.startsWith('/api/') && url.pathname !== '/mcp' && url.pathname !== '/a2a') {
       // Static PWA assets (Cloudflare): fall back to the index for SPA routes.
       if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
-        const res = await env.ASSETS.fetch(request);
+        if (url.pathname === '/today.json') {
+          const { todayDigest } = await import('./agent/today.js');
+          let store = null;
+          try { store = wire(env).store; } catch {}
+          return new Response(JSON.stringify(await todayDigest(store, { publicOnly: true })), { headers: { 'content-type': 'application/json; charset=utf-8' } });
+        }
+        const pretty = url.pathname === '/today' ? '/today.html' : (url.pathname === '/surface' ? '/surface.html' : url.pathname);
+        const res = await env.ASSETS.fetch(pretty === url.pathname ? request : new Request(new URL(pretty, url.origin).toString(), request));
         if (res.status === 404) {
           const indexUrl = new URL('/index.html', url.origin);
           return env.ASSETS.fetch(new Request(indexUrl.toString(), request));
@@ -390,7 +397,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
+      if (url.pathname !== '/api/surface' && url.pathname !== '/api/surface/help') return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
     // 自己診断: この実行環境（Cloudflare の egress）から検索経路が実際に何を返すかを測る。
@@ -727,6 +734,27 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
 
     // 活動報告: 「いま何をしているか」をタスク・台帳・売り物から実測して返す。
     // ?format=text で人が読む形、?live=1 で外部（自分の402・Bazaar 掲載）も実測する。オーナー専用。
+    // 今日なにを拾い、何を試し、何が分かったか — 1画面ぶんのデータ（/today が読む）。
+    if (url.pathname === '/api/today') {
+      const { todayDigest, todayText } = await import('./agent/today.js');
+      const body = await todayDigest(deps.store, {});
+      if (url.searchParams.get('format') === 'text') return new Response(todayText(body), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      return json(body);
+    }
+
+    // 公開表面の解析（無料・要約）。参考: morluto/rea の考え方を公開Web/APIに限定して移植。
+    if (url.pathname === '/api/surface' || url.pathname === '/api/surface/help') {
+      const { inspectSurface, surfaceBrief, surfaceHelp, SURFACE_PRICE_USDC, GUARDRAILS } = await import('./agent/surface.js');
+      if (url.pathname.endsWith('/help')) return json({ ok: true, help: surfaceHelp(), price_usdc: SURFACE_PRICE_USDC, guardrails: GUARDRAILS });
+      let target = url.searchParams.get('url') || '';
+      if (!target && request.method === 'POST') { try { target = (await request.json()).url || ''; } catch {} }
+      if (!target) return json({ ok: false, error: 'url が必要です', help: surfaceHelp() }, 400);
+      const s = await inspectSurface(target, {});
+      const brief = surfaceBrief(s, { full: false });
+      if (url.searchParams.get('format') === 'text') return new Response(brief, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      return json({ ok: s.ok, brief, report: s, paid: { resource: 'surface-report', price_usdc: SURFACE_PRICE_USDC, endpoint: `${url.origin}/api/x402/surface-report`, mcp_tool: 'buy_surface_report' }, guardrails: GUARDRAILS });
+    }
+
     if (url.pathname === '/api/report' && request.method === 'GET') {
       try {
         const { activityReport } = await import('./agent/report.js');

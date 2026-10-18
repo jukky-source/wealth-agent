@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>公開表面の解析 — wealth-agent</title>
+<style>
+  :root{
+    --bg:#0C1116; --panel:#131A22; --rule:#22303F; --text:#DFE8F0; --muted:#8CA0B3;
+    --amber:#F0A73A; --teal:#4FC9A6; --red:#E4685A; --blue:#5AA6E4;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --body:'Noto Sans JP',-apple-system,BlinkMacSystemFont,'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--body);line-height:1.6;
+       background-image:repeating-linear-gradient(to bottom,transparent 0 31px,rgba(34,48,63,.35) 31px 32px)}
+  .wrap{max-width:1000px;margin:0 auto;padding:48px 20px 72px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--amber);margin:0 0 14px}
+  h1{font-size:clamp(22px,4vw,34px);line-height:1.25;margin:0 0 12px;letter-spacing:-.01em}
+  .sub{margin:0;color:var(--muted);font-size:14px;max-width:66ch}
+  form{display:flex;gap:8px;margin:26px 0 8px;flex-wrap:wrap}
+  input[type=url]{flex:1 1 320px;background:var(--panel);border:1px solid var(--rule);color:var(--text);
+    font-family:var(--mono);font-size:14px;padding:12px 14px;border-radius:2px}
+  input[type=url]:focus{outline:2px solid var(--amber);outline-offset:1px;border-color:var(--amber)}
+  button{background:var(--amber);color:#1A1206;border:0;font-weight:700;font-size:14px;padding:12px 20px;
+    border-radius:2px;cursor:pointer;font-family:var(--body)}
+  button:focus-visible{outline:2px solid var(--text);outline-offset:2px}
+  button[disabled]{opacity:.5;cursor:progress}
+  .ex{font-family:var(--mono);font-size:11px;color:var(--muted);margin:0 0 26px}
+  .ex button{background:none;border:1px solid var(--rule);color:var(--muted);font-family:var(--mono);font-size:11px;padding:3px 8px;margin:0 6px 6px 0;font-weight:400}
+  .ex button:hover{color:var(--text);border-color:var(--muted)}
+  .card{background:var(--panel);border:1px solid var(--rule);border-radius:2px;padding:18px;margin-bottom:14px}
+  .card h2{font-size:13px;margin:0 0 12px;letter-spacing:.02em}
+  .card h2 span{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--muted);display:block;text-transform:uppercase;margin-bottom:6px}
+  .top{display:flex;gap:18px;flex-wrap:wrap;align-items:baseline;border-bottom:1px solid var(--rule);padding-bottom:12px;margin-bottom:14px}
+  .score{font-family:var(--mono);font-size:32px;font-variant-numeric:tabular-nums;color:var(--amber)}
+  .meta{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+  .chip{font-family:var(--mono);font-size:11px;border:1px solid var(--rule);color:var(--muted);padding:2px 7px;border-radius:2px}
+  ul.rows{list-style:none;margin:0;padding:0}
+  ul.rows li{display:flex;gap:10px;justify-content:space-between;border-top:1px solid var(--rule);padding:7px 0;font-size:13px}
+  ul.rows li:first-child{border-top:0}
+  .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .m{font-family:var(--mono);font-size:11px;color:var(--muted);flex:0 0 auto}
+  .k{font-family:var(--mono);color:var(--text)}
+  pre{white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:12px;background:#0F151C;border:1px solid var(--rule);padding:14px;margin:0;max-height:420px;overflow:auto}
+  .guard li{color:var(--muted)}
+  .price{font-family:var(--mono);font-size:20px;color:var(--teal)}
+  .err{color:var(--red);font-family:var(--mono);font-size:12px}
+  footer{margin-top:30px;border-top:1px solid var(--rule);padding-top:16px;font-size:12px;color:var(--muted)}
+  a{color:var(--blue)}
+  @media (prefers-reduced-motion:no-preference){.card{transition:border-color .2s}.card:hover{border-color:#2f4256}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <p class="eyebrow">Wealth-Agent / 公開表面の解析</p>
+    <h1>公開されているものだけを読み、入口と根拠を返す</h1>
+    <p class="sub">URL を入れると、そのサービスが公開している入口（API の候補・フォーム・フィード・MCP ツール）を、根拠と「分からなかったこと」つきで返す。認証の突破はしない。401/403 は「要認証」と記録して止める。</p>
+  </header>
+  <form id="f">
+    <input id="u" type="url" placeholder="https://example.com" value="https://example.com" aria-label="解析する公開URL">
+    <button id="b" type="submit">解析する</button>
+  </form>
+  <p class="ex">例: <button type="button" data-u="https://example.com">example.com</button><button type="button" data-u="https://wealth-agent.wealthagent-app.workers.dev">自分の /mcp</button><button type="button" data-u="https://news.ycombinator.com">news.ycombinator.com</button></p>
+  <div id="out"><div class="card"><h2><span>結果</span>待機中</h2><p class="meta">URL を入れて「解析する」を押すと、ここに結果が出ます。解析はサーバー側で1回だけ取得します。</p></div></div>
+
+  <section class="card guard">
+    <h2><span>この道具が守ること</span>やらないこと</h2>
+    <ul class="rows">
+      <li><span class="t">読むのは公開されている応答だけ（認証情報を使わない）</span></li>
+      <li><span class="t">401 / 403 は「要認証」と記録して止める。突破はしない</span></li>
+      <li><span class="t">robots.txt を尊重し、対象へのアクセスは1回ずつ</span></li>
+      <li><span class="t">再配布・再販はしない（出典URLを必ず残す）</span></li>
+    </ul>
+  </section>
+  <section class="card">
+    <h2><span>使い方</span>無料と有料</h2>
+    <ul class="rows">
+      <li><span class="t">1. 上の欄にURLを入れて解析する</span><span class="m">無料</span></li>
+      <li><span class="t">2. 要約（入口の候補・痕跡・分からなかったこと）を読む</span><span class="m">無料</span></li>
+      <li><span class="t">3. 全件＋根拠の全文＋実装メモ</span><span class="price">0.25 USDC</span></li>
+    </ul>
+    <p class="meta" style="margin:12px 0 0">有料面: <span class="k">POST /api/x402/surface-report</span>（x402）／ MCP ツール <span class="k">buy_surface_report</span>／ 無料面: <span class="k">GET /api/surface?url=…</span>・MCP <span class="k">surface_inspect</span></p>
+  </section>
+  <footer>参考にした考え方: <a href="https://github.com/morluto/rea" target="_blank" rel="noopener">morluto/rea</a>（ローカルのアプリやバイナリを解析して機能を理解する MCP ツール）。ここでは対象を「公開されている Web/API の表面」に限定し、認証回避・課金回避は実装していません。<br>限界: SPA の描画後DOMは取れない／認証後の内部APIは見えない／エンドポイントは文字列としての出現で動作確認はしていない。</footer>
+</main>
+<script>
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const row = (l, r) => '<li><span class="t">' + l + '</span>' + (r ? '<span class="m">' + r + '</span>' : '') + '</li>';
+const f = document.getElementById('f'), u = document.getElementById('u'), b = document.getElementById('b'), out = document.getElementById('out');
+
+async function run(target) {
+  b.disabled = true; b.textContent = '解析中…';
+  out.innerHTML = '<div class="card"><h2><span>結果</span>解析中</h2><p class="meta">' + esc(target) + ' を1回だけ取得しています。</p></div>';
+  try {
+    const r = await fetch('/api/surface?url=' + encodeURIComponent(target));
+    const d = await r.json();
+    if (!d.ok && !d.report) { out.innerHTML = '<div class="card"><h2><span>結果</span>取得できませんでした</h2><p class="err">' + esc(d.error || d.brief || '不明') + '</p></div>'; return; }
+    const s = d.report || {};
+    const eps = (s.endpoints || []);
+    const forms = (s.forms || []);
+    const mcp = s.mcp || {};
+    out.innerHTML =
+      '<div class="card"><h2><span>結果</span>' + esc(s.title || s.target || target) + '</h2>' +
+      '<div class="top"><div class="score">' + (s.score == null ? '—' : s.score) + '<span class="meta">/10</span></div>' +
+      '<div class="meta">判定 ' + esc(s.kind) + ' ／ 認証 ' + esc(s.auth) + ' ／ HTTP ' + esc(s.status) + (s.server ? ' ／ ' + esc(s.server) : '') + '</div></div>' +
+      (s.description ? '<p class="sub">' + esc(s.description) + '</p>' : '') +
+      ((s.signals || []).length ? '<div class="chips">' + s.signals.map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' : '') +
+      '</div>' +
+      (mcp.ok ? '<div class="card"><h2><span>MCP</span>' + esc((mcp.server || {}).name || '?') + ' の公開ツール ' + mcp.tools.length + '件</h2><ul class="rows">' + mcp.tools.slice(0, 30).map((t) => row('<span class="k">' + esc(t.name) + '</span>', '')).join('') + '</ul></div>' : '') +
+      '<div class="card"><h2><span>入口の候補</span>' + eps.length + '件（動作確認はしていない）</h2><ul class="rows">' + (eps.length ? eps.slice(0, 40).map((e) => row('<span class="k">' + esc(e.path) + '</span>', esc(e.evidence))).join('') : row('見つからなかった', '')) + '</ul></div>' +
+      (forms.length ? '<div class="card"><h2><span>フォーム</span>' + forms.length + '件</h2><ul class="rows">' + forms.map((x) => row(esc(x.method.toUpperCase() + ' ' + x.action), esc((x.fields || []).join(', ')))).join('') + '</ul></div>' : '') +
+      '<div class="card"><h2><span>根拠</span>どこを見てそう言っているか</h2><ul class="rows">' + (s.evidence || []).map((e) => row(esc(e), '')).join('') + '</ul></div>' +
+      '<div class="card"><h2><span>分からなかったこと</span>ここが一番大事</h2><ul class="rows">' + ((s.unknown || []).length ? s.unknown.map((e) => row(esc(e), '')).join('') : row('特になし', '')) + '</ul></div>' +
+      '<div class="card"><h2><span>全文</span>テキストの要約</h2><pre>' + esc(d.brief || '') + '</pre><p class="meta" style="margin:12px 0 0"><a href="/api/surface?url=' + encodeURIComponent(target) + '&format=text" target="_blank" rel="noopener">テキストで開く</a></p></div>';
+  } catch (e) {
+    out.innerHTML = '<div class="card"><h2><span>結果</span>失敗</h2><p class="err">' + esc(e.message) + '</p></div>';
+  } finally { b.disabled = false; b.textContent = '解析する'; }
+}
+f.addEventListener('submit', (e) => { e.preventDefault(); const v = u.value.trim(); if (v) run(v); });
+document.querySelectorAll('.ex button').forEach((x) => x.addEventListener('click', () => { u.value = x.dataset.u; run(x.dataset.u); }));
+if (location.search) { const p = new URLSearchParams(location.search).get('url'); if (p) { u.value = p; run(p); } }
+</script>
+</body>
+</html>

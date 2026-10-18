@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>今日の台帳 — wealth-agent</title>
+<style>
+  :root{
+    --bg:#0C1116; --panel:#131A22; --rule:#22303F; --text:#DFE8F0; --muted:#8CA0B3;
+    --amber:#F0A73A; --teal:#4FC9A6; --red:#E4685A; --blue:#5AA6E4;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --body:'Noto Sans JP',-apple-system,BlinkMacSystemFont,'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--body);line-height:1.6;
+       background-image:repeating-linear-gradient(to bottom,transparent 0 31px,rgba(34,48,63,.35) 31px 32px);}
+  .wrap{max-width:1080px;margin:0 auto;padding:48px 20px 72px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--amber);margin:0 0 14px}
+  h1{font-size:clamp(22px,4vw,34px);line-height:1.25;margin:0 0 12px;font-weight:700;letter-spacing:-.01em}
+  .sub{margin:0;color:var(--muted);font-size:14px;max-width:64ch}
+  .spine{display:grid;grid-template-columns:repeat(3,1fr);gap:0;margin:38px 0 10px;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+  .node{padding:16px 14px;border-left:1px solid var(--rule);position:relative}
+  .node:first-child{border-left:0}
+  .node .lbl{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+  .node .n{font-family:var(--mono);font-size:34px;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums}
+  .node.a .n{color:var(--teal)} .node.b .n{color:var(--amber)} .node.c .n{color:var(--blue)}
+  .node .k{font-family:var(--mono);font-size:11px;color:var(--muted)}
+  .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:22px}
+  .card{background:var(--panel);border:1px solid var(--rule);border-radius:2px;padding:18px}
+  .card h2{font-size:13px;margin:0 0 4px;letter-spacing:.02em}
+  .card h2 span{font-family:var(--mono);font-size:10px;letter-spacing:.18em;color:var(--muted);display:block;text-transform:uppercase;margin-bottom:6px}
+  .card p.hint{margin:0 0 14px;color:var(--muted);font-size:12px}
+  ul.rows{list-style:none;margin:0;padding:0}
+  ul.rows li{display:flex;gap:10px;justify-content:space-between;border-top:1px solid var(--rule);padding:8px 0;font-size:13px}
+  ul.rows li:first-child{border-top:0}
+  .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .m{font-family:var(--mono);font-size:11px;color:var(--muted);flex:0 0 auto}
+  .badge{font-family:var(--mono);font-size:10px;letter-spacing:.1em;padding:2px 6px;border:1px solid var(--rule);border-radius:2px;color:var(--muted);flex:0 0 auto}
+  .badge.works{color:var(--teal);border-color:#2b5f52} .badge.trying{color:var(--amber);border-color:#5c4720}
+  .badge.dead{color:var(--red);border-color:#5c2f2b} .badge.new{color:var(--blue);border-color:#26445c}
+  .badge.blocked_human{color:#C9A0E4;border-color:#4a3760}
+  .money{font-family:var(--mono);font-size:28px;font-variant-numeric:tabular-nums}
+  .wide{grid-column:1/-1;margin-top:16px}
+  .legend{font-size:12px;color:var(--muted);margin-top:18px}
+  .legend code{font-family:var(--mono);color:var(--text)}
+  footer{margin-top:34px;border-top:1px solid var(--rule);padding-top:16px;font-size:12px;color:var(--muted)}
+  a{color:var(--blue)}
+  .err{color:var(--red);font-family:var(--mono);font-size:12px}
+  @media (prefers-reduced-motion:no-preference){.card,.node{transition:border-color .2s} .card:hover{border-color:#2f4256}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <p class="eyebrow">Wealth-Agent / 稼働台帳</p>
+    <h1>今日、なにを拾い、何を試し、何が分かったか</h1>
+    <p class="sub">この画面だけ見れば、エージェントが今日動いたかどうかが分かる。数字はすべて本番の D1 から数えたもの。取れなかった項目は 0 ではなく「—」で出す。</p>
+  </header>
+  <section class="spine" aria-label="流れ: 拾う → 試す → 分かる">
+    <div class="node a"><div class="lbl">1 / 拾った（自動）</div><div class="n" id="n-picked">—</div><div class="k" id="k-picked">—</div></div>
+    <div class="node b"><div class="lbl">2 / 試した（読み取り1回）</div><div class="n" id="n-tried">—</div><div class="k" id="k-tried">—</div></div>
+    <div class="node c"><div class="lbl">3 / 分かった</div><div class="n" id="n-learned">—</div><div class="k" id="k-learned">—</div></div>
+  </section>
+  <section class="cols">
+    <article class="card">
+      <h2><span>拾った</span>情報 → 試せるネタ</h2>
+      <p class="hint">X・scout から拾った情報のうち、ネタ帳に変換されたもの（自動）。</p>
+      <ul class="rows" id="picked-rows"><li><span class="err">読み込み中…</span></li></ul>
+    </article>
+    <article class="card">
+      <h2><span>試した</span>実際に動かした回数</h2>
+      <p class="hint">読み取りだけで1回試した結果。成功も失敗も残す。</p>
+      <ul class="rows" id="tried-rows"><li><span class="err">読み込み中…</span></li></ul>
+    </article>
+    <article class="card">
+      <h2><span>分かった</span>判定とお金</h2>
+      <p class="hint">使えた／使えない／人の操作が要る、の内訳。</p>
+      <ul class="rows" id="learned-rows"><li><span class="err">読み込み中…</span></li></ul>
+      <p class="money" id="money">$—</p>
+      <p class="hint" style="margin:0">受領済みの売上（ledger の合計）</p>
+    </article>
+  </section>
+  <section class="card wide">
+    <h2><span>できていないこと</span>隠さずに書く</h2>
+    <ul class="rows" id="gaps"><li><span class="err">読み込み中…</span></li></ul>
+  </section>
+  <p class="legend">読み方: <code>new</code> まだ試していない ／ <code>trying</code> 試行中 ／ <code>works</code> 使えた ／ <code>dead</code> 使えないと分かった ／ <code>blocked_human</code> 人の1タップが要る。</p>
+  <footer>
+    <span id="asof">—</span> 時点。<a href="/surface">公開表面の解析</a> ／ <a href="/api/today?format=text">テキストで見る（要認証）</a> ／ 収益が0でも、試した回数と分かったことは毎日ここに出る。
+  </footer>
+</main>
+<script>
+const fmt = (v) => (v === null || v === undefined ? '—' : v);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const KIND = { bounty: '報奨金', perk: '特典', content: 'コンテンツ', demand: '需要', github: 'コード', ai: '発見' };
+const q = new URLSearchParams(location.search).get('key');
+const url = q ? '/api/today?key=' + encodeURIComponent(q) : '/today.json';
+
+function row(left, right, cls) {
+  return '<li><span class="t">' + left + '</span>' + (right ? '<span class="' + (cls || 'm') + '">' + right + '</span>' : '') + '</li>';
+}
+
+fetch(url).then((r) => r.json()).then((d) => {
+  const p = d.picked || {}, t = d.tried || {}, m = d.money || {};
+  document.getElementById('n-picked').textContent = fmt(p.from_findings);
+  document.getElementById('k-picked').textContent = '累計: X ' + fmt(p.sources && p.sources.x_posts) + ' / 特典 ' + fmt(p.sources && p.sources.perks);
+  document.getElementById('n-tried').textContent = fmt(t.count);
+  document.getElementById('k-tried').textContent = '最終 ' + fmt(t.last_run_at || t.last_ingest_at);
+  const st = d.learned || {};
+  const usable = (st.works || 0), dead = (st.dead || 0);
+  document.getElementById('n-learned').textContent = (usable + dead) || 0;
+  document.getElementById('k-learned').textContent = '使えた ' + usable + ' / 使えない ' + dead;
+
+  const kinds = p.by_kind || {};
+  const kl = Object.keys(kinds).map((k) => row(esc(KIND[k] || k), kinds[k] + '件'));
+  const titles = (p.titles || []).map((x) => row(esc(x.title), '<span class="badge ' + esc(x.status) + '">' + esc(x.status) + '</span>'));
+  document.getElementById('picked-rows').innerHTML = kl.concat(titles).join('') || row('まだ無し', '—');
+
+  const rows = (t.rows || []).map((x) => row(esc(x.title), x.tries + '回'));
+  const meta = [row('最終実行', fmt(t.last_run_at)), row('最終取込', fmt(t.last_ingest_at))];
+  document.getElementById('tried-rows').innerHTML = meta.concat(rows).join('') || row('まだ無し', '—');
+
+  const order = ['works', 'trying', 'new', 'blocked_human', 'dead'];
+  const lr = order.filter((k) => st[k] != null).map((k) => row(esc(k), st[k] + '件'));
+  document.getElementById('learned-rows').innerHTML = lr.join('') || row('まだ無し', '—');
+  document.getElementById('money').textContent = '$' + (m.revenue_usd == null ? '—' : Number(m.revenue_usd).toFixed(2));
+
+  document.getElementById('gaps').innerHTML = (d.gaps || []).map((g) => row(esc(g))).join('');
+  document.getElementById('asof').textContent = (d.at || '').replace('T', ' ').slice(0, 16) + ' UTC';
+}).catch((e) => {
+  document.querySelectorAll('ul.rows').forEach((u) => { u.innerHTML = row('<span class="err">取得できませんでした: ' + esc(e.message) + '</span>'); });
+});
+</script>
+</body>
+</html>

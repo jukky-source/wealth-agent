@@ -354,6 +354,7 @@ export async function fulfillOrder(resource, input, deps = {}) {
     else if (resource === 'csv-json') out = fulfillCsvJson(input);
     else if (resource === 'regex') out = fulfillRegex(input);
     else if (resource === 'diff') out = fulfillDiff(input);
+    else if (resource === 'surface-report') out = await fulfillSurfaceReport(input, deps);
     else return { ok: false, error: 'unknown_resource' };
     // 出典も所見も無い報告は納品しない。中身が空のまま渡すのは、買い手から見れば
     // 「金を取って何も渡さない」のと同じ。決済済みなら返金・再納品の判断に回す。
@@ -364,4 +365,25 @@ export async function fulfillOrder(resource, input, deps = {}) {
   } catch (e) {
     return { ok: false, error: 'fulfill_failed', reason: String(e?.message || e).slice(0, 200) };
   }
+}
+
+// 公開表面の解析レポート（有料・0.25 USDC）。surface.js の無料要約と同じ解析を、全件＋根拠の全文で返す。
+async function fulfillSurfaceReport(input = {}, deps = {}) {
+  const { inspectSurface, surfaceBrief } = await import('./surface.js');
+  const s = await inspectSurface(input.url, { fetchImpl: deps.fetchImpl || fetch });
+  if (!s.ok) {
+    return { ok: false, resource: 'surface-report', status: 'paid_not_delivered', deliverable: { kind: 'surface-report', summary: `解析できませんでした: ${s.reason || '不明'}`, findings: [], gaps: [s.reason || '接続できません'], sources: [] } };
+  }
+  return {
+    ok: true, resource: 'surface-report', status: 'delivered',
+    deliverable: {
+      kind: 'surface-report',
+      summary: `${s.target} は ${s.kind}（完成度 ${s.score}/10、入口候補 ${(s.endpoints || []).length}件、フォーム ${(s.forms || []).length}件、MCPツール ${(s.mcp && s.mcp.tools ? s.mcp.tools.length : 0)}件、認証 ${s.auth}）`,
+      brief: surfaceBrief(s, { full: true }),
+      findings: (s.endpoints || []).slice(0, 40).map((e) => `${e.path} 〔${e.evidence}〕`),
+      gaps: s.unknown || [],
+      sources: [s.target, s.openapi && s.openapi.url, s.robots && s.robots.url].filter(Boolean).map((u) => ({ title: u, url: u })),
+      report: s,
+    },
+  };
 }
