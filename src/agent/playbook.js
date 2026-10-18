@@ -416,6 +416,91 @@ export async function tryPlaybooks(store, { limit = 2, fetchImpl = fetch, now = 
   return { at, tried: out.length, rows: out };
 }
 
+
+// ---------------------------------------------------------------------------
+// 集めた情報（X / Reddit / scout）を「試せるネタ」に変換する連結部分。
+// 収集しただけで終わらせない。読み取りだけで1回試し、結果を必ず残す。
+// ---------------------------------------------------------------------------
+function h10(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return ('0000000' + h.toString(16)).slice(-8);
+}
+function hostOfUrl(u) { try { return new URL(u).host; } catch (e) { return ''; } }
+
+/** 集めた情報の種類を、試し方(probe)が決まる粒度で判定する。 */
+export function findingKind(f = {}) {
+  const u = String(f.url || f.link || '');
+  const t = String(f.title || f.text || '');
+  if (/github\.com\/[^/]+\/[^/]+\/(issues|pull)\/\d+/.test(u)) return 'bounty';
+  if (/(opire|algora|issuehunt|bountysource|superteam|gitcoin)/i.test(u + ' ' + t)) return 'bounty';
+  if (/github\.com\/[^/]+\/[^/]+/.test(u)) return 'content';
+  if (String(f.topic || '') === 'perk') return 'perk';
+  return 'demand';
+}
+
+/** 集めた情報1件 → ネタ1件。URL が無いものは作らない（出典の無いネタは残さない）。 */
+export function findingToPlaybook(f = {}, { now = null } = {}) {
+  const url = String(f.url || f.link || '').trim();
+  const title = String(f.title || f.text || '').replace(/\s+/g, ' ').trim();
+  if (!url || !title) return null;
+  const kind = findingKind(f);
+  const at = now || nowIso();
+  const why = kind === 'bounty' ? 'コードで片付く賞金なら作業まで代行できる（受け取りは人の1タップ）'
+    : kind === 'perk' ? '条件を満たせば実際に金額ぶん戻る（原価0）'
+    : '実物を1回動かせたら、そのまま道具として売れる／自分の運用に組み込める';
+  return {
+    id: id('pb'),
+    key: 'f_' + h10(url),
+    kind,
+    title: title.slice(0, 110),
+    site: hostOfUrl(url),
+    url,
+    why_money: why,
+    how: [
+      '出典を開いて、いまも生きているか確かめる',
+      '書いてある手順を、原価0の範囲で1つだけ実行する',
+      '実行できたか／できなかったかを結果として残す',
+      '使えると分かったら、自分の運用に取り込むか、道具として売り場に出す',
+    ],
+    first_step: 'URL が生きているか確かめ、実物を1回だけ動かす',
+    cost_jpy: 0,
+    human: kind === 'bounty' ? ['賞金の受け取り設定'] : [],
+    probe: kind === 'bounty' ? 'gh_issue' : 'http',
+    score: Number(f.score || 0),
+    source_id: String(f.source || f.handle || f.origin || ''),
+    status: 'new',
+    created_at: at,
+    updated_at: at,
+    tries: 0,
+  };
+}
+
+/** X / scout が集めた実データをネタに変換して保存する。同じ URL は1件だけ。 */
+export async function ingestFindings(store, { limit = 8, minScore = 5, now = null } = {}) {
+  const at = now || nowIso();
+  const rows = [];
+  try {
+    const t = await store.all(`SELECT url, text AS title, score, topic, handle AS source FROM twitter_posts WHERE score >= ? AND url IS NOT NULL AND url <> '' ORDER BY score DESC LIMIT ?`, minScore, limit);
+    for (const r of t || []) rows.push(Object.assign({}, r, { origin: 'x' }));
+  } catch (e) { /* テーブルが無い環境では飛ばす */ }
+  try {
+    const s = await store.all(`SELECT url, title, score, source_id AS source FROM scout_findings WHERE url IS NOT NULL AND url <> '' ORDER BY score DESC LIMIT ?`, limit);
+    for (const r of s || []) rows.push(Object.assign({}, r, { origin: 'scout' }));
+  } catch (e) { /* 同上 */ }
+  let inserted = 0, skipped = 0;
+  const titles = [];
+  for (const r of rows) {
+    const pb = findingToPlaybook(r, { now: at });
+    if (!pb) { skipped++; continue; }
+    let dup = null;
+    try { dup = await store.first(`SELECT id FROM ${T} WHERE key = ? LIMIT 1`, pb.key); } catch (e) { dup = null; }
+    if (dup) { skipped++; continue; }
+    try { await savePlaybook(store, pb, { now: at }); inserted++; titles.push(pb.title); } catch (e) { skipped++; }
+  }
+  return { at, scanned: rows.length, inserted, skipped, titles };
+}
+
 export async function playbookSummary(store) {
   const byKind = await store.all(`SELECT kind, status, COUNT(*) AS n FROM ${T} GROUP BY kind, status`);
   const total = await q1(store, `SELECT COUNT(*) AS n FROM ${T}`);

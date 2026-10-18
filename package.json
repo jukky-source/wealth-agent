@@ -35,7 +35,7 @@
     "test:lab": "node tests/lab.test.mjs",
     "test:labdiv": "node tests/labdiv.test.mjs",
     "test:labgen": "node tests/lab-gen.test.mjs",
-    "test:playbook": "node tests/playbook.test.mjs",
+    "test:playbook": "node tests/playbook.test.mjs && node tests/playbook-ingest.test.mjs",
     "test:perks": "node tests/perks.test.mjs",
     "test:reddit": "node tests/reddit.test.mjs",
     "test:twitter": "node tests/twitter.test.mjs && node tests/twitter-watch.test.mjs"
