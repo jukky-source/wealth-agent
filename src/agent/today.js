@@ -15,8 +15,12 @@ export async function todayDigest(store, { now = null, publicOnly = false } = {}
   ]);
   const fromFindings = await qa("SELECT kind, status, title, tries, last_try_at, substr(COALESCE(result_json,''),1,300) AS result FROM playbooks WHERE key LIKE 'f_%' ORDER BY created_at DESC LIMIT 20");
   const triedRows = await qa("SELECT title, tries, last_try_at, substr(COALESCE(result_json,''),1,240) AS result FROM playbooks WHERE tries > 0 ORDER BY COALESCE(last_try_at, updated_at) DESC LIMIT 10");
+  const s1 = async (sql, ...a) => { try { const r = await store.first(sql, ...a); return r ? Object.values(r)[0] : null; } catch { return null; } };
+  const settingVal = (x) => (x && typeof x === 'object' && 'value' in x) ? x.value : (typeof x === 'string' ? x : null);
   const learned = {};
-  for (const [k, n] of Object.entries((pb && pb.by_kind_status) || {})) { const st = String(k).split(':')[1] || 'other'; learned[st] = (learned[st] || 0) + n; }
+  for (const r of await qa('SELECT status, COUNT(*) AS n FROM playbooks GROUP BY status')) learned[r.status || 'other'] = r.n;
+  const lastRunAt = settingVal(lastRun) || (await s1('SELECT MAX(updated_at) FROM playbooks WHERE tries > 0'));
+  const lastIngestAt = settingVal(ingestAt) || (await s1("SELECT MAX(created_at) FROM playbooks WHERE key LIKE 'f_%'"));
   const money = {
     revenue_usd: await q1("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE kind='revenue' AND currency='USDC' AND basis != 'self_test'"),
     self_test_usd: await q1("SELECT COALESCE(SUM(amount),0) FROM ledger WHERE basis = 'self_test'"),
@@ -33,8 +37,8 @@ export async function todayDigest(store, { now = null, publicOnly = false } = {}
     },
     tried: {
       count: await q1('SELECT COUNT(*) FROM playbooks WHERE tries > 0'),
-      last_run_at: (lastRun && lastRun.value) || null,
-      last_ingest_at: (ingestAt && ingestAt.value) || null,
+      last_run_at: lastRunAt || null,
+      last_ingest_at: lastIngestAt || null,
       rows: triedRows.map((r) => ({ title: String(r.title || '').slice(0, 90), tries: r.tries, at: r.last_try_at || null, result: r.result || null })),
     },
     learned,
