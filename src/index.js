@@ -397,7 +397,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      if (url.pathname !== '/api/surface' && url.pathname !== '/api/surface/help') return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
+      if (url.pathname !== '/api/surface' && url.pathname !== '/api/surface/help' && url.pathname !== '/api/today/public') return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
     // 自己診断: この実行環境（Cloudflare の egress）から検索経路が実際に何を返すかを測る。
@@ -735,9 +735,9 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 活動報告: 「いま何をしているか」をタスク・台帳・売り物から実測して返す。
     // ?format=text で人が読む形、?live=1 で外部（自分の402・Bazaar 掲載）も実測する。オーナー専用。
     // 今日なにを拾い、何を試し、何が分かったか — 1画面ぶんのデータ（/today が読む）。
-    if (url.pathname === '/api/today') {
+    if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       const { todayDigest, todayText } = await import('./agent/today.js');
-      const body = await todayDigest(deps.store, {});
+      const body = await todayDigest(deps.store, { publicOnly: url.pathname.endsWith('/public') });
       if (url.searchParams.get('format') === 'text') return new Response(todayText(body), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
       return json(body);
     }

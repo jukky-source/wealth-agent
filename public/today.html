@@ -94,7 +94,7 @@ const fmt = (v) => (v === null || v === undefined ? '—' : v);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const KIND = { bounty: '報奨金', perk: '特典', content: 'コンテンツ', demand: '需要', github: 'コード', ai: '発見' };
 const q = new URLSearchParams(location.search).get('key');
-const url = q ? '/api/today?key=' + encodeURIComponent(q) : '/today.json';
+const url = q ? '/api/today?key=' + encodeURIComponent(q) : '/api/today/public';
 
 function row(left, right, cls) {
   return '<li><span class="t">' + left + '</span>' + (right ? '<span class="' + (cls || 'm') + '">' + right + '</span>' : '') + '</li>';
