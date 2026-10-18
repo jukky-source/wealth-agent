@@ -5,7 +5,7 @@
 //  ・拾った情報が、人が並べなくても自動で解析対象になること（重複しない）
 //  ・解析結果がネタ帳（試すループ）に変換されること
 import assert from 'node:assert/strict';
-import { funnel, mutateAttempt, urlVariants, retryPlaybook, selfHeal, MAX_TRIES, loopText } from '../src/agent/loop.js';
+import { funnel, mutateAttempt, urlVariants, retryPlaybook, selfHeal, verifyListings, MAX_TRIES, loopText } from '../src/agent/loop.js';
 import { enqueueFromFindings, autoAnalyze, queueSummary, targetKey } from '../src/agent/reaQueue.js';
 
 let pass = 0, fail = 0;
@@ -152,6 +152,27 @@ await t('selfHeal: 詰まりを記録し、置き場の掲載エントリを「�
   assert.match(dist.evidence_json, /awesome-remote-mcp-servers/);
   assert.ok(store._t.loop_runs.length >= 3);
   assert.match(loopText(r.funnel), /詰まり/);
+});
+
+await t('verifyListings: 掲載面を実際に取りに行き、載っていれば live と数える', async () => {
+  const ff = fakeFetch({ 'https://raw.githubusercontent.com/punkpeye/awesome-remote-mcp-servers/main/README.md': { body: '- [wealth-agent](https://wealth-agent.wealthagent-app.workers.dev) `https://wealth-agent.wealthagent-app.workers.dev/mcp`' } });
+  const r = await verifyListings({ fetchImpl: ff });
+  assert.equal(r.checked, 2);
+  assert.ok(r.live_keys.includes('awesome-remote-mcp-servers'), JSON.stringify(r));
+  assert.equal(r.live, 1);
+});
+await t('verifyListings: 載っていなければ live にしない（提出済みと載ったを混同しない）', async () => {
+  const r = await verifyListings({ fetchImpl: fakeFetch({}) });
+  assert.equal(r.live, 0);
+  assert.equal(r.listings[0].status, 404);
+});
+await t('selfHeal: 掲載が生きていれば「置き場に出る」を done として数える', async () => {
+  const store = memStore({ playbooks: [{ id: 'p1', title: 'stuck', url: 'https://a.test/x', probe: 'http', tries: 1, status: 'trying', last_try_at: new Date(Date.now() - 7 * 3600e3).toISOString() }] });
+  const ff = fakeFetch({ 'https://raw.githubusercontent.com/punkpeye/awesome-remote-mcp-servers/main/README.md': { body: 'https://wealth-agent.wealthagent-app.workers.dev/mcp' } });
+  const r = await selfHeal(store, { fetchImpl: ff, now: new Date().toISOString() });
+  const d = store._t.loop_runs.filter((x) => x.kind === 'distribute');
+  assert.ok(d.some((x) => x.state === 'done'), JSON.stringify(d));
+  assert.equal(r.funnel.stages.find((s) => s.key === 'distributed').n, 1);
 });
 
 console.log('REA 自動投入キュー');

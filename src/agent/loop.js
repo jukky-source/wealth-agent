@@ -37,6 +37,47 @@ async function countExternal(store) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// 1-b) 掲載の生死を実際に見に行く（「提出した」と「載った」を分けて数える）
+// ---------------------------------------------------------------------------
+export const LISTINGS = [
+  {
+    key: 'awesome-remote-mcp-servers',
+    name: 'awesome-remote-mcp-servers',
+    url: 'https://raw.githubusercontent.com/punkpeye/awesome-remote-mcp-servers/main/README.md',
+    needle: 'wealth-agent.wealthagent-app.workers.dev/mcp',
+  },
+  {
+    key: 'glama',
+    name: 'glama.ai connectors',
+    url: 'https://glama.ai/mcp/connectors/io.github.jukky-source/wealth-agent',
+    needle: 'wealth-agent',
+  },
+];
+
+/** 掲載面を実際に取得して、自分のエンドポイントが載っているかを確かめる。 */
+export async function verifyListings({ fetchImpl = fetch, now = null, listings = LISTINGS } = {}) {
+  const at = now || nowIso();
+  const out = [];
+  for (const l of listings) {
+    const row = { key: l.key, name: l.name, url: l.url, at, live: false, status: 0, note: '' };
+    try {
+      const res = await fetchImpl(l.url, { headers: { 'user-agent': 'wealth-agent/1.0 (+https://wealth-agent.wealthagent-app.workers.dev)' } });
+      row.status = res.status;
+      if (res.ok) {
+        const body = String((await res.text()) || '').slice(0, 400000);
+        row.live = body.includes(l.needle);
+        row.note = row.live ? '掲載を確認' : '取得できたが自分の記載が見つからない';
+      } else {
+        row.note = `取得失敗 HTTP ${res.status}`;
+      }
+    } catch (e) { row.note = `取得失敗 ${String((e && e.message) || e).slice(0, 80)}`; }
+    out.push(row);
+  }
+  const live = out.filter((r) => r.live);
+  return { at, checked: out.length, live: live.length, listings: out, live_keys: live.map((r) => r.key) };
+}
+
 export async function funnel(store, { env = null } = {}) {
   const discovered = await q1(store, `SELECT COUNT(*) FROM playbooks`);
   const tried = await q1(store, `SELECT COUNT(*) FROM playbooks WHERE COALESCE(tries,0) > 0`);
@@ -200,7 +241,24 @@ export async function selfHeal(store, { fetchImpl = fetch, now = null, env = nul
     } catch { /* 設定が読めない環境は飛ばす */ }
   }
 
-  // 3-e) 置き場に出ていないなら、押すだけで出せる掲載エントリを用意して記録する
+  // 3-e) 掲載の生死を実際に見に行く（提出しただけで「載った」ことにしない）
+  let listings = null;
+  try {
+    listings = await verifyListings({ fetchImpl, now: at });
+    try {
+      await store.run(`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?,?,?)`, 'loop:listings', JSON.stringify(listings), at);
+    } catch {
+      try { await store.run(`INSERT OR REPLACE INTO settings (key, value) VALUES (?,?)`, 'loop:listings', JSON.stringify(listings)); } catch { /* noop */ }
+    }
+    const d0 = await q1(store, `SELECT COUNT(*) FROM ${LT} WHERE kind = 'distribute' AND state = 'done'`);
+    if (listings.live > 0 && d0 === 0) {
+      for (const r of listings.listings.filter((x) => x.live)) {
+        await record('distribute', r.name, 'verify_listing', 'allow', 'done', { url: r.url, status: r.status, note: r.note });
+      }
+    }
+  } catch (e) { await record('distribute', 'listings', 'verify_listing', 'allow', 'failed', { error: String((e && e.message) || e).slice(0, 140) }); }
+
+  // 3-f) 置き場に出ていないなら、押すだけで出せる掲載エントリを用意して記録する
   const f = await funnel(store, { env });
   if (f.bottleneck.key === 'distributed') {
     const entry = {
@@ -208,7 +266,7 @@ export async function selfHeal(store, { fetchImpl = fetch, now = null, env = nul
       endpoint: 'https://wealth-agent.wealthagent-app.workers.dev/mcp',
       homepage: 'https://wealth-agent.wealthagent-app.workers.dev/',
       listing_line: 'Money-earning agent API: surface/REA inspection, data cleaning, code review, research briefs — paid per call over x402 (USDC on Base).',
-      where: ['awesome-remote-mcp-servers（PR #1989 提出済み・未マージ）', 'glama.ai connectors（掲載済み）', 'x402 のディレクトリ（要1タップ）'],
+      where: ['awesome-remote-mcp-servers（PR #1989 マージ済み）', 'glama.ai connectors（掲載済み）', 'x402 のディレクトリ（要1タップ）'],
     };
     await record('distribute', 'wealth-agent', 'prepare_listing', 'approve', 'ready', { entry, reason: f.bottleneck.why });
   }
@@ -225,7 +283,12 @@ export async function loopSummary(store, { env = null } = {}) {
   const byKind = {};
   for (const r of await qa(store, `SELECT kind, COUNT(*) AS n FROM ${LT} GROUP BY kind`)) byKind[r.kind || 'other'] = r.n;
   const recent = await qa(store, `SELECT kind, subject, action, level, state, at FROM ${LT} ORDER BY at DESC LIMIT 12`);
-  return { ...f, runs: await q1(store, `SELECT COUNT(*) FROM ${LT}`), by_kind: byKind, recent };
+  let listings = null;
+  try {
+    const row = await store.first(`SELECT value FROM settings WHERE key = ? LIMIT 1`, 'loop:listings');
+    if (row && row.value) listings = JSON.parse(row.value);
+  } catch { /* noop */ }
+  return { ...f, runs: await q1(store, `SELECT COUNT(*) FROM ${LT}`), by_kind: byKind, recent, listings };
 }
 
 export function loopText(s = {}) {
