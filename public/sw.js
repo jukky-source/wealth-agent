@@ -3,7 +3,7 @@
    dashboard snapshot which is served stale-while-offline so the home screen
    still renders something when the device has no signal. */
 
-const VERSION='wa-v12';
+const VERSION='wa-1019b';
 const SHELL = [
   './', './index.html', './styles.css', './app.js',
   './icons.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon-180.png',
@@ -24,6 +24,8 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== 'GET') return;
+  // 版チェック用の自分自身フェッチは SW を通さず必ずネットワークへ（キャッシュで偽陽性を出さない）
+  if (url.searchParams.has('_wa')) return;
 
   // API: network-first, never cache except dashboard fallback
   if (url.pathname.includes('/api/')) {
