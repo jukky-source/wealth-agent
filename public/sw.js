@@ -3,7 +3,7 @@
    dashboard snapshot which is served stale-while-offline so the home screen
    still renders something when the device has no signal. */
 
-const VERSION='wa-1019b';
+const VERSION='wa-1019c';
 const SHELL = [
   './', './index.html', './styles.css', './app.js',
   './icons.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon-180.png',
@@ -16,7 +16,12 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
-      .then(() => self.clients.claim()),
+      .then(() => self.clients.claim())
+      // ホーム画面アプリは「戻ってきただけ」では再読込されず、古い画面が凍結したまま残る。
+      // 新しい版が有効になった時だけ、開いている画面をこちらから読み込み直させる（版ごとに1回）。
+      .then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+      .then((list) => Promise.all(list.map((c) => c.navigate(c.url).catch(() => null))))
+      .catch(() => null),
   );
 });
 

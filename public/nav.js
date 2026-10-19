@@ -277,17 +277,22 @@ async function viewSettings(root) {
       <button class="ghost" data-act="reload-set">更新</button></div>
 
     <div class="card">
+      <h3>いま表示している版</h3>
+      <p style="font-size:12px;color:var(--nb-muted);margin:0 0 6px">見切れの報告はこの値とセットで送ってください。押さなくても読めます。</p>
+      <dl class="kv">
+        <dt>ビルド</dt><dd id="waBuild">${esc(String((window.__WA_BUILD) || '不明'))}</dd>
+        <dt>可視の高さ</dt><dd id="waH">${esc(String((window.__waMeasure && window.__waMeasure.h) || '—'))}</dd>
+        <dt>上端の余白</dt><dd id="waTop">${esc(String((window.__waMeasure && window.__waMeasure.waTop) || '—'))}</dd>
+      </dl>
+      <p id="waMeasureOut" style="color:#8CA0B3;font-size:12px;margin:8px 0 6px">「測る」を押すと、いまの実測値を出します。</p>
+      <button onclick="window.waMeasure&&window.waMeasure()" style="background:#131A22;color:#DFE8F0;border:1px solid #22303F;border-radius:8px;padding:8px 12px;font:inherit">測る</button>
+    </div>
+
+    <div class="card">
       <h3>バックテスト作業台（FX）</h3>
       <div class="note">E8の選考モードと自己資金モードの2つで、論理を試行錯誤します。原価0・無料の日足だけを使います。</div>
       <div class="acts"><a href="./lab.html" style="text-decoration:none;display:inline-block;padding:6px 11px;border:1px solid var(--nb-rule);border-radius:9px;color:var(--nb-text);font-size:11.5px">作業台をひらく</a></div>
     </div>
-
-            <div class="card">
-          <h3>画面のずれを測る</h3>
-          <p>端末の実測値（上余白・可視の高さ）を出します。見切れの報告に使います。</p>
-          <p id="waMeasureOut" style="color:#8CA0B3;font-size:12px">まだ測っていません。</p>
-          <button onclick="window.waMeasure&&window.waMeasure()" style="background:#131A22;color:#DFE8F0;border:1px solid #22303F;border-radius:8px;padding:8px 12px;font:inherit">測る</button>
-        </div>
 <div class="card">
       <h3>AIモデルの使い分け</h3>
       ${rows.length ? `<dl class="kv">${rows.map((r) => `<dt>${esc(r.name)}</dt><dd>${esc(r.status || '—')}</dd>`).join('')}</dl>` : '<div class="empty">提供元の状態を取得できませんでした。</div>'}

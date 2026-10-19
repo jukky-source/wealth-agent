@@ -129,6 +129,10 @@ body.has-bnav .composer{ margin-bottom:8px }
 body.has-bnav .chips{ padding-bottom:6px }
 body.has-bnav .bnav{ position:static; flex:0 0 auto }
 body.has-bnav .views{ position:static; flex:1 1 auto; min-height:0 }
+/* シェル表示では一覧の最後が下タブ／ホームインジケータに重ならないよう、必ず下端に余白を残す
+   （重なると「カードが無い」ように見える＝押せない・読めない）。 */
+body.has-bnav .vwrap{ padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 56px) }
+body.has-bnav .views{ overscroll-behavior:contain }
 .toast2{ bottom:calc(env(safe-area-inset-bottom, 0px) + 74px) }
 @supports not (height:100dvh){ body.has-bnav{ height:100% } }
 

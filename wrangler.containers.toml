@@ -120,6 +120,9 @@ X402_TESTNET_ENABLED = "0"
 # facilitator が提示する feePayer（ガス肩代わり）を添えるので、/supported で確認して使う。
 X402_FEE_PAYER = "CjNFTjvBhbJJd2B5ePPMHRLx1ELZpa8dwQgGL727eKww"
 X402_SOLANA_PAY_TO = "GgvECKqPR1LHdv9vvpi3bfqs2v9jEJsqdwbNT7DzouD"
+# 動作確認に使う自分の検証用ウォレット（この住所からの入金は自己テスト扱い＝実売上に数えない）。
+# カンマ区切りで複数可。ここを空にすると「自分で自分に払って売上に見せる」事故が再発する。
+X402_SELFTEST_ADDRS = "0x7f06190a3bb8ff63587dc6469f25c6078e648009"
 AI_CALLS_PER_TICK = "1"
 AI_HOURLY_NEURON_CAP = "380"
 AI_CACHE_TTL_MS = "21600000"

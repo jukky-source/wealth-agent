@@ -964,8 +964,13 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       const item = X402_CATALOG.find((i) => i.resource === resource);
       // 買い手の住所が自分の受取先と同じなら、それは自己購入（動作確認）。
       // 外部の売上と混ぜない印を付けて記録する。
-      const ownAddrs = [env.X402_PAY_TO, env.X402_SOLANA_PAY_TO].filter(Boolean).map((a) => String(a).toLowerCase());
-      const selfTest = !!settled.payer && ownAddrs.includes(String(settled.payer).toLowerCase());
+      // 自己テストの見分けは3経路: ①自分の受取先と一致 ②X402_SELFTEST_ADDRS に列挙した検証用ウォレット
+      // ③本人トークン付きの申告ヘッダ。認証の無いヘッダは受け付けない（他人が自称して売上を隠せてしまうため）。
+      // 取りこぼすと自己テストが実売上として台帳に載り、数字が嘘になる。
+      const ownAddrs = [env.X402_PAY_TO, env.X402_SOLANA_PAY_TO, ...String(env.X402_SELFTEST_ADDRS || '').split(',')]
+        .filter(Boolean).map((a) => String(a).trim().toLowerCase()).filter(Boolean);
+      const headerSelfTest = String(request.headers.get('x-wa-selftest') || '') === '1' && authorized(request, env);
+      const selfTest = headerSelfTest || (!!settled.payer && ownAddrs.includes(String(settled.payer).toLowerCase()));
       const receipt = await recordReceipt(deps.store, {
         self_test: selfTest,
         source: 'x402', external_id: settled.tx || `x402_${Date.now().toString(36)}`,
