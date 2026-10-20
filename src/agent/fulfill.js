@@ -1046,15 +1046,22 @@ export async function fulfillAiShelf(resource, input, deps = {}) {
   }
   if (resource === 'entities') {
     const r = await aiChat(deps, [
-      { role: 'system', content: 'You extract named entities from text. Reply with a JSON array only - each item is an object with keys name and type (type one of: person, organization, location, date, product, other). No prose.' },
-      { role: 'user', content: 'Extract the named entities from the following text' + (input.types && input.types.length ? ' (only these types: ' + input.types.join(', ') + ')' : '') + '. Output only the JSON array.\n\n' + input.text },
+      { role: 'system', content: 'You extract named entities from text. Reply with one entity per line, each line exactly "Name|Type" where Type is one of: person, organization, location, date, product, other. No numbering, no prose.' },
+      { role: 'user', content: 'Extract the named entities from the following text' + (input.types && input.types.length ? ' (only these types: ' + input.types.join(', ') + ')' : '') + '. Output only the lines.\n\n' + input.text },
     ], 1500);
     if (!r.ok) return { ok: false, resource, status: 'failed', ...r };
-    let parsed = null;
-    try { const mm = String(r.text).match(/\[[\s\S]*\]/); if (mm) parsed = JSON.parse(mm[0]); } catch { parsed = null; }
-    if (!Array.isArray(parsed)) parsed = null;
-    const ents = (parsed || []).map((e) => ({ name: String(e && e.name == null ? '' : e.name).slice(0, 120), type: String(e && e.type ? e.type : 'other').toLowerCase().slice(0, 24) })).filter((e) => e.name).slice(0, 100);
-    return { ok: true, resource, status: 'delivered', deliverable: { kind: 'entities', entities: ents, parsed_ok: !!parsed, raw: r.text.trim(), model: r.model, machine_generated: true } };
+    const allowed = new Set(['person', 'organization', 'location', 'date', 'product', 'other']);
+    let ents = [];
+    for (const line of String(r.text).split('\n')) {
+      const i = line.indexOf('|');
+      if (i <= 0) continue;
+      const name = line.slice(0, i).replace(/^[\s\-*\d.)\[\]]+/, '').trim().slice(0, 120);
+      let type = line.slice(i + 1).trim().toLowerCase().slice(0, 24);
+      if (!allowed.has(type)) type = 'other';
+      if (name) ents.push({ name, type });
+    }
+    ents = ents.slice(0, 100);
+    return { ok: true, resource, status: 'delivered', deliverable: { kind: 'entities', entities: ents, parsed_ok: ents.length > 0, raw: r.text.trim(), model: r.model, machine_generated: true } };
   }
   if (resource === 'keywords') {
     const r = await aiChat(deps, [
