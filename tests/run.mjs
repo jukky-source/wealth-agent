@@ -1331,6 +1331,7 @@ await test('X46', 'X46 discoveryFeed: runtime 産 extra 棚も発見フィード
 });
 
 await test('X48', 'attribution: venue 正規化と不正値の direct 落ち', async () => {
+  const { venueFromRequest } = await import('../src/agent/attribution.js');
   const u = new URL('https://x.test/api/x402/regex?venue=llms');
   assert.equal(venueFromRequest(null, u), 'llms');
   const bad = new URL('https://x.test/api/x402/regex?venue=<script>');
