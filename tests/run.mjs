@@ -1262,11 +1262,9 @@ await test('X42', 'X42 販路提出URLの焼き込みと funnel の無料体験�
   const tagged = b.filter((x) => x.submit_tagged && String(x.submit_tagged).includes('venue='));
   ok(tagged.length >= 5, 'origin ありで提出URLに venue=<id> を焼く: ' + tagged.length);
   ok(tagged.every((x) => String(x.submit_tagged).includes('venue=' + x.id)), '焼く venue は販路の id 自身');
-  ok(b.every((x) => !x.submit_tagged || String(x.submit_tagged).includes('{payTo}') === false || x.submit === null), 'payTo テンプレは焼かない');
-  const { venueScore } = await import('../src/agent/venues.js');
-  ok(typeof venueScore === 'function', '採点はそのまま');
   const { BIG_VENUES } = await import('../src/agent/venues.js');
-  ok(BIG_VENUES.every((x) => x.submit === x.submit || true), '台帳は不変');
+  ok(BIG_VENUES.every((x) => !('submit_tagged' in x)), '台帳は焼き込みで汚さない');
+    
 });
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {

@@ -350,15 +350,15 @@ export function venueScore(v) {
 export function venueBoard(origin = '') {
   // 提出URLには ?venue=<id> を焼いて渡す（提出した掲載から飛んでくる訪問の帰属が切れない）。
   // 元の submit は台帳のまま残し、焼き込みは submit_tagged として別フィールドにする。
-  const tag = (u) => {
+  const tag = (u, id) => {
     if (!u || !/^https?:\/\//.test(String(u)) || String(u).includes('{payTo}')) return u || null;
     try {
       const sep = String(u).includes('?') ? '&' : '?';
-      return `${String(u)}${sep}venue=${encodeURIComponent(v.id)}`;
+      return `${String(u)}${sep}venue=${encodeURIComponent(id)}`;
     } catch { return u; }
   };
   return BIG_VENUES
-    .map((v) => ({ ...v, ...venueScore(v), submit_tagged: (v.submit && origin) ? tag(v.submit) : (v.submit || null) }))
+    .map((v) => ({ ...v, ...venueScore(v), submit_tagged: (v.submit && origin) ? tag(v.submit, v.id) : (v.submit || null) }))
     .sort((a, b) => b.score - a.score || String(a.id).localeCompare(String(b.id)));
 }
 
