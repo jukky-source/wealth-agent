@@ -995,7 +995,7 @@ Payment is the PAYMENT-SIGNATURE header (x402 v2, exact scheme). Supported chain
       if (url.searchParams.get('format') === 'text' && !_pub) {
         return new Response(venueBoardText(), { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
       }
-      const _board = venueBoard();
+      const _board = venueBoard(url.origin);
       const _counts = venueCounts();
       const _snap = await venueSnapshotLoad(env);
       const _items = _board.map((v) => _pub

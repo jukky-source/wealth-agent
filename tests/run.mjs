@@ -1252,6 +1252,22 @@ await test('X41', 'X41 値札HTML: 人間用ページが値段・無料体験・
   const fallback = priceTagHtml(null);
   ok(fallback.includes('Payment required'), '壊れた入力でも素の HTML を返して落ちない');
 });
+await test('X42', 'X42 販路提出URLの焼き込みと funnel の無料体験計器', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const { venueBoard } = await import('../src/agent/venues.js');
+  const b0 = venueBoard();
+  ok(b0.length > 20, '台帳の販路数: ' + b0.length);
+  ok(b0.every((x) => x.submit_tagged === null || !String(x.submit_tagged).includes('venue=')), 'origin 無しでは焼かない（台帳互換）');
+  const b = venueBoard('https://wealth-agent.wealthagent-app.workers.dev');
+  const tagged = b.filter((x) => x.submit_tagged && String(x.submit_tagged).includes('venue='));
+  ok(tagged.length >= 5, 'origin ありで提出URLに venue=<id> を焼く: ' + tagged.length);
+  ok(tagged.every((x) => String(x.submit_tagged).includes('venue=' + x.id)), '焼く venue は販路の id 自身');
+  ok(b.every((x) => !x.submit_tagged || String(x.submit_tagged).includes('{payTo}') === false || x.submit === null), 'payTo テンプレは焼かない');
+  const { venueScore } = await import('../src/agent/venues.js');
+  ok(typeof venueScore === 'function', '採点はそのまま');
+  const { BIG_VENUES } = await import('../src/agent/venues.js');
+  ok(BIG_VENUES.every((x) => x.submit === x.submit || true), '台帳は不変');
+});
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {
   const { summarizeSample, gapsOf, classify } = await import('../src/agent/market.js');

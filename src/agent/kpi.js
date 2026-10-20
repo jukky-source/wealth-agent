@@ -144,17 +144,23 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
     + " AND instr(lower(COALESCE(ua,'')),'bazaar') = 0 AND instr(lower(COALESCE(ua,'')),'python-requests') = 0"
     + " AND instr(lower(COALESCE(ua,'')),'curl') = 0 AND instr(lower(COALESCE(ua,'')),'wget') = 0";
   const hk = await qa(store, `SELECT kind, COUNT(*) AS n, COUNT(DISTINCT caller) AS callers FROM x402_hits WHERE ${EXCL} GROUP BY kind`);
+  const hfree = await qa(store, `SELECT resource, COUNT(*) AS n, COUNT(DISTINCT caller) AS callers FROM x402_hits WHERE ${EXCL} AND kind='free' GROUP BY resource ORDER BY n DESC LIMIT 12`);
   const hres = await qa(store, `SELECT resource, COUNT(*) AS n, SUM(CASE WHEN CAST(status AS TEXT)='402' THEN 1 ELSE 0 END) AS quotes FROM x402_hits WHERE ${EXCL} GROUP BY resource ORDER BY n DESC LIMIT 20`);
   const hven = await qa(store, `SELECT venue, COUNT(*) AS n FROM x402_hits WHERE ${EXCL} AND COALESCE(venue,'') <> '' GROUP BY venue ORDER BY n DESC LIMIT 20`);
   const kindN = (k) => { const r = (hk || []).find((x) => String(x.kind) === k); return r ? (num(r.n) || 0) : 0; };
   out.funnel = hk === null ? UNMEASURED : {
     source: 'x402_hits（到達の計器。売上には数えない）',
     challenge_402: kindN('challenge'),
+    free_samples: kindN('free'),
     rejected: kindN('rejected'),
     paid: kindN('paid'),
+    free_to_paid: (kindN('paid') + kindN('rejected')) > 0 && kindN('free') > 0
+      ? { paid_or_tried_paid: kindN('paid') + kindN('rejected'), free_samples: kindN('free'), note: '無料体験（kind=free）から有料へ動いた数。転換の下限（denominator は無料体験全体ではない）。' }
+      : null,
     unique_callers: (hk || []).reduce((a, x) => a + (num(x.callers) || 0), 0),
     by_resource: hres === null ? UNMEASURED : (hres || []).map((x) => ({ resource: x.resource, hits: num(x.n) || 0, quotes_402: num(x.quotes) || 0 })),
     by_venue: hven === null ? UNMEASURED : (hven || []).map((x) => ({ venue: x.venue, hits: num(x.n) || 0 })),
+    by_free_resource: hfree === null ? UNMEASURED : (hfree || []).map((x) => ({ resource: x.resource, uses: num(x.n) || 0, callers: num(x.callers) || 0 })),
     note: '外部の買い手が値札を見た数。ここが 0 なら、商品ではなく発見（売り場に人が来ない）の問題。',
   };
 
