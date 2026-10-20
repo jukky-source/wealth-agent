@@ -1293,7 +1293,7 @@ await test('X43', 'X43 AI棚追補: entities/keywords の検査・正規化・AI
 await test('X44', 'X44 llms.txt: エージェント向け店頭一覧が全棚・値段・無料体験・支払い方法を機械可読で載せる', async () => {
   const ok = (c, m) => { if (!c) throw new Error(m); };
   const x = await import('../src/agent/x402.js');
-  const t = x.llmsTxt('https://example.com');
+  const t = await x.llmsTxt('https://example.com');
   const cat = (typeof x.allItems === 'function') ? x.allItems({}) : x.X402_CATALOG;
   for (const it of cat) ok(t.includes('/api/x402/' + it.resource), 'llms.txt に ' + it.resource + ' がある');
   ok(t.split('\n').filter((l) => l.startsWith('- /api/x402/')).length >= cat.length, '棚の行数がカタログ以上: ' + cat.length);

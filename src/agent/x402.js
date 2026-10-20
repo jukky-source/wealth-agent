@@ -815,15 +815,13 @@ export function priceTagHtml(priced) {
 // ---------------------------------------------------------------------------
 // llms.txt — AI エージェント向けの店頭一覧（発見面）。品目と値はカタログから生成し、手書きを残さない。
 // ---------------------------------------------------------------------------
-export function llmsTxt(origin = '', env = {}) {
+export async function llmsTxt(origin = '', env = {}) {
   const o = String(origin || '').replace(/\/$/, '');
-  // 品目は discoveryFeed(env)（カタログ JSON と同じ源）から取る。extra 棚の混入方法はここが唯一の正。
-  let items = [];
-  try {
-    const feed = discoveryFeed(env);
-    items = ((feed && feed.items) || []).filter((it) => it && it.sellable !== false).map((it) => ({ resource: String(it.resource || '').split('/').pop(), price_usdc: it.price_usdc != null ? it.price_usdc : (it.price_atomic || 0), description: it.description || '' }));
-  } catch { items = []; }
-  if (!items.length) items = allItems(env || {}).map((it) => ({ resource: it.resource, price_usdc: it.price_usdc, description: it.description, free_tier: it.free_tier }));
+  // 品目は allItems(env)（カタログ JSON と同じ正）。extraItems が非同期でも同じ形で受ける。
+  let extras = [];
+  try { const e = extraItems(env || {}); extras = Array.isArray(e) ? e : (await e || []); } catch { extras = []; }
+  const seen = new Set();
+  const items = [...X402_CATALOG, ...extras].filter((it) => it && it.resource && !seen.has(it.resource) && seen.add(it.resource));
   const usd = (it) => { const v = (it.price_usdc || 0) / 1e6; return '$' + (v < 0.01 ? v.toFixed(3) : v.toFixed(2)); };
   const first = (d) => { const s = String(d || '').split('. ')[0]; return s.length > 180 ? s.slice(0, 177) + '...' : s; };
   const name = (it) => (LISTING[it.resource] && LISTING[it.resource].name) ? LISTING[it.resource].name : (it.label_ja || it.resource);
