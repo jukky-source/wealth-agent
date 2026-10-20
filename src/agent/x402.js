@@ -815,9 +815,10 @@ export function priceTagHtml(priced) {
 // ---------------------------------------------------------------------------
 // llms.txt — AI エージェント向けの店頭一覧（発見面）。品目と値はカタログから生成し、手書きを残さない。
 // ---------------------------------------------------------------------------
-export function llmsTxt(origin = '') {
+export function llmsTxt(origin = '', env = {}) {
   const o = String(origin || '').replace(/\/$/, '');
-  const items = allItems({});
+  // extra 棚（X402_EXTRA_CATALOG）も載せる。env を落とすと本番で静的22品しか出ない。
+  const items = allItems(env || {});
   const usd = (it) => { const v = (it.price_usdc || 0) / 1e6; return '$' + (v < 0.01 ? v.toFixed(3) : v.toFixed(2)); };
   const first = (d) => { const s = String(d || '').split('. ')[0]; return s.length > 180 ? s.slice(0, 177) + '...' : s; };
   const name = (it) => (LISTING[it.resource] && LISTING[it.resource].name) ? LISTING[it.resource].name : it.label_ja;
