@@ -17,7 +17,7 @@ const MAX_INPUT = 60000;
 // 実測した需要の所在（支払者数 / 呼び出し数）で我々が持っていなかった棚:
 //   market_data（支払者838・呼び出し最大） / ネットワーク / 計算・時刻。
 // どれも原価0・鍵不要・外から検証可能な決定的処理だけを置く（原価0の設計制約）。
-export const MARKET_OPS = ['crypto-price', 'fx-rates', 'defi-tvl', 'dns-lookup', 'crypto-hash', 'time-convert'];
+export const MARKET_OPS = ['crypto-price', 'fx-rates', 'defi-tvl', 'dns-lookup', 'crypto-hash', 'time-convert', 'translate', 'summarize'];
 const UA_JSON = { accept: 'application/json', 'user-agent': 'WealthAgent/1.0 (+https://wealth-agent.wealthagent-app.workers.dev)' };
 const KRAKEN_MAP = { BTC: 'XBTUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD', DOGE: 'XDGUSD', ADA: 'ADAUSD', AVAX: 'AVAXUSD', LINK: 'LINKUSD', DOT: 'DOTUSD', LTC: 'LTCUSD', MATIC: 'MATICUSD', USDT: 'USDTUSD' };
 
@@ -73,6 +73,13 @@ export function marketInput(resource, body = {}) {
     out.zones = arr(raw).slice(0, 12);
     return out;
   }
+  if (resource === 'translate') {
+    return { text: String(b.text == null ? '' : b.text), target_lang: String(b.target_lang || b.to || b.lang || '').trim().slice(0, 24), source_lang: b.source_lang ? String(b.source_lang).trim().slice(0, 24) : null };
+  }
+  if (resource === 'summarize') {
+    const n = Number(b.max_bullets);
+    return { text: String(b.text == null ? '' : b.text), max_bullets: Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 10) : 5, lang: b.lang ? String(b.lang).trim().slice(0, 24) : null };
+  }
   return Object.assign({}, b);
 }
 
@@ -103,6 +110,23 @@ export function validateMarketOrder(resource, body = {}) {
     const t = String(b.text == null ? '' : b.text);
     if (!t) return { ok: false, error: 'need_text', reason: 'text（ハッシュ対象）が必要です（決済前なので請求していません）' };
     if (t.length > 200000) return { ok: false, error: 'too_large', reason: 'text は 200,000 文字までです' };
+    return { ok: true };
+  }
+  if (resource === 'translate') {
+    const t = String(b.text == null ? '' : b.text);
+    if (!t) return { ok: false, error: 'need_text', reason: 'text（翻訳対象）が必要です（決済前なので請求していません）' };
+    if (t.length > 20000) return { ok: false, error: 'too_large', reason: 'text は 20,000 文字までです' };
+    const tl = String(b.target_lang || b.to || b.lang || '').trim();
+    if (!tl) return { ok: false, error: 'need_target_lang', reason: 'target_lang（訳先の言語）が必要です（例 ja, en, es）' };
+    if (tl.length > 24 || !/^[A-Za-z][A-Za-z0-9 _-]*$/.test(tl)) return { ok: false, error: 'bad_target_lang', reason: 'target_lang は言語名/コードで指定してください' };
+    return { ok: true };
+  }
+  if (resource === 'summarize') {
+    const t = String(b.text == null ? '' : b.text);
+    if (!t) return { ok: false, error: 'need_text', reason: 'text（要約対象）が必要です（決済前なので請求していません）' };
+    if (t.length > 20000) return { ok: false, error: 'too_large', reason: 'text は 20,000 文字までです' };
+    const n = Number(b.max_bullets);
+    if (b.max_bullets != null && (!Number.isFinite(n) || n < 1 || n > 10)) return { ok: false, error: 'bad_max_bullets', reason: 'max_bullets は 1〜10 です' };
     return { ok: true };
   }
   return { ok: true };
@@ -844,6 +868,7 @@ export async function fulfillOrder(resource, input, deps = {}) {
     else if (resource === 'dns-lookup') out = await fulfillDnsLookup(input, deps);
     else if (resource === 'crypto-hash') out = await fulfillCryptoHash(input);
     else if (resource === 'time-convert') out = fulfillTimeConvert(input);
+    else if (resource === 'translate' || resource === 'summarize') out = await fulfillAiShelf(resource, input, deps);
     else return { ok: false, error: 'unknown_resource' };
     // 出典も所見も無い報告は納品しない。中身が空のまま渡すのは、買い手から見れば
     // 「金を取って何も渡さない」のと同じ。決済済みなら返金・再納品の判断に回す。
@@ -960,4 +985,42 @@ async function fulfillReaReport(input = {}, deps = {}) {
       report: s,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// AI棚（translate / summarize）— Cloudflare Workers AI（無料枠・原価0）。
+// モデル出力は決定論的ではないので、納品物には model と machine_generated を明示して偽らない。
+// AI binding が無い環境では決して中身を作って誤魔化さない（ai_unavailable で落とす）。
+// ---------------------------------------------------------------------------
+const AI_SHELF_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+async function aiChat(deps, messages, maxTokens) {
+  const ai = deps && deps.env && deps.env.AI;
+  if (!ai || typeof ai.run !== 'function') return { ok: false, error: 'ai_unavailable', reason: 'Workers AI binding is not available' };
+  let r;
+  try { r = await ai.run(AI_SHELF_MODEL, { messages, max_tokens: maxTokens }); }
+  catch (e) { return { ok: false, error: 'ai_failed', reason: String(e?.message || e).slice(0, 160) }; }
+  const text = typeof r === 'string' ? r : (r && (r.response || r.result || r.text)) || '';
+  if (!String(text).trim()) return { ok: false, error: 'ai_empty', reason: 'model returned no content' };
+  return { ok: true, text: String(text), model: AI_SHELF_MODEL };
+}
+export async function fulfillAiShelf(resource, input, deps = {}) {
+  if (resource === 'translate') {
+    const r = await aiChat(deps, [
+      { role: 'system', content: 'You are a translation engine. Reply with the translation only - no preface, no notes.' },
+      { role: 'user', content: 'Translate the following text into ' + input.target_lang + '. Output only the translation.\n\n' + input.text },
+    ], 2000);
+    if (!r.ok) return { ok: false, resource, status: 'failed', ...r };
+    return { ok: true, resource, status: 'delivered', deliverable: { kind: 'translation', target_lang: input.target_lang, source_lang: input.source_lang || null, translation: r.text.trim(), model: r.model, machine_generated: true } };
+  }
+  if (resource === 'summarize') {
+    const r = await aiChat(deps, [
+      { role: 'system', content: 'You summarize text. Reply with the bullet list only - one line per bullet, each starting with "- ".' },
+      { role: 'user', content: 'Summarize the following text in ' + input.max_bullets + ' bullets' + (input.lang ? ' in ' + input.lang : '') + '. Output only the bullet list.\n\n' + input.text },
+    ], 1200);
+    if (!r.ok) return { ok: false, resource, status: 'failed', ...r };
+    const bullets = r.text.split('\n').map((l) => l.replace(/^[\s\-*•\d.)]+/, '').trim()).filter(Boolean).slice(0, input.max_bullets);
+    if (!bullets.length) return { ok: false, resource, status: 'failed', error: 'ai_empty', reason: 'no bullets parsed' };
+    return { ok: true, resource, status: 'delivered', deliverable: { kind: 'summary', bullets, model: r.model, machine_generated: true, raw: r.text.trim() } };
+  }
+  return { ok: false, error: 'unknown_resource' };
 }

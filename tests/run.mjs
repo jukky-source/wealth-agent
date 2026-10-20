@@ -996,7 +996,7 @@ await test('X22', 'オンチェーン残高は decimals をコントラクトか
 });
 
 await test('X23', '12品の値札と発見メタデータが自己整合（Bazaar の入力仕様と出力例が欠けていない）', async () => {
-  assert.equal(_x4.X402_CATALOG.length, 18);
+  assert.equal(_x4.X402_CATALOG.length, 20);
   const byName = Object.fromEntries(_x4.X402_CATALOG.map((x) => [x.resource, x]));
   assert.equal(byName.random.price_usdc, 5000);
   assert.equal(byName['onchain-balance'].price_usdc, 3000);
@@ -1109,7 +1109,7 @@ if (typeof test === 'function') {
 await test('X35', 'デパート化: 6つの新棚が値札・決済前検査・実データ納品まで自己整合（原価0・鍵不要）', async () => {
   const { fulfillOrder, validateOrder, MARKET_OPS } = await import('../src/agent/fulfill.js');
   const _x4 = await import('../src/agent/x402.js');
-  assert.equal(MARKET_OPS.length, 6);
+  assert.equal(MARKET_OPS.length, 8);
   for (const op of MARKET_OPS) {
     const item = _x4.X402_CATALOG.find((x) => x.resource === op);
     assert.ok(item, op + ' がカタログにある');
@@ -1131,7 +1131,7 @@ await test('X35', 'デパート化: 6つの新棚が値札・決済前検査・�
   // 実データの棚は「取れた」か「取れなかった理由」のどちらかが必ず出る（空の成功を返さない）
   const px = await fulfillOrder('crypto-price', { symbols: ['BTC'], quote: 'usd' }, {});
   assert.ok(px.deliverable.prices.length >= 1 || px.deliverable.gaps.length >= 1);
-  assert.equal(_x4.X402_CATALOG.length, 18);
+  assert.equal(_x4.X402_CATALOG.length, 20);
 });
 
 await test('X36', '入力の正規化: 買い手の指定が無料でも有料でも同じ形で商品に届く', async () => {
@@ -1212,6 +1212,30 @@ await test('X39', 'X39 discwatch: 説明文規律（500字以内・指示的に�
   for (const r of da.rows) ok(r.method === 'GET' || r.method === 'POST', 'method が審査可能な形: ' + r.resource);
 });
 
+await test('X40', 'X40 AI棚: translate/summarize の検査・正規化・AI無しで偽って納品しない', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const f = await import('../src/agent/fulfill.js');
+  const v1 = f.validateMarketOrder('translate', {});
+  ok(v1.ok === false && v1.error === 'need_text', 'translate 空 text は断る: ' + JSON.stringify(v1));
+  const v2 = f.validateOrder('translate', { text: 'hello', target_lang: 'ja' });
+  ok(v2.ok === true && v2.input && v2.input.target_lang === 'ja', 'translate の正規化: ' + JSON.stringify(v2));
+  ok(f.validateMarketOrder('translate', { text: 'x'.repeat(20001), target_lang: 'ja' }).error === 'too_large', 'translate の文字上限');
+  ok(f.validateMarketOrder('translate', { text: 'hi' }).error === 'need_target_lang', 'target_lang 必須');
+  const v3 = f.validateOrder('summarize', { text: 'hello', max_bullets: 99 });
+  ok(v3.ok === false && v3.error === 'bad_max_bullets', 'max_bullets=99 は決済前に断る: ' + JSON.stringify(v3));
+  ok(f.validateMarketOrder('summarize', { text: 'hello', max_bullets: 0 }).ok === false, 'max_bullets=0 は断る');
+  const x = await import('../src/agent/x402.js');
+  const cat = (typeof x.allItems === 'function') ? x.allItems({}) : x.X402_CATALOG;
+  for (const r of ['translate', 'summarize']) {
+    const it = cat.find((i) => i.resource === r);
+    ok(it, '棚に ' + r + ' がある');
+    ok(it.description.length <= 500, r + ' の説明 500字以内: ' + it.description.length);
+    ok(!it.description.toLowerCase().startsWith('do not'), r + ' の説明は指示的に読めない');
+  }
+  ok(cat.length >= 20, 'カタログは静的20以上（本番は extra3 で23）: ' + cat.length);
+  const nf = await f.fulfillAiShelf('translate', { text: 'hello', target_lang: 'ja' }, { env: {} });
+  ok(nf.ok === false && nf.error === 'ai_unavailable', 'AI binding 無しでは偽って納品しない: ' + JSON.stringify(nf));
+});
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {
   const { summarizeSample, gapsOf, classify } = await import('../src/agent/market.js');

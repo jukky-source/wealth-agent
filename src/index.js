@@ -1333,6 +1333,7 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
           free_option: freeTierResources().includes(resource)
             ? { url: `${url.origin}/api/free/${resource}${venue && venue !== 'direct' ? `?venue=${venue}` : ''}`, daily_limit_per_ip: freeLimitFor(env, resource), note: 'No payment needed up to the daily limit (per IP, per UTC day). Pay here only if you need the limit removed.' }
             : null };
+        if (resource !== 'diligence-pack') priced.upsell = { resource: 'diligence-pack', name: 'Due-diligence pack (website capability map + on-chain balances)', price_usdc: 1000000, price_usd: 1.0, url: `${url.origin}/api/x402/diligence-pack`, order_spec: ORDER_SPECS['diligence-pack'] || null, note: 'Most x402 spend on Base is in the $1+ band; this one call is the consolidated $1 product.' };
         await logHit(deps.store, request, { resource, kind: 'challenge', status: 402, venue });
         return new Response(JSON.stringify(priced), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
       }
