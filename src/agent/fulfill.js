@@ -317,6 +317,10 @@ export const ORDER_SPECS = {
     input: { url: 'string（必須）公開ページの http(s) 絶対URL' },
     example: { url: 'https://x402.org/' },
   },
+  'seo-audit': {
+    input: { url: 'string（必須）監査する公開ページの http(s) 絶対URL' },
+    example: { url: 'https://example.com/' },
+  },
   'csv-json': {
     input: { data: 'string（必須）CSV/TSV または JSON 配列。60,000 文字まで', to: 'json|csv（任意・省略時は自動判定）' },
     example: { data: 'name,price\nA,100\nB,250', to: 'json' },
@@ -421,6 +425,14 @@ export function validateOrder(resource, body = {}) {
     try { u = new URL(raw); } catch { return { ok: false, error: 'bad_input', reason: 'url は http(s) の絶対URLで指定してください', spec: ORDER_SPECS['url-meta'] }; }
     if (!/^https?:$/.test(u.protocol)) return { ok: false, error: 'bad_input', reason: 'http / https のみ扱えます', spec: ORDER_SPECS['url-meta'] };
     if (isPrivateHost(u.hostname)) return { ok: false, error: 'blocked_host', reason: '内部アドレス（localhost / プライベートIP / クラウドメタデータ）は取得しません（決済前なので請求していません）', spec: ORDER_SPECS['url-meta'] };
+    return { ok: true, input: { url: u.toString() } };
+  }
+  if (resource === 'seo-audit') {
+    const raw = String(b.url || '').trim();
+    let u;
+    try { u = new URL(raw); } catch { return { ok: false, error: 'bad_input', reason: 'url は http(s) の絶対URLで指定してください', spec: ORDER_SPECS['seo-audit'] }; }
+    if (!/^https?:$/.test(u.protocol)) return { ok: false, error: 'bad_input', reason: 'http / https のみ扱えます', spec: ORDER_SPECS['seo-audit'] };
+    if (isPrivateHost(u.hostname)) return { ok: false, error: 'blocked_host', reason: '内部アドレス（localhost / プライベートIP / クラウドメタデータ）は監査しません（決済前なので請求していません）', spec: ORDER_SPECS['seo-audit'] };
     return { ok: true, input: { url: u.toString() } };
   }
   if (resource === 'csv-json') {
@@ -722,6 +734,108 @@ export async function fulfillUrlMeta(input, { fetchImpl = fetch } = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// ページのSEO監査（seo-audit）。原価0: 取得は本文1ページ＋robots.txt＋sitemap.xmlの
+// 3リクエストのみ。決定的チェックだけで納品でき、Workers AI が使えるときだけ
+// 提案を上乗せする（無いときは偽らず「無い」と言う）。JS描画で読めないものは
+// サーバーHTMLの実測として正直に書く。
+// ---------------------------------------------------------------------------
+export async function fulfillSeoAudit(input, deps = {}) {
+  const f = deps.fetchImpl || fetch;
+  const started = Date.now();
+  const ua = 'wealth-agent/1.0 (seo audit; +https://wealth-agent.wealthagent-app.workers.dev/llms.txt)';
+  let res;
+  try {
+    res = await f(input.url, { redirect: 'follow', headers: { accept: 'text/html,application/xhtml+xml;q=0.9,*/*;q=0.8', 'user-agent': ua } });
+  } catch (e) {
+    return { ok: false, resource: 'seo-audit', status: 'paid_not_delivered', deliverable: { kind: 'seo-audit', summary: '取得できませんでした: ' + String(e?.message || e).slice(0, 140), checks: [], score: null, gaps: ['page_fetch_failed'] } };
+  }
+  const finalUrl = String(res.url || input.url);
+  let fh; try { fh = new URL(finalUrl); } catch { fh = null; }
+  const host = fh ? fh.hostname : '';
+  if (isPrivateHost(host)) return { ok: false, resource: 'seo-audit', status: 'paid_not_delivered', deliverable: { kind: 'seo-audit', summary: '転送先が内部アドレスでした（監査は実施していません）', checks: [], score: null, gaps: ['private_host_after_redirect'] } };
+  let html = '';
+  try { html = await res.text(); } catch { html = ''; }
+  html = String(html).slice(0, 600000); // 解析は先頭600KBまで
+  const head = (html.match(/<head[\s\S]*?<\/head>/i) || [''])[0];
+  const metas = [...head.matchAll(/<meta\b[^>]*>/gi)].map((m) => m[0]);
+  const metaContent = (key) => {
+    for (const t of metas) {
+      const k = t.match(/(?:name|property)=["']([^"']+)["']/i);
+      const c = t.match(/content=["']([^"']*)["']/i);
+      if (k && c && k[1].toLowerCase() === String(key).toLowerCase()) return c[1];
+    }
+    return null;
+  };
+  const title = ((head.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').replace(/\s+/g, ' ').trim() || null;
+  const desc = metaContent('description');
+  const metaRobots = metaContent('robots');
+  const viewport = metaContent('viewport');
+  const lang = (html.match(/<html[^>]*\slang=["']([^"']+)["']/i) || [])[1] || null;
+  const canonTag = head.match(/<link\b[^>]*rel=["']canonical["'][^>]*>/i);
+  const canonical = canonTag ? ((canonTag[0].match(/href=["']([^"']*)["']/i) || [])[1] || null) : null;
+  const bodyHtml = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ');
+  const text = bodyHtml.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+  const words = text ? text.split(' ').length : 0;
+  const h1s = [...bodyHtml.matchAll(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi)].map((m) => m[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const h2count = (bodyHtml.match(/<h2\b/gi) || []).length;
+  const imgTags = [...bodyHtml.matchAll(/<img\b[^>]*>/gi)].map((m) => m[0]);
+  const imgsNoAlt = imgTags.filter((t) => !/\salt=/i.test(t)).length;
+  const anchors = [...bodyHtml.matchAll(/<a\b[^>]*href=["']([^"']+)["']/gi)].map((m) => m[1]);
+  const hostN = host.replace(/^www\./, '');
+  let internal = 0, external = 0;
+  for (const h of anchors) {
+    let u2; try { u2 = new URL(h, finalUrl); } catch { continue; }
+    if (!/^https?:$/.test(u2.protocol)) continue;
+    if (u2.hostname.replace(/^www\./, '') === hostN) internal++; else external++;
+  }
+  const origin = fh ? fh.origin : '';
+  const probe = async (p) => {
+    try { const r = await f(origin + p, { redirect: 'follow', headers: { 'user-agent': ua } }); return r.status; } catch { return 0; }
+  };
+  const robotsStatus = origin ? await probe('/robots.txt') : 0;
+  const sitemapStatus = origin ? await probe('/sitemap.xml') : 0;
+  const trunc = (s, n) => (s && s.length > n ? s.slice(0, n) + '…' : s);
+  const checks = [
+    { id: 'title_present', ok: !!title, observed: trunc(title, 120) },
+    { id: 'title_length_10_70', ok: !!title && title.length >= 10 && title.length <= 70, observed: title ? title.length + ' chars' : 'no title' },
+    { id: 'meta_description_50_160', ok: !!desc && desc.length >= 50 && desc.length <= 160, observed: desc ? desc.length + ' chars: ' + trunc(desc, 100) : 'none' },
+    { id: 'canonical', ok: !!canonical, observed: canonical },
+    { id: 'not_noindex', ok: !(metaRobots && /noindex/i.test(metaRobots)), observed: metaRobots || '(no robots meta)' },
+    { id: 'single_h1', ok: h1s.length === 1, observed: h1s.length + ' h1: ' + trunc(h1s.join(' | '), 100) },
+    { id: 'has_h2', ok: h2count > 0, observed: h2count + ' h2' },
+    { id: 'img_alt', ok: imgsNoAlt === 0, observed: imgTags.length + ' images / ' + imgsNoAlt + ' without alt' },
+    { id: 'lang_attr', ok: !!lang, observed: lang },
+    { id: 'viewport', ok: !!viewport, observed: viewport },
+    { id: 'https', ok: fh ? fh.protocol === 'https:' : false, observed: fh ? fh.protocol : 'unparsed' },
+    { id: 'robots_txt', ok: robotsStatus >= 200 && robotsStatus < 300, observed: 'HTTP ' + robotsStatus },
+    { id: 'sitemap_xml', ok: sitemapStatus >= 200 && sitemapStatus < 300, observed: 'HTTP ' + sitemapStatus },
+    { id: 'word_count_100', ok: words >= 100, observed: words + ' words in server HTML' },
+    { id: 'has_links', ok: internal + external > 0, observed: internal + ' internal / ' + external + ' external' },
+  ].map((c) => ({ ...c, observed: c.observed === null || c.observed === undefined ? '(none)' : String(c.observed) }));
+  const passed = checks.filter((c) => c.ok).length;
+  const score = Math.round((100 * passed) / checks.length);
+  let aiRecs = [], aiModel = null, machineGenerated = false, aiNote = 'ai_unavailable: deterministic checks only';
+  let r = null;
+  try {
+    r = await aiChat(deps, [
+      { role: 'system', content: 'You are an SEO auditor. Given JSON audit facts about one page, reply with at most 3 prioritized fixes, one per line, each starting with "- ". Be concrete and specific to the given facts. No preamble, no closing notes.' },
+      { role: 'user', content: 'Audit facts (JSON):\n' + JSON.stringify({ url: finalUrl, title, description: desc, h1: h1s, h2_count: h2count, images_without_alt: imgsNoAlt, lang, viewport_present: !!viewport, https: fh ? fh.protocol === 'https:' : null, robots_txt_status: robotsStatus, sitemap_status: sitemapStatus, word_count: words, internal_links: internal, external_links: external }).slice(0, 1500) },
+    ], 900);
+  } catch { r = null; }
+  if (r && r.ok) {
+    aiRecs = String(r.text).split('\n').map((l) => l.replace(/^[\s\-*\d.)]+/, '').trim()).filter(Boolean).slice(0, 3);
+    if (aiRecs.length) { aiModel = r.model; machineGenerated = true; aiNote = null; }
+  }
+  return { ok: true, resource: 'seo-audit', status: 'delivered', deliverable: {
+    kind: 'seo-audit', url: input.url, final_url: finalUrl, status: res.status,
+    score, checks_passed: passed, checks_total: checks.length, checks,
+    ai_recommendations: aiRecs, machine_generated: machineGenerated, model: aiModel, ai_note: aiNote,
+    robots_txt_status: robotsStatus, sitemap_xml_status: sitemapStatus,
+    summary: 'SEO監査 ' + finalUrl + ': ' + passed + '/' + checks.length + ' 項目合格・スコア ' + score + '/100' + (machineGenerated ? '・AI提案 ' + aiRecs.length + ' 件' : '・AI提案なし（決定的チェックのみ）'),
+  } };
+}
+
 /** 確定済みの注文を納品する。失敗しても例外は投げず、理由を返す。 */
 
 // ---------------------------------------------------------------------------
@@ -876,6 +990,7 @@ export async function fulfillOrder(resource, input, deps = {}) {
     else if (resource === 'code-review') out = await fulfillCodeReview(input, deps);
     else if (resource === 'brief') out = await fulfillBrief(input, deps);
     else if (resource === 'url-meta') out = await fulfillUrlMeta(input, deps);
+    else if (resource === 'seo-audit') out = await fulfillSeoAudit(input, deps);
     else if (resource === 'csv-json') out = fulfillCsvJson(input);
     else if (resource === 'regex') out = fulfillRegex(input);
     else if (resource === 'diff') out = fulfillDiff(input);

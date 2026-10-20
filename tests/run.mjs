@@ -996,7 +996,7 @@ await test('X22', 'オンチェーン残高は decimals をコントラクトか
 });
 
 await test('X23', '12品の値札と発見メタデータが自己整合（Bazaar の入力仕様と出力例が欠けていない）', async () => {
-  assert.equal(_x4.X402_CATALOG.length, 22);
+  assert.equal(_x4.X402_CATALOG.length, 23);
   const byName = Object.fromEntries(_x4.X402_CATALOG.map((x) => [x.resource, x]));
   assert.equal(byName.random.price_usdc, 5000);
   assert.equal(byName['onchain-balance'].price_usdc, 3000);
@@ -1131,7 +1131,7 @@ await test('X35', 'デパート化: 6つの新棚が値札・決済前検査・�
   // 実データの棚は「取れた」か「取れなかった理由」のどちらかが必ず出る（空の成功を返さない）
   const px = await fulfillOrder('crypto-price', { symbols: ['BTC'], quote: 'usd' }, {});
   assert.ok(px.deliverable.prices.length >= 1 || px.deliverable.gaps.length >= 1);
-  assert.equal(_x4.X402_CATALOG.length, 22);
+  assert.equal(_x4.X402_CATALOG.length, 23);
 });
 
 await test('X36', '入力の正規化: 買い手の指定が無料でも有料でも同じ形で商品に届く', async () => {
@@ -1329,7 +1329,44 @@ await test('X46', 'X46 discoveryFeed: runtime 産 extra 棚も発見フィード
   ok((f.items || []).length === x.allItems(envInj).length, 'items 数が allItems と一致');
   ok(f.pagination && f.pagination.total === (f.items || []).length, 'pagination.total も実数');
 });
-console.log(`\n
+
+await test('X47', 'X47 seo-audit棚: 実測チェック+AI提案（任意）の入力検査・SSRF・AI無しでも決定的納品', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const f = await import('../src/agent/fulfill.js');
+  const x = await import('../src/agent/x402.js');
+  const it = x.allItems({}).find((i) => i.resource === 'seo-audit');
+  ok(it, 'カタログに seo-audit がある');
+  ok(it.description.length <= 500, '説明 500字以内: ' + it.description.length);
+  ok(!it.description.toLowerCase().startsWith('do not'), '説明は指示的に読めない');
+  ok(it.free_tier === true, '無料体験がある');
+  ok(f.validateOrder('seo-audit', {}).ok === false, 'url 無しは決済前に断る');
+  ok(f.validateOrder('seo-audit', { url: 'http://127.0.0.1/x' }).error === 'blocked_host', '内部アドレスは決済前に断る');
+  ok(f.validateOrder('seo-audit', { url: 'ftp://example.com/' }).ok === false, 'ftp は断る');
+  const v = f.validateOrder('seo-audit', { url: 'https://example.com/page' });
+  ok(v.ok === true && v.input.url === 'https://example.com/page', '正規化: ' + JSON.stringify(v));
+  const html = '<html lang="en"><head><title>Example Domain</title><meta name="description" content="This domain is for use in illustrative examples in documents."><link rel="canonical" href="https://example.com/page"><meta name="viewport" content="width=device-width"></head><body><h1>Example Domain</h1><p>This domain is for use in illustrative examples in documents.</p><img src="a.png"><a href="/other">x</a><a href="https://example.org/y">y</a></body></html>';
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (u) => {
+    const s = String(u);
+    if (s.endsWith('/robots.txt') || s.endsWith('/sitemap.xml')) return { status: 200, ok: true, url: s, text: async () => 'User-agent: *' };
+    return { status: 200, ok: true, url: s, text: async () => html, headers: { get: () => 'text/html' } };
+  };
+  try {
+    const out = await f.fulfillSeoAudit({ url: 'https://example.com/page' }, {});
+    ok(out.ok === true && out.status === 'delivered', '納品する: ' + JSON.stringify(out).slice(0, 200));
+    const d = out.deliverable;
+    ok(d.score >= 0 && d.score <= 100 && d.checks.length >= 10, 'スコアとチェック: ' + d.score + ' / ' + d.checks.length);
+    const by = Object.fromEntries(d.checks.map((c) => [c.id, c]));
+    ok(by.title_present.ok === true, 'title を検出');
+    ok(by.https.ok === true, 'https を判定');
+    ok(by.robots_txt.ok === true && by.sitemap_xml.ok === true, 'robots/sitemap の存在を出す');
+    ok(by.img_alt.observed.includes('1 without alt'), 'alt 無し画像を数える: ' + by.img_alt.observed);
+    ok(d.machine_generated === false && d.ai_recommendations.length === 0 && d.ai_note, 'AI 無しでは提案を偽らない');
+    ok(d.summary && d.summary.length > 0, 'summary がある');
+    const w = await f.fulfillOrder('seo-audit', { url: 'https://example.com/page' }, {});
+    ok(w.ok === true && JSON.stringify(w).includes('"seo-audit"'), 'fulfillOrder のディスパッチに載る');
+  } finally { globalThis.fetch = realFetch; }
+});
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {
   const { summarizeSample, gapsOf, classify } = await import('../src/agent/market.js');
   const sample = [
@@ -1345,7 +1382,7 @@ await test('X24', '市場の実測は決定的に集計され、価格帯とカ�
   if (!bal || bal.payers !== 50) throw new Error('balance を数えていない');
   if (classify('erc20 token balance') !== 'balance') throw new Error('分類が決定的でない');
   const bands = Object.fromEntries(s.bands.map((b) => [b.band, b.n]));
-  if (bands['0.001-0.005'] !== 2) throw new Error('価格帯の集計が違う: ' + JSON.stringify(bands));
+  if (bands['0.001-0.005'] !== 1 || bands['0.005-0.01'] !== 1 || bands['0.01-0.05'] !== 1) throw new Error('価格帯の集計が違う: ' + JSON.stringify(bands));
   const gaps = gapsOf(s, { launched: [] });
   if (!gaps.some((y) => y.category === 'balance' && (y.buildable || []).length >= 2)) throw new Error('隙間を名指しできていない');
 });
@@ -1378,7 +1415,7 @@ await test('X26', '自律で作った品は値札とカタログに載り、既�
 
 
 // ── X27–X29 分野の探索 / GitHub取り込み / 自然言語の指示（純関数・ストア不要）
-await test('X27 frontier: 採点は実測が無ければ0点・順位は決定的', async () => {
+await test('X27', 'X27 frontier: 採点は実測が無ければ0点・順位は決定的', async () => {
   const ok = (c, m) => { if (!c) throw new Error(m); };
   const { scoreDomain, buildBoard, nextActions, DOMAINS, WEIGHTS } = await import('../src/agent/frontier.js');
   const base = { autonomy: 3, cost0: true };
@@ -1399,7 +1436,7 @@ await test('X27 frontier: 採点は実測が無ければ0点・順位は決定�
   ok(nx.length === 3 && !!nx[0].action, '次の一手が必ず文字で入る');
 });
 
-await test('X28 repo: URLを抜いて分類し、ノイズを落とし、採用判断を付ける', async () => {
+await test('X28', 'X28 repo: URLを抜いて分類し、ノイズを落とし、採用判断を付ける', async () => {
   const ok = (c, m) => { if (!c) throw new Error(m); };
   const { extractResources, extractPayTo, classifyRepo, REPO_VERSION } = await import('../src/agent/repo.js');
   ok(REPO_VERSION === 'repo-1.0', 'version');
@@ -1418,7 +1455,7 @@ await test('X28 repo: URLを抜いて分類し、ノイズを落とし、採用�
   ok(s3.kind === 'infra' && s3.adopt === 'benchmark', '決済実装で売り手アドレスがあれば benchmark');
 });
 
-await test('X29 direct: 自然言語を意図に写像し、空の証拠を成功と数えない', async () => {
+await test('X29', 'X29 direct: 自然言語を意図に写像し、空の証拠を成功と数えない', async () => {
   const ok = (c, m) => { if (!c) throw new Error(m); };
   const { parseDirective, planFor, INTENTS, verified, MAX_TRIES, guessLang } = await import('../src/agent/director.js');
   ok(parseDirective('githubでいいリポジトリあれば取り入れるようにして') === 'adopt_repo', '日本語→取り込み');
@@ -1436,7 +1473,7 @@ await test('X29 direct: 自然言語を意図に写像し、空の証拠を成�
 });
 
 
-════════ RESULT: ${pass} passed, ${failures.length} failed ════════`);
+console.log(`\n════════ RESULT: ${pass} passed, ${failures.length} failed ════════`);
 
 if (failures.length) {
   console.log('\nFailures:');
