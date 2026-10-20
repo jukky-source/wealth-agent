@@ -137,9 +137,9 @@ export default {
     // 自律価格レバー（grow-1.0）: D1 に置いた値札の上書きを、値札を出す前に env へ注入する。
     // 上書きが読めなければカタログ価格のまま（下げる方向のみ・原価0）。D1 だけを見るので軽い。
     try {
-      // 門は「カタログを描く面」すべて。/api/x402 に加え llms.txt・/.well-known/x402(.json)・openapi.json も
-      // カタログを機械に出すので、ここを外すと extra 棚（runtime 産）だけが載らない面が生まれる。
-      if (env && env.DB && /\/api\/x402|\/\.well-known\/x402|llms\.txt|openapi\.json/.test(request.url)) {
+      // 門は「カタログを描く・監視する面」すべて。/api/x402 に加え llms.txt・/.well-known/x402(.json)・
+      // openapi.json・discwatch も extra 棚（runtime 産）を扱うので、ここを外すとその面だけ棚が欠ける。
+      if (env && env.DB && /\/api\/x402|\/\.well-known\/x402|llms\.txt|openapi\.json|discwatch/.test(request.url)) {
         const _po = await env.DB.prepare("SELECT value FROM settings WHERE key='grow:price_json'").first();
         // 自律で作った品（market-1.0 が出品したもの）を env に載せる。カタログはコードのまま、
         // 生成物だけをデータで足す。読み取りに失敗しても固定品だけで動く（何も足さない）。

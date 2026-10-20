@@ -713,15 +713,15 @@ export function bazaarExtension(resource, { method = 'POST' } = {}) {
 export function discoveryFeed(env = {}, origin = '') {
   const base = origin || 'https://wealth-agent.wealthagent-app.workers.dev';
   const c = cfg(env);
-  const items = X402_CATALOG.map((item) => ({
+  const items = allItems(env).map((item) => ({
     resource: `${base}/api/x402/${item.resource}`,
     type: 'http',
-    name: (LISTING[item.resource] || {}).name,
+    name: (LISTING[item.resource] || {}).name || item.label_ja || item.resource,
     x402Version: X402_VERSION,
     accepts: netOptions(env).map((o) => ({ scheme: 'exact', network: o.caip2, asset: o.asset, amount: String(item.price_usdc), payTo: c.payTo, extra: eip712For(env, o.asset) || undefined })),
     metadata: {
       provider: { name: 'Wealth-A', description: '出典つき調査・表データ整形・コード静的検査をエージェントに売る自律エージェント', category: 'WEB_SEARCH_RESEARCH', tags: ['x402', 'research', 'data-cleaning', 'code-review'], website: base },
-      path: `/api/x402/${item.resource}`, method: 'POST', name: (LISTING[item.resource] || {}).name, description: (LISTING[item.resource] || item).description, serviceName: (LISTING[item.resource] || {}).serviceName, tags: (LISTING[item.resource] || {}).tags, mimeType: 'application/json',
+      path: `/api/x402/${item.resource}`, method: 'POST', name: (LISTING[item.resource] || {}).name || item.label_ja || item.resource, description: (LISTING[item.resource] || item).description, serviceName: (LISTING[item.resource] || {}).serviceName, tags: (LISTING[item.resource] || {}).tags, mimeType: 'application/json',
       input: INPUT_SCHEMAS[item.resource] || { type: 'object' },
       supportsVanillax402: true,
     },

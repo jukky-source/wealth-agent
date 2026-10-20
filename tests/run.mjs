@@ -1317,6 +1317,18 @@ await test('X45', 'X45 llms.txt extra棚: D1 注入形（X402_EXTRA_CATALOG）�
   const cnt = (s) => s.split('\n').filter((l) => l.startsWith('- /api/x402/')).length;
   ok(cnt(t) === cnt(await x.llmsTxt('https://example.com')) + 1, 'extra 棚の分だけ棚行が増える');
 });
+
+await test('X46', 'X46 discoveryFeed: runtime 産 extra 棚も発見フィードに載る（x402scan の入口が欠けない）', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const x = await import('../src/agent/x402.js');
+  const envInj = { X402_EXTRA_CATALOG: JSON.stringify([{ resource: 'market-op-x46', op: 'note', description: 'Feed test shelf.', label_ja: 'X46フィード棚', price_usdc: 2000 }]) };
+  const f = x.discoveryFeed(envInj, 'https://example.com');
+  ok(f.resources.some((r) => String(r).endsWith('/api/x402/market-op-x46')), 'resources に extra 棚がある');
+  const it = (f.items || []).find((i) => String(i.resource).endsWith('market-op-x46'));
+  ok(!!it && it.metadata && it.metadata.name === 'X46フィード棚' && it.metadata.description === 'Feed test shelf.', 'metadata に名前と説明が落ちない');
+  ok((f.items || []).length === x.allItems(envInj).length, 'items 数が allItems と一致');
+  ok(f.pagination && f.pagination.total === (f.items || []).length, 'pagination.total も実数');
+});
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {
   const { summarizeSample, gapsOf, classify } = await import('../src/agent/market.js');
