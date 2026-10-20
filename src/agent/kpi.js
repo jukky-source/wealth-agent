@@ -136,7 +136,13 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
 
   // 発見 → 値札(402)の提示 → 決済 のどこで落ちるかを数える。需要の計器であって売上ではない。
   // 自分の呼び出し（UA=wealthagent）と自己テストは除く。
-  const EXCL = "COALESCE(note,'') <> 'self_test' AND instr(lower(COALESCE(ua,'')),'wealthagent') = 0";
+  // クローラー・観測所・bazaar の巡回は「買い手」ではない。sales.js と同じ除外基準を使う
+  // （UA 文字列ベースなので過小評価はあっても過大評価はしない向きに倒す）。
+  const EXCL = "COALESCE(note,'') <> 'self_test' AND instr(lower(COALESCE(ua,'')),'wealthagent') = 0"
+    + " AND instr(lower(COALESCE(ua,'')),'bot') = 0 AND instr(lower(COALESCE(ua,'')),'crawler') = 0"
+    + " AND instr(lower(COALESCE(ua,'')),'observer') = 0 AND instr(lower(COALESCE(ua,'')),'probe') = 0"
+    + " AND instr(lower(COALESCE(ua,'')),'bazaar') = 0 AND instr(lower(COALESCE(ua,'')),'python-requests') = 0"
+    + " AND instr(lower(COALESCE(ua,'')),'curl') = 0 AND instr(lower(COALESCE(ua,'')),'wget') = 0";
   const hk = await qa(store, `SELECT kind, COUNT(*) AS n, COUNT(DISTINCT caller) AS callers FROM x402_hits WHERE ${EXCL} GROUP BY kind`);
   const hres = await qa(store, `SELECT resource, COUNT(*) AS n, SUM(CASE WHEN CAST(status AS TEXT)='402' THEN 1 ELSE 0 END) AS quotes FROM x402_hits WHERE ${EXCL} GROUP BY resource ORDER BY n DESC LIMIT 20`);
   const hven = await qa(store, `SELECT venue, COUNT(*) AS n FROM x402_hits WHERE ${EXCL} AND COALESCE(venue,'') <> '' GROUP BY venue ORDER BY n DESC LIMIT 20`);
