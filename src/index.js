@@ -167,6 +167,11 @@ export default {
     if (request.method === 'OPTIONS') return json({ ok: true }, 204);
 
     // 買い手（不特定のエージェント）向けの公開カタログ。秘密は含めない。
+    // /llms.txt — AI エージェント向けの店頭一覧（発見面。生成はカタログから・手書きの値は載せない）。
+    if (url.pathname === '/llms.txt' || url.pathname === '/.well-known/llms.txt') {
+      const { llmsTxt } = await import('./agent/x402.js');
+      return new Response(llmsTxt(url.origin), { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+    }
     if (url.pathname === '/.well-known/agent.json' || url.pathname === '/.well-known/agent-card.json' || url.pathname === '/.well-known/agents.json') {
       try {
         const { agentCard, agentsIndex } = await import('./agent/a2a.js');
