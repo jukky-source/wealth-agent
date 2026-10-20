@@ -1303,6 +1303,20 @@ await test('X44', 'X44 llms.txt: エージェント向け店頭一覧が全棚�
   ok(t.includes('402') && t.toLowerCase().includes('x-payment'), 'x402 の支払いフローの案内');
   ok(!/<script/i.test(t), 'スクリプトを埋めない');
 });
+
+await test('X45', 'X45 llms.txt extra棚: D1 注入形（X402_EXTRA_CATALOG）の runtime 産棚も同じ正で載る', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const x = await import('../src/agent/x402.js');
+  // 本番の注入ブロックが作るのと同じ形（settings x402:extra_catalog を JSON 文字列で env へ）。
+  const envInj = { X402_EXTRA_CATALOG: JSON.stringify([{ resource: 'market-op-x45', op: 'note', description: 'Autonomously listed shelf. Paid delivery only.', label_ja: 'X45テスト棚', price_usdc: 2000, created_by: 'market-1.0' }]) };
+  ok(x.allItems(envInj).some((i) => i.resource === 'market-op-x45'), 'allItems が extra 棚を返す');
+  const t = await x.llmsTxt('https://example.com', envInj);
+  ok(t.includes('/api/x402/market-op-x45'), 'llms.txt に runtime 産棚が載る');
+  ok(t.includes('$0.002'), 'extra 棚の値段が正しく表示される');
+  ok(!t.includes('undefined') && !t.includes('[object'), '値の欠落や [object Object] を埋め込まない');
+  const cnt = (s) => s.split('\n').filter((l) => l.startsWith('- /api/x402/')).length;
+  ok(cnt(t) === cnt(await x.llmsTxt('https://example.com')) + 1, 'extra 棚の分だけ棚行が増える');
+});
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {
   const { summarizeSample, gapsOf, classify } = await import('../src/agent/market.js');
