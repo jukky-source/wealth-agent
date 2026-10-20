@@ -1000,7 +1000,7 @@ Payment is the PAYMENT-SIGNATURE header (x402 v2, exact scheme). Supported chain
       const _snap = await venueSnapshotLoad(env);
       const _items = _board.map((v) => _pub
         ? { id: v.id, name: v.name, kind: v.kind, reach: v.reach, cost_usd: v.cost_usd, auto: v.auto, fit: v.fit, state: v.state, score: v.score, url: v.url, publish_api: v.publish_api || null, probe: v.probe || null }
-        : { id: v.id, name: v.name, kind: v.kind, reach: v.reach, cost_usd: v.cost_usd, auto: v.auto, kyc: v.kyc, fit: v.fit, state: v.state, score: v.score, parts: v.parts, url: v.url, submit: v.submit, probe: v.probe || null, publish_api: v.publish_api || null, reach_note: v.reach_note, note: v.note, src: v.src });
+        : { id: v.id, name: v.name, kind: v.kind, reach: v.reach, cost_usd: v.cost_usd, auto: v.auto, kyc: v.kyc, fit: v.fit, state: v.state, score: v.score, parts: v.parts, url: v.url, submit: v.submit, submit_tagged: v.submit_tagged || null, probe: v.probe || null, publish_api: v.publish_api || null, reach_note: v.reach_note, note: v.note, src: v.src });
       const _body = {
         ok: true, version: 'venues-1.0', registry_plan: venueRegistryPlan(), at: new Date().toISOString(),
         total: _counts.total, by_state: _counts.by_state,
