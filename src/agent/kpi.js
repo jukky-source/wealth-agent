@@ -12,7 +12,9 @@
 //   外部と自己テストは必ず分けて出し、混ぜた数字を返さない。
 //
 // もう一つの原則: 測れない値は推定で埋めない。'未測定' と、どうすれば測れるかを必ず返す。
-export const KPI_VERSION = 'kpi-1.1';
+import { parseSource } from './attribution.js';
+
+export const KPI_VERSION = 'kpi-1.2';
 export const UNMEASURED = '未測定';
 
 /** 自己テスト（外部の買い手ではない）と判定する wallet。実測で特定した自前のテスト wallet。 */
@@ -46,6 +48,19 @@ async function qa(store, sql, ...args) {
 async function q1(store, sql, ...args) {
   if (!store || typeof store.first !== 'function') return null;
   try { return await store.first(sql, ...args); } catch { return null; }
+}
+
+/** 決済行の source タグ（x402:<venue>:<resource>）から販路別・商品別に分ける。 */
+function byTag(rows, kind) {
+  const m = new Map();
+  for (const r of rows) {
+    const t = parseSource(r.source);
+    const key = kind === 'venue' ? (t.venue || 'unknown') : (t.resource || t.channel || 'unknown');
+    const cur = m.get(key) || { key, transactions: 0, amount_usdc: 0 };
+    cur.transactions += 1; cur.amount_usdc += Number(r.amount) || 0;
+    m.set(key, cur);
+  }
+  return [...m.values()].map((x) => ({ ...x, amount_usdc: Number(x.amount_usdc.toFixed(6)) }));
 }
 
 /** 未測定の指標に「どうすれば測れるか」を必ず添える。 */
@@ -84,6 +99,8 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
     all_time: agg(external),
     window: Object.assign(agg(win), { by_source: Object.entries(win.reduce((a, r) => { a[r.source] = (a[r.source] || 0) + (Number(r.amount) || 0); return a; }, {})).map(([s, a]) => ({ source: s, amount: Number(a.toFixed(6)) })) }),
     by_product: Object.entries(external.reduce((a, r) => { const k = r.source || 'unknown'; a[k] = a[k] || { n: 0, amt: 0 }; a[k].n++; a[k].amt += Number(r.amount) || 0; return a; }, {})).map(([k, v]) => ({ product: k, transactions: v.n, amount_usdc: Number(v.amt.toFixed(6)) })),
+    by_venue: byTag(external, 'venue'),
+    by_resource: byTag(external, 'resource'),
     repeat_payers: repeatOf(external),
     recent_payments: external.slice(0, 20).map((r) => ({ on: r.occurred_on, product: r.source, amount: Number(r.amount) || 0, currency: r.currency || 'USDC', payer: r.payer || null, tx_id: r.external_id || null, fee: Number(r.fee) || 0 })),
     self_test: Object.assign(agg(selfTest), { note: '売上に数えない（我々自身のテスト購入）。ここに分離して出す。' }),
@@ -117,6 +134,24 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
     note: '無料枠はモデルを使わない決定的品目のみ。売上には計上しない（需要の計器）。',
   };
 
+  // 発見 → 値札(402)の提示 → 決済 のどこで落ちるかを数える。需要の計器であって売上ではない。
+  // 自分の呼び出し（UA=wealthagent）と自己テストは除く。
+  const EXCL = "COALESCE(note,'') <> 'self_test' AND instr(lower(COALESCE(ua,'')),'wealthagent') = 0";
+  const hk = await qa(store, `SELECT kind, COUNT(*) AS n, COUNT(DISTINCT caller) AS callers FROM x402_hits WHERE ${EXCL} GROUP BY kind`);
+  const hres = await qa(store, `SELECT resource, COUNT(*) AS n, SUM(CASE WHEN CAST(status AS TEXT)='402' THEN 1 ELSE 0 END) AS quotes FROM x402_hits WHERE ${EXCL} GROUP BY resource ORDER BY n DESC LIMIT 20`);
+  const hven = await qa(store, `SELECT venue, COUNT(*) AS n FROM x402_hits WHERE ${EXCL} AND COALESCE(venue,'') <> '' GROUP BY venue ORDER BY n DESC LIMIT 20`);
+  const kindN = (k) => { const r = (hk || []).find((x) => String(x.kind) === k); return r ? (num(r.n) || 0) : 0; };
+  out.funnel = hk === null ? UNMEASURED : {
+    source: 'x402_hits（到達の計器。売上には数えない）',
+    challenge_402: kindN('challenge'),
+    rejected: kindN('rejected'),
+    paid: kindN('paid'),
+    unique_callers: (hk || []).reduce((a, x) => a + (num(x.callers) || 0), 0),
+    by_resource: hres === null ? UNMEASURED : (hres || []).map((x) => ({ resource: x.resource, hits: num(x.n) || 0, quotes_402: num(x.quotes) || 0 })),
+    by_venue: hven === null ? UNMEASURED : (hven || []).map((x) => ({ venue: x.venue, hits: num(x.n) || 0 })),
+    note: '外部の買い手が値札を見た数。ここが 0 なら、商品ではなく発見（売り場に人が来ない）の問題。',
+  };
+
   const ai = await q1(store, 'SELECT COUNT(*) AS calls, SUM(COALESCE(neurons,0)) AS neurons FROM ai_usage WHERE day >= ?', since);
   out.efficiency = {
     ai_calls_window: ai ? (num(ai.calls) || 0) : UNMEASURED,
@@ -127,8 +162,9 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
   out.unmeasured = [
     gap('外部からの商品発見数', 'CDP Bazaar / agentic.market / Agent402 の discovery を日次で検索し、自ホストのヒット数を記録する'),
     gap('外部からの適格な訪問数', 'Cloudflare Analytics（GraphQL）で /api/x402/* と /api/free/* のユニーク訪問を日次で取得する（未接続）'),
-    gap('有料購入の開始数（402 challenge の提示数）', '402 を返した回数を資源別に settings へ加算する（未実装）'),
-    gap('販路別の売上', '決済の source に販路IDを載せる（例: x402:<venue>:<resource>）。現状の receipts.source は資源名のみ'),
+    gap('買い手側ディレクトリへの実掲載数', 'POST https://api.cdp.coinbase.com/platform/v2/x402/validate を全商品に実行し index.active / lastCrawledAt を日次で記録する（鍵不要）'),
+    gap('検索結果での順位', 'discovery/search に自商品名で問い合わせ、上位20件に入るかを記録する（順位は利用実績で6時間ごとに再計算される）'),
+    gap('有料経路の end-to-end 実決済', '実資金で $1 の diligence-pack を1件購入し、指定どおりの納品が返ることを確かめる（承認が必要）'),
     gap('施策ごとの実行コストと成果', 'grow の各レバー実行時に before/after の売上・発見数を runs に記録する（未実装）'),
     gap('人手待ちの工程数', 'approvals と venues の human_queue を数える（/api/venues/public と /api/approvals で参照可能）'),
   ];

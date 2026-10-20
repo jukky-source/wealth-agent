@@ -84,7 +84,11 @@ export async function recordReceipt(store, {
   // 実力より高く出る（＝台帳が嘘になる）。basis='self_test' で必ず別枠にする。
   const isSelf = self_test === true;
   if (!signature_verified) return { ok: false, error: 'unverified', note: '検証済みの決済通知だけが入金として記録できます' };
-  if (!RECEIPT_SOURCES.includes(String(source))) return { ok: false, error: 'bad_source', allowed: RECEIPT_SOURCES };
+  // 販路帰属タグ（x402:<venue>:<resource>）を許可する。許可しないと販路別売上を測れない。
+  const srcStr = String(source);
+  if (!RECEIPT_SOURCES.includes(srcStr) && !/^[a-z_]+:[a-z0-9_-]{1,32}:[a-z0-9_.-]{1,64}$/i.test(srcStr)) {
+    return { ok: false, error: 'bad_source', allowed: RECEIPT_SOURCES };
+  }
   const gross = Number(amount) || 0;
   // 実額の入金は 0 を認めない。テスト網（金額0）だけ例外にし、external_id に test_ を付けて
   // 本番の売上集計から必ず除外する（テストが台帳を汚さない）。
@@ -112,7 +116,7 @@ export async function recordReceipt(store, {
       id: rid('led'), kind: 'revenue', amount: gross,
       currency: String(currency || 'USDC').toUpperCase(),
       basis: isSelf ? 'self_test' : 'measured', source: isSelf ? 'self_test' : String(source),
-      opportunity_id: isSelf ? null : laneForSource(source),
+      opportunity_id: isSelf ? null : laneForSource(String(source).split(':')[0]),
       occurred_on: row.occurred_on,
       note: `${source} 入金 ${finalExt}${payer ? ` / payer ${payer}` : ''}${job_id ? ` / job ${job_id}` : ''}`,
       created_at: nowIso(),

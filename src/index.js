@@ -1279,12 +1279,23 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       const { challenge, preflight, requiredHeader, responseHeader, verifyAndSettle, allItems } = await import('./agent/x402.js');
       const { createJob, recordReceipt } = await import('./agent/revenue.js');
       const resource = url.pathname.replace('/api/x402-testnet/', '').replace('/api/x402/', '');
+      // 販路帰属: ?venue=<id> / X-WA-Venue を決済の source タグに載せる。
+      // これが無いと「どの売り場が買い手を連れてきたか」を永久に測れない（KPI の未測定項目）。
+      const { venueFromRequest, sourceTag } = await import('./agent/attribution.js');
+      const venue = venueFromRequest(request, url);
       // 決済の前提を満たさない注文は、値札（402）より先に 400 で断る。
       // 「$1 を払ってから対象なしと言われる」事故を構造的に消す（納品側と同じ判定を使う）。
+      //
+      // ただし 400 で断るのは「決済ヘッダを持つ」呼び出しに限る。決済ヘッダの無い呼び出しは
+      // 入力が空でも必ず 402（値札）を返す。買い手側ディレクトリは例示入力か空ボディで叩き、
+      // 「402 が返るか」で掲載可否を決めるため、ここで 400 を返すと掲載されない（実測:
+      // GET /api/x402/diff → 400 bad_input → CDP validate rejected）。
+      const _payHeader = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
       let _preBody = {};
       try { _preBody = await request.clone().json(); } catch (e) { _preBody = {}; }
+      if (request.method === 'GET') for (const [k, v] of url.searchParams) if (!(k in _preBody)) _preBody[k] = v;
       const _pre = _preValidate(resource, _preBody);
-      if (!_pre.ok) return json({ ok: false, ..._pre, charged: false, note: '入力が前提を満たさないため決済を要求していません（課金なし）' }, 400);
+      if (_payHeader && !_pre.ok) return json({ ok: false, ..._pre, charged: false, note: '入力が前提を満たさないため決済を要求していません（課金なし）' }, 400);
       const notFound = () => new Response(JSON.stringify({ ok: false, error: 'not_found', path: url.pathname }), { status: 404, headers: { 'content-type': 'application/json' } });
       if (!allItems(env).some((i) => i.resource === resource)) return notFound();
       // 自律で作った品は、値札・注文検査・納品をその「実行部品(op)＋固定引数(preset)」に写して扱う。
@@ -1299,7 +1310,7 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       if (!ch || !ch.configured) {
         return new Response(JSON.stringify({ ok: false, enabled: false, error: 'not_configured', reason: ch?.reason || pf.reason }), { status: 503, headers: { 'content-type': 'application/json' } });
       }
-      const header = request.headers.get('PAYMENT-SIGNATURE') || request.headers.get('X-PAYMENT') || '';
+      const header = _payHeader;
       const { validateOrder, fulfillOrder, ORDER_SPECS } = await import('./agent/fulfill.js');
       const { logHit } = await import('./agent/hits.js');
       if (!header) {
@@ -1310,7 +1321,7 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
           free_option: freeTierResources().includes(resource)
             ? { url: `${url.origin}/api/free/${resource}`, daily_limit_per_ip: freeLimitFor(env, resource), note: 'No payment needed up to the daily limit (per IP, per UTC day). Pay here only if you need the limit removed.' }
             : null };
-        await logHit(deps.store, request, { resource, kind: 'challenge', status: 402 });
+        await logHit(deps.store, request, { resource, kind: 'challenge', status: 402, venue });
         return new Response(JSON.stringify(priced), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
       }
       // 決済「前」に注文内容を検査する。満たさないものは請求せずに断る（払わせてから失敗しない）。
@@ -1325,10 +1336,10 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       if (!settled.ok) {
         // 保留は決済が確定していない状態。中身は渡さず、入金としても記録しない。
         const status = settled.error === 'facilitator_unreachable' ? 503 : 402;
-        await logHit(deps.store, request, { resource, kind: 'rejected', status, note: settled.error });
+        await logHit(deps.store, request, { resource, kind: 'rejected', status, note: settled.error, venue });
         return new Response(JSON.stringify({ ...ch.body, error: settled.error, detail: settled.detail || null, note: settled.note }), { status, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
       }
-      await logHit(deps.store, request, { resource, kind: 'paid', status: 200, note: settled.tx || null });
+      await logHit(deps.store, request, { resource, kind: 'paid', status: 200, note: settled.tx || null, venue });
       const item = X402_CATALOG.find((i) => i.resource === resource);
       // 買い手の住所が自分の受取先と同じなら、それは自己購入（動作確認）。
       // 外部の売上と混ぜない印を付けて記録する。
@@ -1341,7 +1352,7 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       const selfTest = headerSelfTest || (!!settled.payer && ownAddrs.includes(String(settled.payer).toLowerCase()));
       const receipt = await recordReceipt(deps.store, {
         self_test: selfTest,
-        source: 'x402', external_id: settled.tx || `x402_${Date.now().toString(36)}`,
+        source: sourceTag(venue, resource), external_id: settled.tx || `x402_${Date.now().toString(36)}`,
         // USDC は最小単位（6桁）で届くので、人が読める単位に直してから記録する。
         amount: Number(((Number(settled.amount) || 0) / 1e6).toFixed(6)), currency: 'USDC', fee: settled.fee || 0, payer: settled.payer,
         job_id: body.job_id || null, thread_id: body.thread_id || null,
