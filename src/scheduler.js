@@ -335,6 +335,21 @@ export function createScheduler(deps) {
         report.steps.push({ step: 'xindex', skipped: outOfTime() ? 'no_time' : (xiDue ? 'disabled' : 'not_due') });
       }
     } catch (e) { report.steps.push({ step: 'xindex', error: e.message }); }
+    // 5c-12b) discwatch : 発見面の日次観測（原価0・鍵不要APIのみ）。CDP審査の valid/outcome、
+    // 索引入り（index.active）、一般語検索での順位、説明文規律を1日1回 settings に記録する。
+    // 順位は直近30日の実利用でしか積めないため、施策の効果も悪化もここから読む。
+    try {
+      const { runDiscWatch } = await import('./agent/discwatch.js');
+      const dwOrigin = String(env.WORKER_ORIGIN || env.PUBLIC_BASE_URL || 'https://wealth-agent.wealthagent-app.workers.dev').replace(/\/+$/, '');
+      const dw = await runDiscWatch(env, store, { origin: dwOrigin });
+      const r = dw.report || null;
+      report.steps.push({
+        step: 'discwatch', day: dw.day, skipped: dw.skipped || null,
+        accepted: r ? r.validate.accepted : null, indexed: r ? r.validate.indexed : null,
+        desc_bad: r ? r.desc_audit.bad.length : null,
+        best_rank: r ? (r.search_ranks.filter((x) => x.rank).map((x) => x.rank).sort((a, b) => a - b)[0] || null) : null,
+      });
+    } catch (e) { report.steps.push({ step: 'discwatch', error: String((e && e.message) || e).slice(0, 140) }); }
 
     // 5c-13) grow : 自律成長エンジン。全体を1つの目的関数（外部入金）で見て、いまの壁を名指しし、
     //        期待値の高い原価0の手を自分で選んで打ち、測って記憶する。指示がなくても回る。

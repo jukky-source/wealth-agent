@@ -168,8 +168,8 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
   out.unmeasured = [
     gap('外部からの商品発見数', 'CDP Bazaar / agentic.market / Agent402 の discovery を日次で検索し、自ホストのヒット数を記録する'),
     gap('外部からの適格な訪問数', 'Cloudflare Analytics（GraphQL）で /api/x402/* と /api/free/* のユニーク訪問を日次で取得する（未接続）'),
-    gap('買い手側ディレクトリへの実掲載数', 'POST https://api.cdp.coinbase.com/platform/v2/x402/validate を全商品に実行し index.active / lastCrawledAt を日次で記録する（鍵不要）'),
-    gap('検索結果での順位', 'discovery/search に自商品名で問い合わせ、上位20件に入るかを記録する（順位は利用実績で6時間ごとに再計算される）'),
+    gap('買い手側ディレクトリへの実掲載数', '/api/discwatch が CDP 審査（validate・鍵不要）と index.active を日次で記録済み。スナップショットは /api/discwatch/public'),
+    gap('検索結果での順位', '/api/discwatch が discovery/search に一般語で問い合わせ、順位を日次記録済み（順位は直近30日の実利用で6時間ごとに再計算される）'),
     gap('有料経路の end-to-end 実決済', '実資金で $1 の diligence-pack を1件購入し、指定どおりの納品が返ることを確かめる（承認が必要）'),
     gap('施策ごとの実行コストと成果', 'grow の各レバー実行時に before/after の売上・発見数を runs に記録する（未実装）'),
     gap('人手待ちの工程数', 'approvals と venues の human_queue を数える（/api/venues/public と /api/approvals で参照可能）'),

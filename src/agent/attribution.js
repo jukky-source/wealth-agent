@@ -29,9 +29,17 @@ export function sourceTag(venue, resource) {
 /** source タグを分解する。旧形式 'x402'（販路不明）も壊さず読む。 */
 export function parseSource(source) {
   const s = String(source || '');
-  const m = /^([a-z_]+):([a-z0-9_-]{1,32}):(.+)$/i.exec(s);
+  const m = /^([a-z_][a-z0-9_]*):([a-z0-9_-]{1,32}):(.+)$/i.exec(s);
   if (m) return { channel: m[1].toLowerCase(), venue: m[2].toLowerCase(), resource: m[3], tagged: true };
-  const m2 = /^([a-z_]+):(.+)$/i.exec(s);
+  const m2 = /^([a-z_][a-z0-9_]*):(.+)$/i.exec(s);
   if (m2) return { channel: m2[1].toLowerCase(), venue: 'unknown', resource: m2[2], tagged: false };
   return { channel: s || 'unknown', venue: null, resource: null, tagged: false };
+}
+
+/** 掲載用のURLに販路を焼き込む。販路が不明なら何も付けない（帰属不明＝direct のまま）。
+ *  販路に提出する掲載 payload は必ずこれを通す（掲載後に売上がどの販路から来たか分解できる）。 */
+export function venueUrl(origin, resource, venue) {
+  const v = SLUG.test(String(venue || '').trim().toLowerCase()) ? String(venue).trim().toLowerCase() : null;
+  const base = `${String(origin || '').replace(/\/+$/, '')}/api/x402/${String(resource || '')}`;
+  return v ? `${base}?venue=${v}` : base;
 }

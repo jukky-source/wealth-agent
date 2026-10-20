@@ -1185,6 +1185,33 @@ await test('X37', 'KPI: 測れない値を捏造せず「未測定」と測り�
   assert.equal(sp.selfTest.length, 2);
 });
 
+
+await test('X38', 'X38 attribution: 販路帰属が決済の行に残る（?venue= → x402:<venue>:<resource>）', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const { venueFromRequest, sourceTag, parseSource, venueUrl } = await import('../src/agent/attribution.js');
+  ok(venueFromRequest(null, new URL('https://x.test/api/x402/diff?venue=x402-list')) === 'x402-list', '?venue=');
+  ok(venueFromRequest(null, new URL('https://x.test/api/x402/diff')) === 'direct', '無ければ direct');
+  ok(venueFromRequest({ headers: { get: (k) => (k === 'x-wa-venue' ? 'AgentShare' : null) } }) === 'agentshare', 'ヘッダ経由・小文字正規化');
+  ok(venueFromRequest(null, new URL('https://x.test/?venue=BAD%20SPACE')) === 'direct', '不正な値は direct（信用しない）');
+  ok(sourceTag('x402-list', 'diff') === 'x402:x402-list:diff', 'source タグ');
+  ok(sourceTag(null, 'diff') === 'x402:direct:diff', '帰属不明は direct');
+  const ps = parseSource('x402:x402-list:diff');
+  ok(ps.venue === 'x402-list' && ps.resource === 'diff' && ps.tagged === true, 'タグの分解');
+  ok(parseSource('x402').tagged === false, '旧形式（x402）も壊さず読む');
+  ok(venueUrl('https://x.test/', 'diff', 'x402-list') === 'https://x.test/api/x402/diff?venue=x402-list', '掲載URLに焼き込む');
+  ok(venueUrl('https://x.test', 'diff', 'BAD SPACE') === 'https://x.test/api/x402/diff', '不正な販路はURLに付けない');
+});
+
+await test('X39', 'X39 discwatch: 説明文規律（500字以内・指示的に読めない）と観測モジュールの自己整合', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const { descAudit, DISCWATCH_VERSION } = await import('../src/agent/discwatch.js');
+  const da = descAudit({});
+  ok(DISCWATCH_VERSION === 'discwatch-1.0', 'version');
+  ok(da.checked >= 18, '全商品が審査対象に入る: ' + da.checked);
+  ok(da.bad.length === 0, '規律違反なし（違反: ' + (da.bad.map((b) => b.resource + ':' + b.issues.join('+')).join(', ') || 'なし') + '）');
+  for (const r of da.rows) ok(r.method === 'GET' || r.method === 'POST', 'method が審査可能な形: ' + r.resource);
+});
+
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {
   const { summarizeSample, gapsOf, classify } = await import('../src/agent/market.js');

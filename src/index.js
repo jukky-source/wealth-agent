@@ -425,7 +425,7 @@ Payment is the PAYMENT-SIGNATURE header (x402 v2, exact scheme). Supported chain
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/improve/public', '/api/sales/public', '/api/hunt/public', '/api/contact', '/api/grow/public', '/api/market', '/api/market/public', '/api/frontier/public', '/api/repos/public', '/api/direct/public', '/api/ideas', '/api/listings/public', '/api/venues/public', '/api/grow/help', '/api/hunt/help', '/api/sales/help', '/api/loop/help', '/api/improve/help', '/api/kpi', '/api/kpi/public', '/api/xindex/summary', '/api/xindex/hosts', '/api/xindex/help', '/api/rea/queue', '/api/selfreport', '/api/skills/catalog', '/api/skills/catalog.json', '/api/digest/public', '/api/bounty/public', '/agents.json'];
+      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/improve/public', '/api/sales/public', '/api/hunt/public', '/api/contact', '/api/grow/public', '/api/market', '/api/market/public', '/api/frontier/public', '/api/repos/public', '/api/direct/public', '/api/ideas', '/api/listings/public', '/api/venues/public', '/api/grow/help', '/api/hunt/help', '/api/sales/help', '/api/loop/help', '/api/improve/help', '/api/kpi', '/api/kpi/public', '/api/discwatch/public', '/api/xindex/summary', '/api/xindex/hosts', '/api/xindex/help', '/api/rea/queue', '/api/selfreport', '/api/skills/catalog', '/api/skills/catalog.json', '/api/digest/public', '/api/bounty/public', '/agents.json'];
       if (!OPEN.includes(url.pathname)) return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
@@ -1034,6 +1034,18 @@ Payment is the PAYMENT-SIGNATURE header (x402 v2, exact scheme). Supported chain
       }
     }
 
+    if (url.pathname === '/api/discwatch' || url.pathname === '/api/discwatch/public') {
+      // 発見面の日次観測（discwatch）。CDP審査・索引入り・一般語検索での順位・説明文規律を
+      // 原価0・鍵不要のAPIだけで記録する。公開面は保存済みスナップショットだけ（秘密は含まない）。
+      const { runDiscWatch, discSnapshot } = await import('./agent/discwatch.js');
+      if (url.pathname === '/api/discwatch') {
+        if (!authorized(request, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+        if (url.searchParams.get('run') === '1' || url.searchParams.get('fresh') === '1') {
+          return json(await runDiscWatch(env, deps.store, { origin: url.origin, force: url.searchParams.get('run') === '1' }), 200);
+        }
+      }
+      return json(await discSnapshot(deps.store), 200);
+    }
     if (url.pathname === '/api/market' || url.pathname === '/api/market/public') {
       const { marketStatus, marketPublic, marketText, marketHelp } = await import('./agent/market.js');
       if (url.searchParams.get('help') === '1') return json({ ok: true, help: marketHelp(url.origin) });
@@ -1319,7 +1331,7 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
         const { freeTierResources, freeQuotaFor: freeLimitFor } = await import('./agent/freemium.js');
         const priced = { ...ch.body, order_spec: ORDER_SPECS[exItem && exItem.op ? exItem.op : resource] || null,
           free_option: freeTierResources().includes(resource)
-            ? { url: `${url.origin}/api/free/${resource}`, daily_limit_per_ip: freeLimitFor(env, resource), note: 'No payment needed up to the daily limit (per IP, per UTC day). Pay here only if you need the limit removed.' }
+            ? { url: `${url.origin}/api/free/${resource}${venue && venue !== 'direct' ? `?venue=${venue}` : ''}`, daily_limit_per_ip: freeLimitFor(env, resource), note: 'No payment needed up to the daily limit (per IP, per UTC day). Pay here only if you need the limit removed.' }
             : null };
         await logHit(deps.store, request, { resource, kind: 'challenge', status: 402, venue });
         return new Response(JSON.stringify(priced), { status: 402, headers: { 'content-type': 'application/json', 'PAYMENT-REQUIRED': requiredHeader(ch.body), 'WWW-Authenticate': `X402 realm="${env.AGENT_NAME || 'wealth-agent'}", resource="/api/x402/${resource}"`, 'cache-control': 'no-store', ...PAY_CORS } });
