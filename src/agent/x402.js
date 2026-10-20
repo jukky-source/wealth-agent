@@ -811,3 +811,36 @@ export function priceTagHtml(priced) {
     return '<!doctype html><title>Payment required</title><p>Send Accept: application/json to the same URL for the machine-readable price tag.</p>';
   }
 }
+
+// ---------------------------------------------------------------------------
+// llms.txt — AI エージェント向けの店頭一覧（発見面）。品目と値はカタログから生成し、手書きを残さない。
+// ---------------------------------------------------------------------------
+export function llmsTxt(origin = '') {
+  const o = String(origin || '').replace(/\/$/, '');
+  const items = allItems({});
+  const usd = (it) => { const v = (it.price_usdc || 0) / 1e6; return '$' + (v < 0.01 ? v.toFixed(3) : v.toFixed(2)); };
+  const first = (d) => { const s = String(d || '').split('. ')[0]; return s.length > 180 ? s.slice(0, 177) + '...' : s; };
+  const name = (it) => (LISTING[it.resource] && LISTING[it.resource].name) ? LISTING[it.resource].name : it.label_ja;
+  const L = [];
+  L.push('# Wealth Agent - machine-payable API storefront');
+  L.push('');
+  L.push('> ' + items.length + ' tools an AI agent can buy with USDC on Base via x402. No accounts, no API keys: payment is HTTP. Ask the endpoint, get a 402 with payment terms, pay, get the answer.');
+  L.push('');
+  L.push('Base URL: ' + (o || '(this host)'));
+  L.push('');
+  L.push('## How to buy');
+  L.push('');
+  L.push('- Paid: POST ' + (o || '') + '/api/x402/<resource> with a JSON body. Unpaid requests get 402 + x402 payment terms (X-PAYMENT header). Any x402 client or the CDP Facilitator works.');
+  L.push('- Free sample: GET ' + (o || '') + '/api/free/<resource> (per-IP daily limit, same input schema, marked as machine-generated where AI is used).');
+  L.push('- Machine catalog: ' + (o || '') + '/.well-known/x402.json - Discovery: ' + (o || '') + '/api/x402/discovery/resources');
+  L.push('');
+  L.push('## Catalog');
+  L.push('');
+  for (const it of items) L.push('- /api/x402/' + it.resource + ' - ' + name(it) + ' - ' + usd(it) + (it.free_tier ? ' (free sample)' : '') + ' - ' + first(it.description));
+  L.push('');
+  L.push('## Flagship');
+  L.push('');
+  L.push('- /api/x402/diligence-pack - full-surface diligence bundle on any public URL - $1.00 flat (the x402 sweet spot on Base).');
+  L.push('');
+  return L.join('\n') + '\n';
+}
