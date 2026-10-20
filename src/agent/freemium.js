@@ -188,6 +188,10 @@ export async function handleFree(request, env = {}, url, deps = {}) {
   }
 
   const ip = clientIp(request);
+  // 販路帰属: 無料枠の訪問も ?venue= を記録する（無料→有料の導線で帰属が切れない）。
+  let venue = 'direct';
+  try { const { venueFromRequest } = await import('./attribution.js'); venue = venueFromRequest(request, url); } catch { }
+  try { const { logHit } = await import('./hits.js'); await logHit(store, request, { resource: tail, kind: 'free', status: 200, venue }); } catch { /* 計器は本体を止めない */ }
   const q = await consumeFreeQuota(store, { ip, resource: tail, env });
 
   if (!q.ok) {
@@ -203,7 +207,7 @@ export async function handleFree(request, env = {}, url, deps = {}) {
       ok: false, error: 'free_quota_exhausted', resource: tail,
       free: { used: q.used, limit: q.limit, remaining: 0, scope: q.scope, resets_at: q.resets_at },
       paid: {
-        resource: tail, url: `${origin}/api/x402/${tail}`,
+        resource: tail, url: `${origin}/api/x402/${tail}${venue && venue !== 'direct' ? `?venue=${venue}` : ''}`,
         price_usdc: item ? item.price_usdc : null,
         how: 'POST 同じ本文に PAYMENT-SIGNATURE ヘッダ（x402 v2 / USDC）を添えて再送。回数制限はありません。',
       },
@@ -220,7 +224,7 @@ export async function handleFree(request, env = {}, url, deps = {}) {
   return jres({
     ok: !!done.ok, resource: tail, via: 'free', price_usdc: 0,
     free: { used: q.used, limit: q.limit, remaining: q.remaining, scope: q.scope, resets_at: q.resets_at },
-    upgrade: { resource: tail, url: `${origin}/api/x402/${tail}`, note: '無料枠は「IPごと・UTC日ごと」の上限つきです。上限なしで使うなら x402（USDC）で同じ品目を買えます。' },
+    upgrade: { resource: tail, url: `${origin}/api/x402/${tail}${venue && venue !== 'direct' ? `?venue=${venue}` : ''}`, note: '無料枠は「IPごと・UTC日ごと」の上限つきです。上限なしで使うなら x402（USDC）で同じ品目を買えます。' },
     result: inner,
     error: (done && done.error) || undefined,
   }, done && done.ok ? 200 : 502, { 'X-FREE-TIER': `${q.used}/${q.limit}`, 'X-FREE-LIMIT': String(q.limit) });

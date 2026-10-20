@@ -776,3 +776,34 @@ Object.assign(OUTPUT_EXAMPLES, {
   regex: { kind: 'regex', count: 2, matches: [{ match: 'ERROR timeout', index: 0, groups: ['timeout'] }] },
   diff: { kind: 'diff', added: 2, removed: 1, hunk_count: 1, unified: '@@ -1,3 +1,4 @@' },
 });
+
+// ---------------------------------------------------------------------------
+// ブラウザで値札(402)を開いた人間の買い手向けの HTML。機械（Accept: application/json
+// または */*）は JSON のまま・PAYMENT-REQUIRED ヘッダはどちらにも付くので、x402
+// クライアントの挙動は一切変わらない。宣伝ではなく値札のanother rendering。
+// ---------------------------------------------------------------------------
+export function priceTagHtml(priced) {
+  try {
+    const r = (priced && priced.resource) || {};
+    const acc = (priced.accepts && priced.accepts[0]) || {};
+    const usd = Number(acc.amount || 0) / 1e6;
+    const fo = priced.free_option || null;
+    const up = priced.upsell || null;
+    const esc = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const parts = [];
+    parts.push('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">');
+    parts.push('<title>' + esc(r.name || 'Payment required') + ' — Wealth Agent</title>');
+    parts.push('<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:2rem auto;padding:0 1rem;color:#111;line-height:1.6}code,pre{background:#f4f4f4;padding:2px 6px;border-radius:4px;font-size:.9em}pre{padding:12px;overflow-x:auto}.btn{display:inline-block;padding:10px 16px;border:1px solid #888;border-radius:8px;text-decoration:none;color:inherit;margin:2px 8px 2px 0}.price{font-size:2rem;font-weight:700}small{color:#555}</style>');
+    parts.push('<h1>' + esc(r.name || 'Paid API') + '</h1>');
+    parts.push('<p class="price">$' + usd.toFixed(usd < 0.01 ? 4 : 2) + ' USDC <small>· x402 · Base</small></p>');
+    if (r.description) parts.push('<p>' + esc(r.description) + '</p>');
+    if (fo && fo.url) parts.push('<p><a class="btn" href="' + esc(fo.url) + '">Try free first</a><small> up to ' + esc(fo.daily_limit_per_ip) + ' calls/day per IP</small></p>');
+    if (up && up.url) parts.push('<p><a class="btn" href="' + esc(up.url) + '">' + esc(up.name || up.resource) + ' — $' + (Number(up.price_usd) || 0).toFixed(2) + '</a><small> one call, consolidated</small></p>');
+    parts.push('<h2>How an agent pays</h2>');
+    parts.push('<pre>POST ' + esc(acc.resource || r.url || '') + '\nPAYMENT-SIGNATURE: &lt;base64 x402 v2 payment · USDC · Base&gt;\nContent-Type: application/json</pre>');
+    parts.push('<p>The JSON body of this same 402 carries the full machine-readable price tag (<code>accepts</code>, <code>order_spec</code>, bazaar extension). Send <code>Accept: application/json</code> to get it. Catalog: <a href="/api/x402/catalog.json">catalog.json</a> · Agent-facing docs: <a href="/llms.txt">llms.txt</a></p>');
+    return parts.join('\n');
+  } catch {
+    return '<!doctype html><title>Payment required</title><p>Send Accept: application/json to the same URL for the machine-readable price tag.</p>';
+  }
+}

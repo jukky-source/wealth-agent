@@ -1236,6 +1236,22 @@ await test('X40', 'X40 AI棚: translate/summarize の検査・正規化・AI無�
   const nf = await f.fulfillAiShelf('translate', { text: 'hello', target_lang: 'ja' }, { env: {} });
   ok(nf.ok === false && nf.error === 'ai_unavailable', 'AI binding 無しでは偽って納品しない: ' + JSON.stringify(nf));
 });
+await test('X41', 'X41 値札HTML: 人間用ページが値段・無料体験・$1案内をesc付きで載せる（機械は JSON のまま）', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const { priceTagHtml } = await import('../src/agent/x402.js');
+  const priced = { resource: { name: 'Diff <two> texts', description: 'Line-level diff between two texts.' },
+    accepts: [{ amount: '1000', resource: 'https://x.example/api/x402/diff' }],
+    free_option: { url: 'https://x.example/api/free/diff?venue=bazaar', daily_limit_per_ip: 25 },
+    upsell: { resource: 'diligence-pack', name: 'Due-diligence pack', price_usd: 1.0, url: 'https://x.example/api/x402/diligence-pack?venue=bazaar' } };
+  const h = priceTagHtml(priced);
+  ok(h.includes('$0.0010'), '金額（最小帯は4桁）: ' + (h.match(/\$[0-9.]+/) || [])[0]);
+  ok(h.includes('Try free first') && h.includes('venue=bazaar'), '無料体験への導線と venue 引き継ぎ');
+  ok(h.includes('$1.00') && h.includes('diligence-pack'), '$1 案内');
+  ok(h.includes('&lt;two&gt;') && !h.includes('<two>'), 'HTMLエスケープ（XSS を流さない）');
+  ok(h.includes('PAYMENT-SIGNATURE'), '支払い手順を載せる');
+  const fallback = priceTagHtml(null);
+  ok(fallback.includes('Payment required'), '壊れた入力でも素の HTML を返して落ちない');
+});
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {
   const { summarizeSample, gapsOf, classify } = await import('../src/agent/market.js');
