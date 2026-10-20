@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>指示して任せる — wealth-agent</title>
+<style>
+:root{--bg:#0b0d12;--card:#141822;--line:#232a38;--tx:#e8ecf4;--mut:#8b95a8;--ac:#5eead4;--warn:#fbbf24;--bad:#f87171}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.7 -apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 18px 64px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:32px 0 10px;color:var(--ac)}
+p.lead{color:var(--mut);margin:0 0 20px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
+textarea{width:100%;min-height:88px;background:#0e1219;color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:12px;font:15px/1.6 inherit;resize:vertical}
+input[type=password]{width:100%;background:#0e1219;color:var(--tx);border:1px solid var(--line);border-radius:10px;padding:9px 11px;font:13px/1.4 ui-monospace,monospace}
+button{background:var(--ac);color:#06231f;border:0;border-radius:10px;padding:10px 18px;font-weight:700;font-size:14px;cursor:pointer}
+button.ghost{background:transparent;color:var(--tx);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.chip{background:#0e1219;border:1px solid var(--line);color:var(--mut);border-radius:999px;padding:5px 11px;font-size:12px;cursor:pointer}
+.chip:hover{color:var(--tx);border-color:var(--ac)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}
+.ok{color:var(--ac)}.ng{color:var(--bad)}.warn{color:var(--warn)}
+code{background:#0e1219;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+.small{font-size:12px;color:var(--mut)}
+pre{background:#0e1219;border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto;font-size:12px;max-height:320px}
+a{color:var(--ac)}
+</style></head><body><div class="wrap">
+<h1>指示して、任せる</h1>
+<p class="lead">自然言語で書いた指示をエージェントが自分で計画に直し、実行し、証拠が出たか確かめ、出なければ手を変えて再試行します。実行は既存の検証済みの手に写像されるので、勝手に新しい危険な経路は増えません。</p>
+
+<div class="card">
+  <textarea id="txt" placeholder="例: GitHubでいいリポジトリあれば取り入れるようにして"></textarea>
+  <div class="row" id="chips"></div>
+  <div class="row" style="margin-top:12px">
+    <button id="run">実行させる</button>
+    <button class="ghost" id="queue">並べるだけ</button>
+    <span class="small" id="msg"></span>
+  </div>
+  <div class="row" style="margin-top:12px">
+    <input type="password" id="tok" placeholder="オーナートークン（この端末のタブ内にだけ保持）">
+  </div>
+  <p class="small">トークンは送信時に <code>Authorization</code> ヘッダにだけ載せます。URLにも保存領域にも残しません。</p>
+</div>
+
+<h2>結果</h2>
+<div class="card" id="out"><span class="small">まだ実行していません。</span></div>
+
+<h2>最近の指示</h2>
+<div class="card" id="recent"><span class="small">読み込み中…</span></div>
+
+<h2>稼げる分野のランキング（実測にもとづく）</h2>
+<div class="card" id="board"><span class="small">読み込み中…</span></div>
+
+<h2>GitHub から取り入れた候補</h2>
+<div class="card" id="repos"><span class="small">読み込み中…</span></div>
+
+<script>
+var $=function(s){return document.querySelector(s)};
+var EXAMPLES=[
+ "GitHubでいいリポジトリあれば取り入れるようにして",
+ "AIエージェントが自律で稼げる分野をもっと探して",
+ "市場を測って競合を調べて",
+ "新しい売り物を作って並べて",
+ "値札を下げて",
+ "売り場と買い手を探して",
+ "今いくら稼いだ？"
+];
+$('#chips').innerHTML=EXAMPLES.map(function(e){return '<span class="chip">'+e+'</span>'}).join('');
+$('#chips').addEventListener('click',function(ev){if(ev.target.className==='chip'){$('#txt').value=ev.target.textContent}});
+$('#tok').addEventListener('change',function(){try{sessionStorage.setItem('wa_tok',$('#tok').value)}catch(e){}});
+try{var t=sessionStorage.getItem('wa_tok');if(t)$('#tok').value=t}catch(e){}
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+async function send(run){
+  var text=$('#txt').value.trim(); if(!text){$('#msg').textContent='指示を書いてください';return}
+  var tok=$('#tok').value.trim(); if(!tok){$('#msg').textContent='オーナートークンを入れてください';return}
+  $('#msg').textContent='実行中…'; $('#run').disabled=true; $('#queue').disabled=true;
+  try{
+    var r=await fetch('/api/direct',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+tok},body:JSON.stringify({text:text,run:run})});
+    var j=await r.json();
+    if(run)render(j); else{$('#out').innerHTML='<b>並べました</b> <code>'+esc(j.id)+'</code><div class="small">意図: '+esc(j.intent||'AIで分類')+' — cron が拾って実行します。</div>';loadRecent()}
+    $('#msg').textContent=r.ok?'':'HTTP '+r.status;
+  }catch(e){$('#msg').textContent='通信に失敗しました: '+e.message}
+  $('#run').disabled=false; $('#queue').disabled=false;
+}
+function render(j){
+  var h='<div><b>状態:</b> '+esc(j.state)+' <span class="small">意図 '+esc(j.intent||'?')+'（'+esc(j.label||'')+'） 試行 '+esc(j.tries)+' 分類 '+esc(j.classified_by||'不明')+'</span></div>';
+  if(j.error)h+='<div class="warn" style="margin-top:6px">実行していません: '+esc(j.error)+'</div>';
+  var ran=j.ran||[];
+  if(ran.length){
+    h+='<table style="margin-top:10px"><tr><th>手</th><th>結果</th><th>証拠</th></tr>';
+    ran.forEach(function(x){
+      h+='<tr><td><code>'+esc(x.lever)+'</code><div class="small">'+esc(x.kind)+' / 試行'+esc(x.attempt)+' / '+esc(x.ms)+'ms</div></td><td class="'+(x.ok?'ok':'ng')+'">'+(x.ok?'証拠あり':'証拠なし')+'</td><td><pre>'+esc(JSON.stringify(x.evidence,null,1))+'</pre></td></tr>';
+    });
+    h+='</table>';
+  }
+  if(j.note)h+='<div class="small" style="margin-top:8px">'+esc(j.note)+'</div>';
+  $('#out').innerHTML=h; loadRecent();
+}
+async function loadRecent(){
+  try{
+    var j=await (await fetch('/api/direct?format=text')).text();
+    $('#recent').innerHTML='<pre>'+esc(j)+'</pre>';
+  }catch(e){$('#recent').innerHTML='<span class="small">読めませんでした</span>'}
+}
+async function loadBoard(){
+  try{
+    var j=await (await fetch('/api/frontier/public')).json();
+    var h='<table><tr><th>点</th><th>分野</th><th>支払者（実測）</th></tr>';
+    (j.domains_ranked||[]).forEach(function(b){h+='<tr><td>'+esc(b.score.toFixed(3))+'</td><td>'+esc(b.label)+'<div class="small">'+esc(b.key)+'</div></td><td>'+esc(b.payers||0)+'</td></tr>'});
+    h+='</table><div class="small" style="margin-top:8px">次に試す手: '+ (j.next||[]).map(function(n){return esc(n.label)+' → '+esc(n.action)}).join(' ／ ')+'</div>';
+    h+='<div class="small" style="margin-top:6px">'+esc(j.note||'')+'</div>';
+    $('#board').innerHTML=h;
+  }catch(e){$('#board').innerHTML='<span class="small">読めませんでした</span>'}
+}
+async function loadRepos(){
+  try{
+    var j=await (await fetch('/api/repos/public')).json();
+    var h='<table><tr><th>★</th><th>採用</th><th>リポジトリ</th></tr>';
+    (j.candidates||[]).forEach(function(c){h+='<tr><td>'+esc(c.stars)+'</td><td>'+esc(c.adopt)+'</td><td><a href="'+esc(c.html_url)+'" rel="noopener">'+esc(c.full_name)+'</a><div class="small">'+esc(c.why)+'</div></td></tr>'});
+    h+='</table>';
+    if((j.listing_candidates||[]).length){h+='<div class="small" style="margin-top:8px">出品窓口として抜けたURL: '+(j.listing_candidates||[]).map(function(x){return esc(x.host)}).join(' / ')+'</div>'}
+    $('#repos').innerHTML=h;
+  }catch(e){$('#repos').innerHTML='<span class="small">まだ取り込みは走っていません</span>'}
+}
+$('#run').addEventListener('click',function(){send(true)});
+$('#queue').addEventListener('click',function(){send(false)});
+loadRecent();loadBoard();loadRepos();
+</script></div></body></html>

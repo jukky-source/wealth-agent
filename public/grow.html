@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>自律成長エンジン — いまの壁と、打った手と、その結果</title>
+<meta name="description" content="観測→壁の名指し→打つ→測る→記憶。人に指示されなくても回る自律成長エンジンの公開ボード。自己テストの金額は混ぜない。">
+<style>
+  :root{--bg:#0b0f14;--card:#121922;--line:#1e2836;--tx:#e6edf5;--dim:#8b9bb0;--ac:#4ade80;--ac2:#60a5fa;--warn:#fbbf24}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.7 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif;padding:20px 16px 64px}
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:13px;margin:0 0 18px}
+  .wall{background:linear-gradient(180deg,#131c27,#101722);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:14px 0}
+  .wall b{color:var(--warn)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin:14px 0}
+  .k{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:11px 13px}
+  .k b{display:block;font-size:22px;line-height:1.2}
+  .k span{color:var(--dim);font-size:12px}
+  h2{font-size:15px;margin:24px 0 10px;color:var(--ac2);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:500;font-size:12px}
+  code{background:#0e141c;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+  ul{color:var(--dim);font-size:13px;padding-left:18px}
+  .note{color:var(--dim);font-size:12px;margin-top:18px;border-top:1px solid var(--line);padding-top:12px}
+  a{color:var(--ac2);text-decoration:none}
+  #err{color:var(--warn);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>自律成長エンジン</h1>
+  <p class="sub">観測 → 壁を名指し → 期待値の高い手を選ぶ → 打つ → 測る → 記憶。人に指示されなくても回ります。北極星は<b>外部の人が実際に払った USDC</b>で、自己テストの金額は絶対に混ぜません。</p>
+  <div id="err"></div>
+  <div class="wall" id="wall">読み込み中…</div>
+  <div class="grid" id="stats"></div>
+
+  <h2>レバー（実測の当たり率）</h2>
+  <table>
+    <thead><tr><th>手</th><th>実行</th><th>試行 / 成功 / 失敗</th><th>点</th><th>次</th></tr></thead>
+    <tbody id="levers"></tbody>
+  </table>
+
+  <h2>直近のラウンド</h2>
+  <table>
+    <thead><tr><th>時刻</th><th>打った手</th><th>判定</th><th>メモ</th></tr></thead>
+    <tbody id="rounds"></tbody>
+  </table>
+
+  <h2>自分で越えない線</h2>
+  <ul id="rules"></ul>
+
+  <p class="note">
+    機械から読む: <a href="/api/grow/public">/api/grow/public</a> ／ 全量は <code>GET /api/grow</code>（要認証）<br>
+    無料で公開している索引: <a href="/x402-index">x402 市場索引</a>
+  </p>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const when = (t) => { try { return new Date(t).toLocaleString('ja-JP', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch { return t || ''; } };
+(async () => {
+  try {
+    const d = await (await fetch('/api/grow/public')).json();
+    const n = d.now || {}; const w = d.wall || {};
+    $('wall').innerHTML = `<div style="font-size:12px;color:var(--dim)">いまの壁</div><div style="font-size:17px;margin:4px 0 6px"><b>${esc(w.stage || '—')}</b></div><div style="font-size:13px;color:var(--dim)">${esc(w.why || '')}</div>`;
+    $('stats').innerHTML = [
+      ['外部入金', '$' + (n.external_usd || 0)],
+      ['外部の支払い件数', n.external_events || 0],
+      ['呼び出し', n.hits || 0],
+      ['402 を返した', n.challenges_402 || 0],
+      ['外部の呼び手', n.callers_external || 0],
+      ['掲載できた売り場', n.listed_channels || 0],
+      ['索引した売り手', n.index_hosts === null ? '未測定' : n.index_hosts],
+    ].map(([k, v]) => `<div class="k"><b>${esc(v)}</b><span>${esc(k)}</span></div>`).join('');
+    const lv = d.levers || [];
+    $('levers').innerHTML = lv.map((l) => `<tr>
+      <td><code>${esc(l.key)}</code><br><span style="color:var(--dim);font-size:12px">${esc(l.kind)}</span></td>
+      <td>${l.needs === 'auto' ? '自動' : '要承認'}</td>
+      <td>${l.trials} / ${l.keeps} / ${l.discards}</td>
+      <td>${l.score}</td>
+      <td style="color:var(--dim);font-size:12px">${esc(when(l.next_at))}</td></tr>`).join('') || '<tr><td colspan="5">まだ記録がありません</td></tr>';
+    $('rounds').innerHTML = (d.rounds || []).map((r) => `<tr><td style="white-space:nowrap">${esc(when(r.at))}</td><td><code>${esc(r.lever)}</code></td><td>${esc(r.verdict)}</td><td style="color:var(--dim)">${esc(r.note || '')}</td></tr>`).join('') || '<tr><td colspan="4">まだラウンドがありません</td></tr>';
+    $('rules').innerHTML = (d.rules || []).map((r) => `<li>${esc(r)}</li>`).join('');
+  } catch (e) { $('err').textContent = 'ボードを読めませんでした: ' + e.message; }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>稼げる分野の探索 — wealth-agent</title>
+<style>
+:root{--bg:#0b0d12;--card:#141822;--line:#232a38;--tx:#e8ecf4;--mut:#8b95a8;--ac:#5eead4}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.7 -apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:28px 18px 64px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 10px;color:var(--ac)}
+p.lead{color:var(--mut);font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin:12px 0}
+table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mut);font-weight:600}code{background:#0e1219;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+.small{font-size:12px;color:var(--mut)}pre{background:#0e1219;border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto;font-size:12px;max-height:340px}
+a{color:var(--ac)}
+</style></head><body><div class="wrap">
+<h1>AIエージェントが自律で稼げる分野</h1>
+<p class="lead">「どの分野に支払いが起きているか」を実測（支払者の人数）に紐づけて並べ、原価0で今日試せる一手を名指しします。実測が無い分野は0点です。順位は証拠の重み付けだけで決まり、願望では動きません。</p>
+<div class="card" id="board">読み込み中…</div>
+<h2>まだ試していない分野の提案</h2>
+<div class="card" id="ideas">読み込み中…</div>
+<h2>GitHub から取り入れた候補</h2>
+<div class="card" id="repos">読み込み中…</div>
+<script>
+var $=function(s){return document.querySelector(s)};
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+async function board(){
+  var j=await (await fetch('/api/frontier/public')).json();
+  var h='<table><tr><th>点</th><th>分野</th><th>支払者</th><th>今日の一手</th></tr>';
+  (j.domains_ranked||[]).forEach(function(b){h+='<tr><td>'+esc(b.score.toFixed(3))+'</td><td>'+esc(b.label)+'<div class="small"><code>'+esc(b.key)+'</code></div></td><td>'+esc(b.payers||0)+'</td><td class="small">'+esc((j.next||[]).filter(function(n){return n.domain===b.key})[0]?j.next.filter(function(n){return n.domain===b.key})[0].action:'—')+'</td></tr>'});
+  h+='</table><div class="small" style="margin-top:8px">'+esc(j.note||'')+' 最終実測: '+esc(j.measured_at||'未測定')+'</div>';
+  $('#board').innerHTML=h;
+}
+async function ideas(){
+  var j=await (await fetch('/api/ideas')).json();
+  var h='<table><tr><th>分野</th><th>最初の一手</th><th>根拠</th></tr>';
+  (j.frontier_ideas||[]).slice(0,12).forEach(function(i){h+='<tr><td><code>'+esc(i.domain)+'</code><div class="small">'+esc(i.source)+'</div></td><td>'+esc(i.idea)+'</td><td class="small">'+esc(i.why)+'</td></tr>'});
+  h+='</table>';
+  $('#ideas').innerHTML=h;
+}
+async function repos(){
+  var j=await (await fetch('/api/repos/public')).json();
+  var h='<table><tr><th>★</th><th>採用</th><th>リポジトリ</th></tr>';
+  (j.candidates||[]).forEach(function(c){h+='<tr><td>'+esc(c.stars)+'</td><td>'+esc(c.adopt)+'</td><td><a href="'+esc(c.html_url)+'" rel="noopener">'+esc(c.full_name)+'</a><div class="small">'+esc(c.why)+'</div></td></tr>'});
+  h+='</table>';$('#repos').innerHTML=h;
+}
+board().catch(function(){$('#board').textContent='まだ実測がありません'});
+ideas().catch(function(){$('#ideas').textContent='まだ提案がありません'});
+repos().catch(function(){$('#repos').textContent='まだ取り込みは走っていません'});
+</script></div></body></html>

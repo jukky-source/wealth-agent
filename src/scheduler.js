@@ -21,7 +21,11 @@ export function createScheduler(deps) {
     const report = { source, at: nowIso(), steps: [] };
     // 1回の実行の壁時計の上限。重い段は切り上げて次の cron に回す（進捗は保存済み）。
     const budgetMs = Math.max(20000, Number((env && env.SCHEDULER_BUDGET_MS) || 120000));
-    const outOfTime = () => Date.now() - started > budgetMs;
+    // 収益レーンの取り分を先に確保する。
+    // 実測 2026-10-19T05:00:37Z: engine_tick が予算を食い切り、157秒かけて
+    // watch より後ろの段（scout / 報奨金 / 定時報告 すべて）が time_budget で飛ばされた。
+    const reserveMs = Math.max(15000, Number((env && env.SCHEDULER_RESERVE_MS) || 25000));
+    const outOfTime = () => Date.now() - started > budgetMs - reserveMs;
 
     // 0) 稼ぎ方ストリームを保証（無ければ自動作成。目標入力は不要）
     try {
@@ -46,7 +50,7 @@ export function createScheduler(deps) {
 
     // 2) engine steps
     try {
-      const t = await engine.tick({ maxSteps: maxSteps || Number(env.ENGINE_STEPS_PER_TICK || 3), source, budgetMs: Math.max(10000, budgetMs - (Date.now() - started)) });
+      const t = await engine.tick({ maxSteps: maxSteps || Number(env.ENGINE_STEPS_PER_TICK || 3), source, budgetMs: Math.max(10000, budgetMs - reserveMs - (Date.now() - started)) });
       report.steps.push({ step: 'engine_tick', ...t });
     } catch (e) { report.steps.push({ step: 'engine_tick', error: e.message }); }
 
@@ -88,10 +92,42 @@ export function createScheduler(deps) {
       else report.steps.push({ step: 'watch', checked: w.checked, fired: 0 });
     } catch (e) { report.steps.push({ step: 'watch', error: e.message }); }
 
+    // 5a/5b) 収益レーン（定時報告・報奨金）—— 予算に食われても必ず走らせる。
+    //   実測 2026-10-19T05:15:33Z: engine_tick が予算を食い切ると time_budget 以降が全て飛ばされ、
+    //   収益に直結するこの2段が一度も走らない cron が続いた。どちらも自分の間隔設定（既定6時間）で
+    //   間引かれるので、毎tickここを通しても数秒で終わる。
+    // 5a) SNS/情報収集の定時報告（収益レーン②・予算を先に確保して先頭で回す） — 前回以降の新着を束ねて保存し、届け先があれば送る
+    try {
+      const everyMin = Math.max(60, Number(env.DIGEST_EVERY_MINUTES || 360));
+      const prevDg = await setting(store, 'digest:last_run_at', null);
+      const dueDg = !prevDg || (Date.now() - new Date(prevDg).getTime() >= everyMin * 60e3);
+      if (dueDg) {
+        const { snsDigest } = await import('./agent/snsdigest.js');
+        const d = await snsDigest(store, { env, send: true });
+        await setSetting(store, 'digest:last_run_at', nowIso());
+        report.steps.push({ step: 'sns_digest', new_total: d.total_new, delivered: d.delivered, sources: d.sources.map((x) => `${x.id}:${x.new}`) });
+      } else {
+        report.steps.push({ step: 'sns_digest', skipped: 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'sns_digest', error: e.message }); }
+    // 5b) 報奨金レーンの巡回（収益レーン①・予算を先に確保して先頭で回す） — 「AIが働いて現金」経路の候補集め（送信は人の承認）
+    try {
+      const everyMin = Math.max(60, Number(env.BOUNTY_EVERY_MINUTES || 360));
+      const prevB = await setting(store, 'bounty:last_scan_at', null);
+      const dueB = !prevB || (Date.now() - new Date(prevB).getTime() >= everyMin * 60e3);
+      if (dueB) {
+        const { bountyScan } = await import('./agent/bounty.js');
+        const b = await bountyScan({ store, env, live: true });
+        report.steps.push({ step: 'bounty', scanned: b.scanned, pursue: b.pursue, with_payout: b.with_payout, usd: b.proven_usd, errors: b.errors });
+      } else {
+        report.steps.push({ step: 'bounty', skipped: 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'bounty', error: e.message }); }
+
     if (outOfTime()) {
       report.steps.push({ step: 'time_budget', skipped: 'heavy_stages', budget_ms: budgetMs });
     } else {
-    // 5b) スカウト（自律リサーチ）— 無料の巡回先だけを数箇所ずつ回し、稼げそうな
+    // 5b2) スカウト（自律リサーチ）— 無料の巡回先だけを数箇所ずつ回し、稼げそうな
     //     話を点数化して残す。原価0。投稿・購入・アカウント作成はしない。
     //     毎tickやると外部に迷惑なので、既定3時間おきに間引く。
     try {
@@ -238,6 +274,96 @@ export function createScheduler(deps) {
       }
     } catch (e) { report.steps.push({ step: 'improve', error: e.message }); }
 
+    // 5c-10) sales : 販路ポートフォリオ。「なぜ売上が立たないのか」を1つの販路に絞らず、
+    //       全販路に同じ漏斗（掲載→値札→呼ばれた→払われた→入金）を当て、最初に0になる段を
+    //       壁として名指しし、期待値順に原価0の打ち手を打つ。金と人手の要る所は approve で止める。
+    try {
+      const saEvery = Math.max(10, Number(env.SALES_EVERY_MINUTES || 30));
+      const saLast = await setting(store, 'sales:last_run_at', null);
+      const saDue = !saLast || (Date.now() - new Date(saLast).getTime() >= saEvery * 60e3);
+      if (saDue && env && env.SALES_LOOP_ENABLED !== 'false') {
+        const { salesTick } = await import('./agent/sales.js');
+        const rounds = await salesTick({ store, env });
+        await setSetting(store, 'sales:last_run_at', nowIso());
+        const r = Array.isArray(rounds) ? (rounds[0] || null) : (rounds || null);
+        report.steps.push({
+          step: 'sales',
+          verdict: r && r.verdict,
+          note: r && r.note,
+          walls: r && r.actions ? r.actions.map((a) => `${a.key}:${a.action}${a.ok ? '' : a.blocked ? '(要人の1タップ)' : '(未成立)'}`) : [],
+        });
+      } else {
+        report.steps.push({ step: 'sales', skipped: saDue ? 'disabled' : 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'sales', error: e.message }); }
+
+    // 5c-11) hunt : 販路そのものを増やすループ。既知の索引から隣人ドメインを抽出し、
+    //        標準の発見面で「売り場か売り手か」を見分け、売り場自身が公開APIとして宣言した
+    //        登録先にだけ自動で載せに行く。宣言が無ければ「人の1タップ待ち」としてURLを控える。
+    //        失敗は指数的に再試行する（30分→2h→8h→24h）。原価0。
+    try {
+      const huEvery = Math.max(30, Number(env.HUNT_EVERY_MINUTES || 60));
+      const huLast = await setting(store, 'hunt:last_run_at', null);
+      const huDue = !huLast || (Date.now() - new Date(huLast).getTime() >= huEvery * 60e3);
+      if (huDue && env && env.HUNT_ENABLED !== 'false' && !outOfTime()) {
+        const { huntTick } = await import('./agent/chanhunt.js');
+        const rec = await huntTick({ store, env });
+        await setSetting(store, 'hunt:last_run_at', nowIso());
+        report.steps.push({
+          step: 'hunt', verdict: rec && rec.verdict, note: rec && rec.note,
+          actions: rec && rec.actions ? rec.actions.map((a) => `${a.host}:${a.action}:${a.outcome || ''}`) : [],
+        });
+      } else {
+        report.steps.push({ step: 'hunt', skipped: outOfTime() ? 'no_time' : (huDue ? 'disabled' : 'not_due') });
+      }
+    } catch (e) { report.steps.push({ step: 'hunt', error: e.message }); }
+
+    // 5c-12) xindex : 自前の x402 市場索引。「売り手・値段・生存」を公開面から実測して
+    //        無料で公開する（呼び水・原価0・GETのみ）。全体を一度に読まず、カーソルで少しずつ覆う。
+    try {
+      const xiEvery = Math.max(30, Number(env.XINDEX_EVERY_MINUTES || 180));
+      const xiLast = await setting(store, 'xindex:last_run_at', null);
+      const xiDue = !xiLast || (Date.now() - new Date(xiLast).getTime() >= xiEvery * 60e3);
+      if (xiDue && env && env.XINDEX_ENABLED !== 'false' && !outOfTime()) {
+        const { refreshIndex, probeSlice } = await import('./agent/xindex.js');
+        const r = await refreshIndex({ store, env, pages: Number(env.XINDEX_PAGES_PER_ROUND || 2) });
+        let p = { probed: 0, live: 0, dead: 0 };
+        if (!outOfTime()) p = await probeSlice({ store, env, n: Number(env.XINDEX_PROBE_PER_ROUND || 25) });
+        await setSetting(store, 'xindex:last_run_at', nowIso());
+        report.steps.push({ step: 'xindex', read: r.read, hosts: r.written, cursor: r.cursor, market: r.total, probed: p.probed, live: p.live, dead: p.dead });
+      } else {
+        report.steps.push({ step: 'xindex', skipped: outOfTime() ? 'no_time' : (xiDue ? 'disabled' : 'not_due') });
+      }
+    } catch (e) { report.steps.push({ step: 'xindex', error: e.message }); }
+
+    // 5c-13) grow : 自律成長エンジン。全体を1つの目的関数（外部入金）で見て、いまの壁を名指しし、
+    //        期待値の高い原価0の手を自分で選んで打ち、測って記憶する。指示がなくても回る。
+    try {
+      const gw = await import('./agent/grow.js');
+      const rec = env && env.GROW_ENABLED !== 'false' && !outOfTime() ? await gw.growTick({ store, env }) : null;
+      report.steps.push(rec
+        ? { step: 'grow', wall: rec.wall && rec.wall.stage, lever: rec.lever, verdict: rec.verdict, note: rec.note }
+        : { step: 'grow', skipped: outOfTime() ? 'no_time' : (env && env.GROW_ENABLED === 'false' ? 'disabled' : 'not_due') });
+    } catch (e) { report.steps.push({ step: 'grow', error: e.message }); }
+
+    // 5c-14) 自然言語の指示の実行（direct-1.0）— 並べられた指示を拾い、計画→実行→検証→
+    //       再試行まで走らせる。判別できない指示は何も実行せず blocked として理由を残す。
+    try {
+      const everyMin = Math.max(5, Number(env.DIRECT_EVERY_MINUTES || 20));
+      const last = await setting(store, 'direct:last_tick_at', null);
+      const due = !last || (Date.now() - new Date(last).getTime() >= everyMin * 60e3);
+      if (due) {
+        const { directiveTick } = await import('./agent/director.js');
+        let ai = null;
+        try { const g = await import('./agent/grow.js'); ai = await g.freeLlm(env || {}, store); } catch { ai = null; }
+        const r = await directiveTick({ store, env, deps: {}, ai });
+        await setSetting(store, 'direct:last_tick_at', nowIso());
+        report.steps.push({ step: 'directive', ran: r.ran, pending: r.pending, results: r.results });
+      } else {
+        report.steps.push({ step: 'directive', skipped: 'not_due' });
+      }
+    } catch (e) { report.steps.push({ step: 'directive', error: e.message }); }
+
     // 5c-2) ネタ帳 — scout の実データから「こうやれば稼げる」を作り、読み取りだけで試す。
     //     営業・売り込みの下書きは作らない。原価0（先にお金が要る手順は入れない）。
     try {
@@ -360,6 +486,7 @@ export function createScheduler(deps) {
         report.steps.push({ step: 'social_refill', skipped: due ? 'disabled' : 'not_due' });
       }
     } catch (e) { report.steps.push({ step: 'social_refill', error: e.message }); }
+
 
     }
 

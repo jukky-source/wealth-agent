@@ -149,3 +149,15 @@ html.wa-shell body.has-bnav{ height: var(--wa-h, 100dvh) }
 @media all and (display-mode: standalone){
   html.wa-shell body.has-bnav .bar, html.ios body.has-bnav .bar{ padding-top: calc(max(var(--wa-top, 0px), env(safe-area-inset-top, 0px), 59px) + 16px) }
 }
+
+/* header text must never be vertically clipped by the safe-area padding */
+body.has-bnav .bar{align-items:center;min-height:0;padding-bottom:10px}
+body.has-bnav .who{min-height:0;justify-content:center}
+body.has-bnav .nm{line-height:1.3}
+body.has-bnav .st{line-height:1.35;max-height:none}
+body.has-bnav .chips{padding-right:18px;scroll-padding-right:18px}
+
+/* the header row and its two text lines must never be clipped by a fixed box */
+body.has-bnav .bar{height:auto!important;max-height:none!important;overflow:visible!important}
+body.has-bnav .who{height:auto!important;max-height:none!important;overflow:visible!important}
+body.has-bnav .nm,body.has-bnav .st{height:auto!important;max-height:none!important;overflow:visible!important;line-height:1.4}

@@ -172,16 +172,22 @@ export function x402Enabled(env = {}) {
  */
 export const LISTING = {
   brief: {
+    name: 'Research brief with sources',
+    slug: 'research_brief',
     serviceName: 'Research Brief with Sources',
     description: 'Returns a one-page research brief with cited source URLs, key findings and open gaps for a question. Call it when an agent needs a sourced answer instead of an unsourced guess. Input: {"question": "..."} (5-400 chars, any language).',
     tags: ['research brief', 'web research', 'answer with sources', 'summarize a topic', 'citations'],
   },
   'data-clean': {
+    name: 'Clean a messy CSV table',
+    slug: 'clean_csv_data',
     serviceName: 'CSV Data Cleaner',
     description: 'Cleans a CSV/TSV/JSON table: removes duplicate and empty rows, trims whitespace, and returns the cleaned CSV with before/after quality checks and per-column stats. Call it before analysing or importing messy tabular data. Input: {"data": "<csv text>"}.',
     tags: ['clean csv', 'data cleaning', 'deduplicate rows', 'csv validation', 'data quality'],
   },
   'code-review': {
+    name: 'Review source code for bugs',
+    slug: 'code_review',
     serviceName: 'Code Review',
     description: 'Reviews source code and returns line-numbered findings with severity and a concrete fix, combining deterministic static rules (eval, SQL concat, secrets, shell injection) with an AI review. Call it before merging or running untrusted code. Input: {"code": "...", "language": "javascript"}.',
     tags: ['code review', 'security review', 'static analysis', 'find bugs', 'sql injection'],
@@ -200,59 +206,176 @@ export const LISTING = {
 // free_tier: true の品目は /api/free/<資源> から支払いなしで試せる（無料枠）。
 // 原価がゼロの決定的処理だけを無料にする＝「原価0」の設計制約を壊さずに
 // 初回の支払いという壁を外すための印。一覧は freemium.js がここから読む。
+// ★価格帯の設計: 既定設定の買い手は 1 回 $1 まで（spendControls.maxAmountPerPayment）なので、
+// 上限にちょうど当たる $1.00 を「大口向けの1品」の値付けに使う。これを超えて値付けると
+// 既定設定の買い手には買えない（実測: $3 の品は rejected by spendControls.maxAmountPerPayment ($1)）。
 export const X402_CATALOG = [
-  { resource: 'brief', price_usdc: 250_000, label_ja: '出典つき調査ブリーフ', description: LISTING.brief.description, unit: '件' },
-  { resource: 'data-clean', price_usdc: 500_000, label_ja: '表データの整形・検証', description: LISTING['data-clean'].description, unit: '件' },
-  { resource: 'code-review', price_usdc: 750_000, label_ja: 'コードレビュー（静的＋AI）', description: LISTING['code-review'].description, unit: '件' },
-  { resource: 'url-meta', price_usdc: 30_000, free_tier: true, label_ja: 'URL の見出し情報', description: 'Fetch one public URL and return machine-readable page metadata: HTTP status, title, meta/og description, canonical URL, language, link count and a short text sample. Honest 4xx/5xx statuses are returned as data, not as errors. Use it for link previews, source triage and citation checks.', unit: '件' },
-  { resource: 'csv-json', price_usdc: 20_000, free_tier: true, label_ja: 'CSV⇔JSON 変換', description: 'Convert tabular data between CSV/TSV and a JSON array of objects, in either direction, with detected delimiter and typed columns. Use it when a tool returns CSV but your pipeline needs JSON (or the reverse) and you do not want to run a parser yourself.', unit: '件' },
-  { resource: 'regex', price_usdc: 10_000, free_tier: true, label_ja: '正規表現の一括抽出', description: 'Apply one regular expression to a text blob on the server and return every match with its index and capture groups. Deterministic, so the same input always returns the same answer. Useful for log triage, field extraction and validation at scale.', unit: '件' },
-  { resource: 'diff', price_usdc: 10_000, free_tier: true, label_ja: 'テキスト差分', description: 'Return the line-level diff between two texts as added/removed/unified hunks with counts. Use it to review a patch, compare two API responses, or decide whether two documents actually differ before spending tokens on them.', unit: '件' },
-  { resource: 'rea-report', price_usdc: 500_000, label_ja: 'REA 解析レポート（全種別）', description: 'Full-surface analysis of a target: a website, an API, a shipped JS bundle, or (as a prepared runbook) a local artifact such as an ELF/PE/.NET/Mach-O binary, an Electron app.asar, an APK or a jar. Returns a capability map where every claim carries its evidence, the entry points found, feature flags and client-side secret shapes (shapes only, never values), and an explicit list of what could not be determined. Read-only: the target is never executed, a 401/403 is recorded as auth_required and never bypassed, and the response is never resold. Use it to plan an integration, document an undocumented API, or triage a vendor before you build on it.', unit: '件' },
-  { resource: 'surface-report', price_usdc: 250_000, label_ja: '公開表面の解析レポート', description: 'Inspect one publicly reachable website or API and return a machine-readable capability report: the entry points it exposes (endpoints, forms, feeds, MCP tools), the evidence behind every finding, and an explicit list of what could not be determined. Only public responses are read; a 401/403 is recorded as auth_required and never bypassed. Use it to plan an integration, document an undocumented API, or triage a vendor before you build on it.', unit: '件' },
+  { resource: 'crypto-price', price_usdc: 1_000, free_tier: true, label_ja: '暗号資産のスポット価格', description: 'Spot prices for up to 10 crypto symbols in one call, quoted in the currency you name (default USD). Each price names the venue that answered (Coinbase spot, Kraken ticker as fallback) and the exact URL it was read from, and every symbol that could not be priced is listed in gaps instead of being guessed or silently dropped. Use it to price an asset before a transfer, mark a position, or check a quote your counterparty gave you.', unit: '件' },
+  { resource: 'fx-rates', price_usdc: 1_000, free_tier: true, label_ja: '為替レート（仲値）', description: 'Foreign-exchange reference rates for a base currency and up to 12 target currencies, with the reference date and the source that answered. Primary path is the ECB-based frankfurter.dev feed; if it is unavailable the call falls back to a second provider and says so in the report rather than hiding the substitution. Currencies the source does not publish are listed in gaps. Use it to convert amounts, sanity-check an invoice, or settle a cross-currency budget.', unit: '件' },
+  { resource: 'defi-tvl', price_usdc: 2_000, label_ja: 'DeFi の TVL', description: 'Total value locked read from DefiLlama: pass a protocol slug (for example aave) for that protocol TVL, or omit it to get the top chains ranked by TVL, or filter by one chain. Every figure is the aggregator value at the time of the call, with the source URL attached, and any missing section is listed in gaps. Use it for DeFi due diligence, chain comparison, or a quick read on where liquidity sits.', unit: '件' },
+  { resource: 'dns-lookup', price_usdc: 1_000, free_tier: true, label_ja: 'DNS レコード照会', description: 'Resolve one hostname for one record type (A, AAAA, MX, TXT, NS, CNAME, SOA, CAA) over DNS-over-HTTPS, returning every record with its TTL, the resolver that answered and the DNS response code. It tries a second resolver before giving up, and when nothing comes back it says so with the rcode instead of reporting an empty success. Use it for email deliverability checks, domain ownership evidence, or pre-flight checks before calling an API.', unit: '件' },
+  { resource: 'crypto-hash', price_usdc: 500, label_ja: 'ハッシュ / HMAC 計算', description: 'Deterministic hashing on the server: SHA-256, SHA-384, SHA-512 or SHA-1 over your text, or HMAC with the same digests when you pass a key. Returns the lowercase hex digest and the input byte length; the HMAC key is never echoed back. Same input always gives the same digest, so any third party can recompute and verify it. Do not send secrets you cannot rotate.', unit: '件' },
+  { resource: 'time-convert', price_usdc: 500, free_tier: true, label_ja: '時刻のタイムゾーン変換', description: 'Convert one instant into the local time of up to 12 IANA time zones at once, with the UTC offset in minutes for each, plus the Unix seconds and the canonical ISO-8601 UTC form. Daylight saving is handled by the runtime time-zone database, and an unknown zone is reported in gaps rather than skipped. Use it to schedule across regions, check business hours, or turn an ambiguous timestamp into an unambiguous one.', unit: '件' },
+  { resource: 'diligence-pack', price_usdc: 1_000_000, label_ja: '総合デューデリジェンス一式（大口・$1.00ちょうど）', description: 'One call, one consolidated due-diligence pack: (1) a read-only capability map of one public website or API - entry points, forms, MCP tools, auth behaviour, with the evidence behind every claim; (2) the on-chain balances of one EVM address, read from the chain at a stated block height with contract decimals read on-chain, not assumed. Give either target or both. Everything that could not be measured is listed explicitly in gaps instead of being guessed, and a 401/403 is recorded as auth_required rather than bypassed. Use it to size up a counterparty before you integrate or pay them, or to confirm funds landed before you release work.', unit: '件' },
+  { resource: 'brief', price_usdc: 10_000, label_ja: '出典つき調査ブリーフ', description: LISTING.brief.description, unit: '件' },
+  { resource: 'data-clean', price_usdc: 5_000, label_ja: '表データの整形・検証', description: LISTING['data-clean'].description, unit: '件' },
+  { resource: 'code-review', price_usdc: 10_000, label_ja: 'コードレビュー（静的＋AI）', description: LISTING['code-review'].description, unit: '件' },
+  { resource: 'url-meta', price_usdc: 2_000, free_tier: true, label_ja: 'URL の見出し情報', description: 'Fetch one public URL and return machine-readable page metadata: HTTP status, title, meta/og description, canonical URL, language, link count and a short text sample. Honest 4xx/5xx statuses are returned as data, not as errors. Use it for link previews, source triage and citation checks.', unit: '件' },
+  { resource: 'csv-json', price_usdc: 2_000, free_tier: true, label_ja: 'CSV⇔JSON 変換', description: 'Convert tabular data between CSV/TSV and a JSON array of objects, in either direction, with detected delimiter and typed columns. Use it when a tool returns CSV but your pipeline needs JSON (or the reverse) and you do not want to run a parser yourself.', unit: '件' },
+  { resource: 'regex', price_usdc: 1_000, free_tier: true, label_ja: '正規表現の一括抽出', description: 'Apply one regular expression to a text blob on the server and return every match with its index and capture groups. Deterministic, so the same input always returns the same answer. Useful for log triage, field extraction and validation at scale.', unit: '件' },
+  { resource: 'random', price_usdc: 5_000, label_ja: '検証可能な乱数', description: 'Generate verifiable random values: up to 64 integers in a range, or a fair pick of n items from your own list, derived from a drand League of Entropy beacon round and returned together with the round number, the beacon randomness, its BLS signature and the exact derivation, so any third party can recompute and check the draw. Use it for lotteries, sampling, nonces, seat allocation and tie-breaks where the caller must be able to prove the result was not rigged. If the beacon is unreachable it says so and does not invent numbers. Input: {"n": 3, "min": 1, "max": 100}.', unit: '件' },
+  { resource: 'onchain-balance', price_usdc: 3_000, label_ja: 'オンチェーン残高照会', description: 'Read one EVM address and return its native coin balance and up to five ERC-20 token balances on Base or Ethereum, every figure tied to the block height it was read at. Token decimals are read on-chain from the contract, not assumed, and a token whose read fails is reported as an error rather than as zero. Use it to check a wallet before paying it, to confirm funds arrived, or to size a transfer without running your own node. The caller names the ERC-20 contracts, so no token list goes stale. Input: {"address": "0x...", "chain": "base", "tokens": ["0x..."]}.', unit: '件' },
+  { resource: 'diff', price_usdc: 1_000, free_tier: true, label_ja: 'テキスト差分', description: 'Return the line-level diff between two texts as added/removed/unified hunks with counts. Use it to review a patch, compare two API responses, or decide whether two documents actually differ before spending tokens on them.', unit: '件' },
+  { resource: 'rea-report', price_usdc: 20_000, label_ja: 'REA 解析レポート（全種別）', description: 'Full-surface analysis of a public website, API or shipped JS bundle: maps the capabilities it exposes, its entry points and feature flags, with the evidence behind every claim, and lists what could not be determined. Read-only; a 401/403 is recorded as auth_required and never bypassed. Input: {"url": "https://example.com"}.', unit: '件' },
+  { resource: 'surface-report', price_usdc: 10_000, label_ja: '公開表面の解析レポート', description: 'Inspect one publicly reachable website or API and return a machine-readable capability report: the entry points it exposes (endpoints, forms, feeds, MCP tools), the evidence behind every finding, and an explicit list of what could not be determined. Only public responses are read; a 401/403 is recorded as auth_required and never bypassed. Use it to plan an integration, document an undocumented API, or triage a vendor before you build on it.', unit: '件' },
 ];
 
 // 品目ごとの掲載文（Bazaar / 検索 / 404 で共通に使う）。サービス名は検索語を含む英名。
 Object.assign(LISTING, {
   'url-meta': {
+    name: 'Fetch URL metadata',
+    slug: 'url_metadata',
     serviceName: 'URL Metadata Extractor',
     description: X402_CATALOG.find((x) => x.resource === 'url-meta').description,
     tags: ['url', 'metadata', 'link preview', 'scraping', 'web', 'open graph', 'crawler'],
   },
   'csv-json': {
+    name: 'Convert CSV to JSON',
+    slug: 'csv_to_json',
     serviceName: 'CSV to JSON Converter',
     description: X402_CATALOG.find((x) => x.resource === 'csv-json').description,
     tags: ['csv', 'json', 'convert', 'converter', 'data', 'tsv', 'parser'],
   },
   regex: {
+    name: 'Run a regex on text',
+    slug: 'regex',
     serviceName: 'Regex Extract API',
     description: X402_CATALOG.find((x) => x.resource === 'regex').description,
     tags: ['regex', 'regular expression', 'extract', 'text', 'parser', 'validate', 'grep'],
   },
   diff: {
+    name: 'Diff two texts',
+    slug: 'diff_two_texts',
     serviceName: 'Text Diff API',
     description: X402_CATALOG.find((x) => x.resource === 'diff').description,
     tags: ['diff', 'compare', 'patch', 'text', 'merge', 'review', 'delta'],
   },
+  'rea-report': {
+    name: 'Analyze an app or API surface',
+    slug: 'api_surface_analysis',
+    serviceName: 'Full-Surface Analysis Report',
+    description: X402_CATALOG.find((x) => x.resource === 'rea-report').description,
+    tags: ['api analysis', 'surface analysis', 'integration planning', 'document an api', 'vendor triage', 'reverse engineer api'],
+  },
+  'surface-report': {
+    name: 'Inspect a website or API',
+    slug: 'website_capability_report',
+    serviceName: 'Public Surface Capability Report',
+    description: X402_CATALOG.find((x) => x.resource === 'surface-report').description,
+    tags: ['website analysis', 'api discovery', 'capability report', 'inspect a site', 'endpoint discovery', 'integration planning'],
+  },
+  random: {
+    name: 'Verifiable random number generator',
+    slug: 'verifiable_randomness',
+    serviceName: 'Verifiable Randomness from drand',
+    description: X402_CATALOG.find((x) => x.resource === 'random').description,
+    tags: ['random', 'randomness', 'entropy', 'generator', 'verifiable', 'nonce', 'drand', 'lottery', 'sampling'],
+  },
+  'onchain-balance': {
+    name: 'EVM wallet balance lookup',
+    slug: 'wallet_balance_lookup',
+    serviceName: 'On-chain Wallet Balance',
+    description: X402_CATALOG.find((x) => x.resource === 'onchain-balance').description,
+    tags: ['crypto', 'balance', 'wallet', 'onchain', 'base', 'ethereum', 'erc20', 'rpc', 'check before paying'],
+  },
 });
 
+// デパート化（dept-1.0）で増やした棚の掲載文（検索語を含む英名）。
+Object.assign(LISTING, {
+  'crypto-price': { name: 'Crypto spot price API', slug: 'crypto_spot_price', serviceName: 'Crypto Spot Price', description: X402_CATALOG.find((x) => x.resource === 'crypto-price').description, tags: ['crypto price', 'spot price', 'btc usd', 'market data', 'ticker', 'price feed', 'coinbase', 'kraken'] },
+  'fx-rates': { name: 'Foreign exchange rates API', slug: 'fx_rates', serviceName: 'FX Reference Rates', description: X402_CATALOG.find((x) => x.resource === 'fx-rates').description, tags: ['fx rates', 'exchange rate', 'currency conversion', 'usd jpy', 'forex', 'market data', 'ecb'] },
+  'defi-tvl': { name: 'DeFi TVL lookup', slug: 'defi_tvl', serviceName: 'DeFi Total Value Locked', description: X402_CATALOG.find((x) => x.resource === 'defi-tvl').description, tags: ['tvl', 'defi', 'total value locked', 'defillama', 'chain comparison', 'liquidity', 'market data'] },
+  'dns-lookup': { name: 'DNS record lookup API', slug: 'dns_lookup', serviceName: 'DNS Record Lookup', description: X402_CATALOG.find((x) => x.resource === 'dns-lookup').description, tags: ['dns', 'dns lookup', 'mx record', 'txt record', 'doh', 'domain', 'email deliverability', 'network'] },
+  'crypto-hash': { name: 'SHA-256 and HMAC hash API', slug: 'crypto_hash', serviceName: 'Hash and HMAC Calculator', description: X402_CATALOG.find((x) => x.resource === 'crypto-hash').description, tags: ['sha256', 'hash', 'hmac', 'checksum', 'digest', 'crypto', 'verify'] },
+  'time-convert': { name: 'Time zone converter API', slug: 'time_zone_converter', serviceName: 'Time Zone Converter', description: X402_CATALOG.find((x) => x.resource === 'time-convert').description, tags: ['time zone', 'timezone converter', 'utc offset', 'schedule', 'business hours', 'iana', 'date'] },
+});
+
+
+/**
+ * 自律価格レバー（grow-1.0）。env.X402_OVERRIDES に {"prices":{"diff":500}} が入っていれば、
+ * その品目だけ値札を差し替える。**下げる方向だけ**（カタログ価格を超える値は無視する）＝
+ * エージェントが自分で値上げして買い手を壊す事故を構造的に防ぐ。値上げは人の判断。
+ */
+// ---------------------------------------------------------------- 自律で作った品（データ側）
+// カタログ本体はコード、自律で作った品はデータ（settings x402:extra_catalog の写し）。
+// データ側が指せるのは既存の実行部品（op）だけなので、存在しない処理を売ることはできない。
+export function extraItems(env = {}) {
+  const raw = env && env.X402_EXTRA_CATALOG;
+  if (!raw) return [];
+  let list = null;
+  try { list = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return []; }
+  if (!Array.isArray(list)) return [];
+  return list.filter((i) => i && typeof i.resource === 'string' && typeof i.op === 'string')
+    .map((i) => ({
+      resource: String(i.resource).slice(0, 48),
+      description: clampDesc(String(i.description || ''), 460),
+      label_ja: i.label_ja ? String(i.label_ja).slice(0, 80) : null,
+      unit: i.unit || 'call', free_tier: false,
+      price_usdc: Math.max(0, Math.round(Number(i.price_usdc) || 0)),
+      op: String(i.op), preset: (i.preset && typeof i.preset === 'object') ? i.preset : {},
+      created_by: i.created_by || 'market-1.0', created_at: i.created_at || null, why: i.why || null,
+    }));
+}
+
+/** 売り物の全件（コードの固定品＋自律で作った品）。 */
+export function allItems(env = {}) {
+  return [...X402_CATALOG, ...extraItems(env)];
+}
+
+/** 値札・決済・納品の全区間で同じ引き当てを使う（品目名 → 品）。 */
+export function itemByResource(resource, env = {}) {
+  const r = String(resource == null ? '' : resource);
+  return allItems(env).find((i) => i.resource === r) || null;
+}
+
+export function overrides(env = {}) {
+  const raw = env && env.X402_OVERRIDES;
+  if (!raw) return { prices: {} };
+  try {
+    const o = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return { prices: (o && typeof o.prices === 'object' && o.prices) || {} };
+  } catch { return { prices: {} }; }
+}
 
 /** テスト網（X402_TESTNET=1）では金額を X402_TEST_AMOUNT（既定 0）に置き換える。本番の値札は変えない。 */
 function priceOf(item, env = {}) {
   if (env.X402_TESTNET === '1') { const n = Number(env.X402_TEST_AMOUNT); return Number.isFinite(n) && n >= 0 ? n : 0; }
+  const ov = overrides(env).prices;
+  if (ov && Object.prototype.hasOwnProperty.call(ov, item.resource)) {
+    const v = Number(ov[item.resource]);
+    if (Number.isFinite(v) && v >= 0 && v <= item.price_usdc) return Math.round(v);
+  }
   return item.price_usdc;
 }
 
 /** 買う側に見せる値札。売れない状態なら理由も返す（隠さない）。 */
+/** 最小単位（1e6 = 1 USDC）を人が読む USD 表記へ。toFixed(2) では 0.001 が "0.00" になり、
+ *  買い手には「無料」か「壊れている」と読まれる。小数第6位まで出し、末尾の 0 だけ落とす。 */
+export function usdLabel(atomic) {
+  const n = Number(atomic) || 0;
+  const s = (n / 1e6).toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  return s || '0';
+}
+
 export function catalog(env = {}) {
   const c = cfg(env);
   const why = !c.payTo ? 'X402_PAY_TO が未設定'
     : !c.family ? 'X402_NETWORK が未知'
       : !addressMatches(c.payTo, c.family) ? `受け取り先が ${c.net?.label || c.family} の形式ではありません`
         : null;
-  return X402_CATALOG.map((it) => ({
+  return allItems(env).map((it) => ({
     resource: it.resource, description: it.description, label_ja: it.label_ja || null, unit: it.unit, free_tier: !!it.free_tier,
-    price_usdc: priceOf(it, env), price_label: `${(priceOf(it, env) / 1e6).toFixed(2)} USDC`,
+    price_usdc: priceOf(it, env), price_label: `${usdLabel(priceOf(it, env))} USDC`,
     network: c.caip2, networks: netOptions(env).map((o) => o.caip2), network_name: c.net?.label || null, family: c.family, asset: c.asset,
     pay_to: c.payTo, sellable: x402Enabled(env), blocked_reason: why,
   }));
@@ -339,7 +462,7 @@ export async function preflight(env = {}, { fetchImpl = fetch, useCache = true }
 /** 402 で返す値札（v2 の PAYMENT-REQUIRED ヘッダに Base64 で入れる中身）。 */
 export function challenge(resource, env = {}, { origin = '', feePayer = null, method = 'POST', solanaFeePayer = null } = {}) {
   const c = cfg(env);
-  const item = X402_CATALOG.find((i) => i.resource === resource);
+  const item = itemByResource(resource, env);
   if (!item) return null;
   if (!c.payTo) return { configured: false, reason: 'X402_PAY_TO が未設定のため、x402 の売り物は出していません' };
   if (!c.family) return { configured: false, reason: `X402_NETWORK=${c.networkRaw} を解釈できません` };
@@ -357,9 +480,10 @@ export function challenge(resource, env = {}, { origin = '', feePayer = null, me
       scheme: 'exact', network: o.caip2, asset: o.asset, payTo: o.payTo || c.payTo,
       // v2 の正式名は amount（最小単位）。v1 名も併記して古い facilitator でも読めるようにする。
       amount: String(priceOf(item, env)),
-      maxAmountRequired: String(priceOf(item, env)),
+      // (V2) V1 の maxAmountRequired は出さない — facilitator は V1 形の値札を invalid_payment_requirements で棄却する
+      // maxAmountRequired: String(priceOf(item, env)),
       resource: `${origin}${env.X402_TESTNET === '1' ? '/api/x402-testnet/' : '/api/x402/'}${item.resource}`,
-      description: (LISTING[item.resource] || item).description, mimeType: 'application/json', maxTimeoutSeconds: c.timeout,
+      description: clampDesc((LISTING[item.resource] || item).description), mimeType: 'application/json', maxTimeoutSeconds: c.timeout,
     };
     a.extra = { ...(eip712For(env, o.asset) || {}), ...(o.family === 'svm' && (o.feePayer || fp) ? { feePayer: o.feePayer || fp } : {}) };
     return a;
@@ -370,7 +494,7 @@ export function challenge(resource, env = {}, { origin = '', feePayer = null, me
       x402Version: X402_VERSION,
       extensions: { bazaar: bazaarExtension(item.resource, { method }) },
       error: 'payment required',
-      resource: { url: `${origin}${env.X402_TESTNET === '1' ? '/api/x402-testnet/' : '/api/x402/'}${item.resource}`, description: (LISTING[item.resource] || item).description, mimeType: 'application/json', serviceName: (LISTING[item.resource] || {}).serviceName || 'Wealth Agent', tags: (LISTING[item.resource] || {}).tags || ['x402'] },
+      resource: { url: `${origin}${env.X402_TESTNET === '1' ? '/api/x402-testnet/' : '/api/x402/'}${item.resource}`, name: (LISTING[item.resource] || {}).name || item.resource, description: clampDesc((LISTING[item.resource] || item).description), mimeType: 'application/json', serviceName: (LISTING[item.resource] || {}).serviceName || 'Wealth Agent', tags: (LISTING[item.resource] || {}).tags || ['x402'] },
       accepts,
     },
   };
@@ -384,7 +508,7 @@ export async function verifyAndSettle({ env = {}, resource, paymentHeader, fetch
   const c = cfg(env);
   if (!c.payTo) return { ok: false, error: 'not_configured' };
   if (!paymentHeader) return { ok: false, error: 'no_payment' };
-  const item = X402_CATALOG.find((i) => i.resource === resource);
+  const item = itemByResource(resource, env);
   if (!item) return { ok: false, error: 'unknown_resource' };
   let payment;
   try { payment = JSON.parse(Buffer.from(String(paymentHeader), 'base64').toString('utf8')); }
@@ -481,7 +605,9 @@ export const INPUT_SCHEMAS = {
   'data-clean': { type: 'object', properties: { data: { type: 'string', description: 'Table as CSV / TSV text or a JSON array of objects (max 60,000 chars)' }, format: { type: 'string', enum: ['csv', 'tsv', 'json'], description: 'Optional input format; auto-detected when omitted' } }, required: ['data'] },
   'code-review': { type: 'object', properties: { code: { type: 'string', description: 'Source code to review (10-60,000 chars)' }, language: { type: 'string', description: 'Optional language hint, e.g. javascript, python, go' } }, required: ['code'] },
   'rea-report': { type: 'object', properties: { url: { type: 'string', description: 'Public https URL to analyze (website, API or MCP server)' }, target: { type: 'string', description: 'Alternative: a local file path (app.asar, *.exe, *.so, *.apk). The analysis cannot run server-side, so a ready-to-run runbook is returned instead' }, focus: { type: 'string', description: 'Optional: what you want to learn, e.g. "how do I call their API"' } } },
-  'surface-report': { type: 'object', properties: { url: { type: 'string', description: 'Public https URL to inspect (site root or any public page on it)' }, focus: { type: 'string', description: 'Optional: what you want to learn, e.g. "how do I call their API"' } }, required: ['url'] },
+  'surface-report': { type: 'object', properties: { url: { type: 'string', description: 'Public https URL to inspect (site root or any public page on it)' }, focus: { type: 'string', description: 'Optional: what you want to learn' } }, required: ['url'] },
+  random: { type: 'object', properties: { n: { type: 'integer', description: 'How many values to draw (1-64, default 1)' }, min: { type: 'integer', description: 'Inclusive lower bound of the integer range (default 0)' }, max: { type: 'integer', description: 'Inclusive upper bound of the integer range (default 1000000)' }, choices: { type: 'array', items: { type: 'string' }, description: 'Optional: draw n distinct items from this list instead of integers (max 64)' }, salt: { type: 'string', description: 'Optional string mixed into the derivation so two callers get different draws from the same beacon round' }, round: { type: 'integer', description: 'Optional: pin a past drand round instead of the latest' } } },
+  'onchain-balance': { type: 'object', properties: { address: { type: 'string', description: 'EVM address to read, 0x + 40 hex chars' }, chain: { type: 'string', enum: ['base', 'ethereum'], description: 'Which chain to read (default base)' }, tokens: { type: 'array', items: { type: 'string' }, description: 'Optional ERC-20 contract addresses (0x + 40 hex) to read balances for, max 5' } }, required: ['address'] },
 };
 export const INPUT_EXAMPLES = {
   brief: { question: 'x402 に対応した facilitator を比較して' },
@@ -489,6 +615,8 @@ export const INPUT_EXAMPLES = {
   'code-review': { code: 'function add(a,b){ return a+b }', language: 'javascript' },
   'rea-report': { url: 'https://glama.ai' },
   'surface-report': { url: 'https://example.com' },
+  random: { n: 3, min: 1, max: 100 },
+  'onchain-balance': { address: '0x3291398dC7070472CF2ED2e757246d089760Ca91', chain: 'base' },
 };
 
 /** x402 Bazaar（CDP の索引）に載るための発見メタデータ。402 応答の extensions に入れる。 */
@@ -497,11 +625,23 @@ export const OUTPUT_EXAMPLES = {
   brief: { ok: true, resource: 'brief', status: 'delivered', deliverable: { kind: 'brief', summary: 'Sourced one-page answer', findings: ['finding with citation'], gaps: ['what could not be verified'], sources: [{ title: 'Doc', url: 'https://example.com/doc' }] } },
   'data-clean': { ok: true, resource: 'data-clean', status: 'delivered', deliverable: { kind: 'data-clean', summary: '3 rows -> 2 rows', changes: { duplicates_removed: 1, empty_rows_removed: 0, cells_trimmed: 0 }, csv: 'name,price\nA,100\nB,' } },
   'code-review': { ok: true, resource: 'code-review', status: 'delivered', deliverable: { kind: 'code-review', summary: '8 lines checked', static_findings: [{ rule: 'sqlcat', severity: 'high', line: 6, message: 'SQL string concatenation' }], ai_review: { findings: [{ line: 6, severity: 'high', issue: 'SQL injection', fix: 'Use placeholders', confidence: 'high' }] } } },
+  // 残り6品目の宣言。空 {} だと Bazaar の検証が "must have required property 'ok' …" で
+  // 出品を rejected にする（実測: verify の EXTENSION-RESPONSES が rejected を返した）。
+  'url-meta': { ok: true, resource: 'url-meta', status: 'delivered', deliverable: { kind: 'url-meta', summary: 'https://example.com - HTTP 200', title: 'Example Domain', canonical: 'https://example.com/', language: 'en', links: 1, sample: 'Example Domain' } },
+  'csv-json': { ok: true, resource: 'csv-json', status: 'delivered', deliverable: { kind: 'csv-json', summary: '2 rows -> 2 objects', columns: ['name', 'price'], rows: 2, json: [{ name: 'A', price: '100' }] } },
+  regex: { ok: true, resource: 'regex', status: 'delivered', deliverable: { kind: 'regex', summary: '3 matches', count: 3, matches: [{ index: 0, value: 'a', groups: [] }] } },
+  diff: { ok: true, resource: 'diff', status: 'delivered', deliverable: { kind: 'diff', summary: '2 added, 1 removed', added: 2, removed: 1, hunk_count: 1, unified: '@@ -1,3 +1,4 @@' } },
+  'surface-report': { ok: true, resource: 'surface-report', status: 'delivered', deliverable: { kind: 'surface-report', summary: '6 entry points found', entry_points: [{ url: 'https://example.com/api', method: 'GET', evidence: 'HTTP 200 JSON' }], undetermined: ['private endpoints'] } },
+  'rea-report': { ok: true, resource: 'rea-report', status: 'delivered', deliverable: { kind: 'rea-report', summary: 'capability map ready', capabilities: [{ name: 'public API', evidence: '/api returns HTTP 200' }], undetermined: ['paid features'] } },
+  random: { ok: true, resource: 'random', status: 'delivered', deliverable: { kind: 'random', summary: '3 values from drand round 6568084', values: [42, 7, 91], round: 6568084, randomness: '72a272594e58703b4f4605a0a74558e02f8284ed85bc44a0a04a94c85d4cabce', signature: '860abc15894f1f6305a0034e592c984c3b7a24c9231390ced079bb1ff659861a', derivation: 'value = min + (sha256 expanded hex mod (max-min+1))', verify: 'https://api.drand.sh/public/6568084' } },
+  'onchain-balance': { ok: true, resource: 'onchain-balance', status: 'delivered', deliverable: { kind: 'onchain-balance', summary: 'balance read at block 52828013', block: 52828013, balances: [{ asset: 'native', symbol: 'ETH', raw: '4156903', decimals: 18, value: '0.000000000004156903' }], errors: [] } },
 };
 const DELIVERABLE_PROPS = {
   brief: { kind: { type: 'string' }, summary: { type: 'string' }, findings: { type: 'array', items: {} }, gaps: { type: 'array', items: {} }, sources: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' } } } } },
   'data-clean': { kind: { type: 'string' }, summary: { type: 'string' }, changes: { type: 'object', properties: { duplicates_removed: { type: 'integer' }, empty_rows_removed: { type: 'integer' }, cells_trimmed: { type: 'integer' } } }, csv: { type: 'string' } },
   'code-review': { kind: { type: 'string' }, summary: { type: 'string' }, static_findings: { type: 'array', items: { type: 'object', properties: { rule: { type: 'string' }, severity: { type: 'string' }, line: { type: 'integer' }, message: { type: 'string' } } } }, ai_review: { type: ['object', 'null'] } },
+  random: { kind: { type: 'string' }, summary: { type: 'string' }, values: { type: 'array', items: {} }, round: { type: ['integer', 'null'] }, randomness: { type: ['string', 'null'] }, signature: { type: ['string', 'null'] }, derivation: { type: 'string' }, verify: { type: 'string' }, salt_used: { type: 'boolean' } },
+  'onchain-balance': { kind: { type: 'string' }, summary: { type: 'string' }, block: { type: ['integer', 'null'] }, balances: { type: 'array', items: {} }, errors: { type: 'array', items: {} } },
 };
 export function outputSchema(resource) {
   return {
@@ -518,6 +658,28 @@ export function outputSchema(resource) {
 // Coinbase の検証器は「bazaar.info.input.method が実際のリクエストの method と一致するか」を見る
 // （GET で叩かれた値札に POST と書くと valid=false）。GET でも同じ入力を query で受け付けるので、
 // 叩かれた method に合わせて書く。
+/** Bazaar の検証は output.example に {ok, resource, status, deliverable:{kind,summary}} を要求する。
+ *  決定的ツール層の例は中身だけ（{kind,...}）なので、ここで必ず外枠を被せ、
+ *  「自分の宣言が自分のスキーマに違反 → 出品 rejected」を防ぐ（実測で発生していた）。 */
+function withEnvelope(resource, ex) {
+  const e = ex && typeof ex === 'object' ? ex : {};
+  if (e.ok === true && e.resource && e.status && e.deliverable) return e;
+  const inner = e.deliverable && typeof e.deliverable === 'object' ? e.deliverable : e;
+  return { ok: true, resource, status: 'delivered', deliverable: { ...inner, kind: inner.kind || resource, summary: inner.summary || ('deliverable for ' + resource) } };
+}
+
+/**
+ * 値札（402）に載る説明文を安全な長さに切る。
+ * 実測: 説明文 649 文字 / 値札 7,001 バイトのときだけ CDP Facilitator が
+ * 「'paymentPayload' is invalid」で決済を棄却した（444 文字 / 5,883 バイトは成功）。
+ * 金額は無関係（同じ失敗が $0.001 でも再現）。将来 description を書き足しても
+ * 値札が黙って壊れないよう、ここで上流から切る。
+ */
+export function clampDesc(s, max = 460) {
+  const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
+}
+
 export function bazaarExtension(resource, { method = 'POST' } = {}) {
   const body = INPUT_SCHEMAS[resource] || { type: 'object' };
   const m = String(method || 'POST').toUpperCase() === 'GET' ? 'GET' : 'POST';
@@ -529,7 +691,7 @@ export function bazaarExtension(resource, { method = 'POST' } = {}) {
     ? { type: 'object', required: ['type', 'method'], properties: { type: { type: 'string', const: 'http' }, method: { type: 'string', enum: ['GET'] }, queryParams: body } }
     : { type: 'object', required: ['type', 'method', 'bodyType', 'body'], properties: { type: { type: 'string', const: 'http' }, method: { type: 'string', enum: ['POST'] }, bodyType: { type: 'string', enum: ['json'] }, body } };
   return {
-    info: { input, output: { type: 'json', example: OUTPUT_EXAMPLES[resource] || {} } },
+    info: { input, output: { type: 'json', example: withEnvelope(resource, OUTPUT_EXAMPLES[resource]) } },
     schema: {
       $schema: 'https://json-schema.org/draft/2020-12/schema', type: 'object',
       properties: { input: inputSchema, output: { type: 'object', properties: { type: { type: 'string' }, example: outputSchema(resource) } } },
@@ -545,11 +707,12 @@ export function discoveryFeed(env = {}, origin = '') {
   const items = X402_CATALOG.map((item) => ({
     resource: `${base}/api/x402/${item.resource}`,
     type: 'http',
+    name: (LISTING[item.resource] || {}).name,
     x402Version: X402_VERSION,
     accepts: netOptions(env).map((o) => ({ scheme: 'exact', network: o.caip2, asset: o.asset, amount: String(item.price_usdc), payTo: c.payTo, extra: eip712For(env, o.asset) || undefined })),
     metadata: {
       provider: { name: 'Wealth-A', description: '出典つき調査・表データ整形・コード静的検査をエージェントに売る自律エージェント', category: 'WEB_SEARCH_RESEARCH', tags: ['x402', 'research', 'data-cleaning', 'code-review'], website: base },
-      path: `/api/x402/${item.resource}`, method: 'POST', description: (LISTING[item.resource] || item).description, serviceName: (LISTING[item.resource] || {}).serviceName, tags: (LISTING[item.resource] || {}).tags, mimeType: 'application/json',
+      path: `/api/x402/${item.resource}`, method: 'POST', name: (LISTING[item.resource] || {}).name, description: (LISTING[item.resource] || item).description, serviceName: (LISTING[item.resource] || {}).serviceName, tags: (LISTING[item.resource] || {}).tags, mimeType: 'application/json',
       input: INPUT_SCHEMAS[item.resource] || { type: 'object' },
       supportsVanillax402: true,
     },

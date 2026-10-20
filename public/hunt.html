@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ja"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>販路開拓 — Wealth Agent</title>
+<style>
+:root{--bg:#0b0f14;--card:#141a22;--line:#25303c;--fg:#e8eef6;--dim:#93a4b8;--ok:#33d17a;--warn:#ffb020;--bad:#ff5d5d;--acc:#59b0ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;padding:16px 14px 60px}
+h1{font-size:19px;margin:4px 0 2px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:14px}
+h2{font-size:14px;color:var(--acc);margin:22px 0 8px;letter-spacing:.04em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:8px}
+.row{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.host{font-weight:600;font-size:14px;word-break:break-all}
+.meta{color:var(--dim);font-size:12px;margin-top:4px}
+.pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);white-space:nowrap}
+.p-ok{color:var(--ok);border-color:#1f4d36}
+.p-warn{color:var(--warn);border-color:#5a4420}
+.p-bad{color:var(--bad);border-color:#5a2626}
+a{color:var(--acc)}
+.tap{display:block;background:#17202b;border:1px solid var(--line);border-radius:10px;padding:10px;margin-bottom:8px;text-decoration:none;color:var(--fg)}
+.tap b{font-size:13px;word-break:break-all}
+.tap span{display:block;color:var(--dim);font-size:12px;margin-top:3px}
+.empty{color:var(--dim);font-size:13px;padding:6px 2px}
+</style></head><body>
+<h1>販路開拓ループ</h1>
+<div class="sub" id="sub">読み込み中…</div>
+
+<h2>既知の索引（載っているか）</h2>
+<div id="seeds"></div>
+
+<h2>見つけた売り場</h2>
+<div id="found"></div>
+
+<h2>人の1タップ待ち</h2>
+<div id="taps"></div>
+
+<h2>試行の内訳</h2>
+<div class="card" id="trials">…</div>
+
+<script>
+const f = (u) => fetch(u).then(r => r.json()).catch(() => null);
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+f('/api/hunt/public').then(d => {
+  if(!d){document.getElementById('sub').textContent='取得できませんでした';return;}
+  document.getElementById('sub').textContent = (d.version||'') + ' / ラウンド ' + (d.rounds||0) + ' / 見つけた売り場 ' + (d.discovered_n||0) + ' 件';
+  document.getElementById('seeds').innerHTML = (d.seeds||[]).map(s =>
+    '<div class="card"><div class="row"><span class="host">'+esc(s.label)+'</span><span class="pill '+(s.listed?'p-ok':'p-bad')+'">'+(s.listed?'掲載':'未掲載')+'</span></div>'
+    + '<div class="meta">HTTP '+esc(s.status)+' / '+(s.machine?'自動掲載の余地あり':'提出は人の1タップ')+'</div></div>').join('') || '<div class="empty">なし</div>';
+  document.getElementById('found').innerHTML = (d.discovered||[]).map(x =>
+    '<div class="card"><div class="row"><span class="host">'+esc(x.host)+'</span><span class="pill '+(x.status==='listed'?'p-ok':(x.status==='unreachable'?'p-warn':'p-bad'))+'">'+esc(x.status)+'</span></div>'
+    + '<div class="meta">'+esc(x.looks||'')+(x.x402?' / x402 を喋る':'')+' / 隣人 '+esc(x.neighbors)+' / 試行 '+esc(x.attempts)+' 回 / '+esc(x.autonomy)+'</div></div>').join('') || '<div class="empty">まだ見つかっていません（探索は定期実行されます）</div>';
+  document.getElementById('taps').innerHTML = (d.human_steps||[]).map(h =>
+    '<a class="tap" href="'+esc(h.submit_url)+'" target="_blank" rel="noopener"><b>'+esc(h.submit_url)+'</b><span>'+esc(h.why||'')+'</span></a>').join('') || '<div class="empty">今はありません</div>';
+  const t = d.trials_by_outcome||{};
+  document.getElementById('trials').innerHTML = Object.keys(t).length ? Object.keys(t).map(k=>'<span class="pill" style="margin-right:6px">'+esc(k)+' '+esc(t[k])+'</span>').join('') : '<span class="empty">まだ試行がありません</span>';
+  if(d.last) document.getElementById('trials').innerHTML += '<div class="meta">直近: '+esc(d.last.note||'')+'</div>';
+});
+</script></body></html>

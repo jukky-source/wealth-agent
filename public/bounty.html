@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>報奨金レーン — Wealth Agent</title>
+<style>
+:root{color-scheme:dark}
+html,body{margin:0;background:#0C1116;color:#DFE8F0;font-family:'Noto Sans JP',-apple-system,'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif}
+.wrap{max-width:820px;margin:0 auto;padding:calc(env(safe-area-inset-top,0px) + 18px) 16px calc(env(safe-area-inset-bottom,0px) + 32px)}
+h1{font-size:16px;margin:0 0 4px}
+.meta{font-size:12px;color:#8CA0B3;margin-bottom:14px}
+.card{background:#131A22;border:1px solid #22303F;border-radius:12px;padding:14px;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;gap:10px;font-size:13px;line-height:1.5}
+.money{color:#F0A73A;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:13px;white-space:nowrap}
+.t{font-weight:600}
+.sub{font-size:11.5px;color:#8CA0B3;margin-top:6px;word-break:break-all}
+.v{font-size:10.5px;padding:2px 6px;border-radius:6px;border:1px solid #22303F;color:#8CA0B3}
+.v.pursue{color:#4FC9A6;border-color:#2b5a4c}
+.v.study{color:#F0A73A;border-color:#4a3a1f}
+.v.unbacked{color:#E4674C;border-color:#5a2b22}
+.pf{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;color:#8CA0B3}
+a{color:#5AA6E4;text-decoration:none}
+pre{white-space:pre-wrap;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:12px;line-height:1.6;margin:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>報奨金レーン（バウンティ）</h1>
+  <div class="meta" id="m">読み込み中…</div>
+  <div class="card" style="font-size:11.5px;color:#8CA0B3;line-height:1.7">「証拠」は、そのリポジトリで<b>実際に bounty が支払われた履歴</b>・資金源（FUNDING）の開示・活動の新しさ・★の数から機械的に出した0〜100の点数です。40未満は <span class="v unbacked">unbacked</span>（額面だけで支払いの裏付けなし）として「着手推奨」から外します。</div>
+<div id="list"></div>
+  <div class="card"><div class="t">生データ</div><div class="sub">機械可読: <a href="/api/bounty/public">/api/bounty/public</a>（人向けの一覧はこのページが読みます）</div></div>
+</div>
+<script>
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+(async () => {
+  const m = document.getElementById('m'), list = document.getElementById('list');
+  try {
+    const d = await (await fetch('/api/bounty/public', { cache: 'no-store' })).json();
+    const t = d.totals || {};
+    m.textContent = `最終巡回 ${d.last_scan_at || '未実行'} ・ 候補 ${t.n || 0} 件 ・ 金額が読めたもの ${t.paid || 0} ・ 着手推奨 ${t.pursue || 0} ・ 証拠不足 ${t.unbacked || 0}`;
+    if (!(d.leads || []).length) { list.innerHTML = '<div class="card">まだ候補がありません（次の巡回で作られます）</div>'; return; }
+    list.innerHTML = d.leads.map((l) => `
+      <div class="card">
+        <div class="row">
+          <div class="t">${esc(String(l.title || '').slice(0, 130))}</div>
+          <div class="money">${l.payout_usd ? '$' + esc(l.payout_usd) : '—'}</div>
+        </div>
+        <div class="sub">${esc(l.repo || '')} ・ <span class="v ${esc(l.verdict)}">${esc(l.verdict)}</span> ・ 点 ${esc(l.score)} ・ <span class="pf">証拠 ${l.proof == null ? '-' : esc(l.proof)}${l.flags ? '（' + esc(l.flags) + '）' : ''}</span>${l.stars != null ? ' ・ ' + esc(l.stars) + '★' + (l.paid_closed ? ' ・ 支払い実績' + esc(l.paid_closed) : '') : ''}</div>
+        <div class="sub">${esc(l.reason || '')}</div>
+        <div class="sub"><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.url)}</a></div>
+      </div>`).join('');
+  } catch (e) { m.textContent = '取得できませんでした: ' + (e && e.message ? e.message : e); }
+})();
+</script>
+</body>
+</html>

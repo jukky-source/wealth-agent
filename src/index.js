@@ -3,6 +3,7 @@
 // (server/local.mjs) because everything here is web-standard.
 
 import { Store, ensureSchema } from './db.js';
+import { validateOrder as _preValidate } from './agent/fulfill.js';
 import { AIRouter } from './ai/router.js';
 import { Memory } from './memory/memory.js';
 import { createResearch } from './research/web.js';
@@ -24,7 +25,9 @@ import { createImageGen } from './ai/imagegen.js';
 import { createFleet } from './engine/fleet.js';
 import { createRunner } from './runner/queue.js';
 import { marketSnapshot } from './agent/markets.js';
+import { venueBoard, venueCounts, venueAutoQueue, venueHumanQueue, venueBoardText, venueSnapshotLoad, probeVenues, venueRegistryPlan } from './agent/venues.js';
 import { freeInference, laneStatus } from './agent/inference.js';
+import { skillCatalog, agentsJson } from './agent/skillpacks.js';
 
 const wiredByEnv = new WeakMap();
 const schemaDone = new WeakSet();
@@ -131,6 +134,25 @@ function matchRoute(routes, method, pathname) {
 
 export default {
   async fetch(request, env, ctx) {
+    // 自律価格レバー（grow-1.0）: D1 に置いた値札の上書きを、値札を出す前に env へ注入する。
+    // 上書きが読めなければカタログ価格のまま（下げる方向のみ・原価0）。D1 だけを見るので軽い。
+    try {
+      if (env && env.DB && request.url.indexOf('/api/x402') !== -1) {
+        const _po = await env.DB.prepare("SELECT value FROM settings WHERE key='grow:price_json'").first();
+        // 自律で作った品（market-1.0 が出品したもの）を env に載せる。カタログはコードのまま、
+        // 生成物だけをデータで足す。読み取りに失敗しても固定品だけで動く（何も足さない）。
+        if (!env.X402_EXTRA_CATALOG) {
+          try {
+            const _er = await env.DB.prepare("SELECT value FROM settings WHERE key='x402:extra_catalog'").first();
+            let _val = _er && _er.value;
+            for (let k = 0; k < 2 && typeof _val === 'string'; k++) { try { _val = JSON.parse(_val); } catch { break; } }
+            if (Array.isArray(_val) && _val.length) env = { ...env, X402_EXTRA_CATALOG: JSON.stringify(_val) };
+          } catch { /* 足せなくても固定品は売れる */ }
+        }
+        if (_po && _po.value) env = { ...env, X402_OVERRIDES: _po.value };
+      }
+    } catch { /* 読めなければカタログ価格で続行 */ }
+
     const url = new URL(request.url);
     // テスト専用: /api/x402-testnet/<品目> はテスト網(Base Sepolia)+金額0で決済経路だけを実測する。
     // X402_TESTNET_ENABLED=1 のときだけ開く（本番は 0 で 404）。本番の /api/x402/ は一切変わらない。
@@ -187,42 +209,45 @@ export default {
     if (url.pathname === '/llms.txt') {
       const origin = url.origin;
       // 品目の一覧はカタログから作る。値札を変えても品目を足しても、ここが古くならない。
-      const { X402_CATALOG, LISTING, INPUT_EXAMPLES } = await import('./agent/x402.js');
+      const { X402_CATALOG, LISTING, INPUT_EXAMPLES, usdLabel } = await import('./agent/x402.js');
       const menu = X402_CATALOG.map((it) => {
-        const usd = (it.price_usdc / 1e6).toFixed(2);
+        const usd = usdLabel(it.price_usdc);
         const body = JSON.stringify(INPUT_EXAMPLES[it.resource] || {});
         return `- POST ${origin}/api/x402/${it.resource} — ${usd} USDC. ${it.description} body: ${body}`;
       }).join('\n');
       // 無料枠（決定的4品目）。そのまま叩けるURLを例つきで出す＝読んだ側が即呼べる。
       const freeMenu = X402_CATALOG.filter((it) => it.free_tier).map((it) => {
         const ex = Object.entries(INPUT_EXAMPLES[it.resource] || {}).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&');
-        return `- GET ${origin}/api/free/${it.resource}?${ex} — 無料。${it.description}`;
+        return `- GET ${origin}/api/free/${it.resource}?${ex} — free. ${it.description}`;
       }).join('\n');
       const txt = `# ${env.AGENT_NAME || 'Wealth Agent'}
 
-> 自律収益エージェント。x402（HTTP 402 / USDC）で API を売ります。アカウント登録も API キーも不要。
+> Pay-per-call HTTP APIs for AI agents, settled in USDC over x402 (HTTP 402). No account signup and no API key.
 
-## 無料で試せるもの（支払い不要・アカウント不要。IPごと・UTC日ごとに上限あり）
-- GET ${origin}/api/free — 無料枠の一覧（そのまま叩ける例つき）
+## Try for free (no payment, no account; per-IP and per-UTC-day limits)
+- GET ${origin}/api/free — the free tier, with copy-paste ready examples
 ${freeMenu}
 
-## 買えるもの（POST・USDC 建て・${X402_CATALOG.length} 品目）
+## Buy per call (POST, priced in USDC, ${X402_CATALOG.length} tools)
 ${menu}
 
-無料枠はモデルを使わない決定的な品目だけです（原価がゼロだから成立します）。上限に達したら、同じ品目を
-/api/x402/ に PAYMENT-SIGNATURE（x402 v2 / USDC）を添えて呼ぶと回数制限なしで使えます。
-url-meta は公開ページのみ（内部アドレスは取得しません）。
+The free tier only covers deterministic tools that use no model, which is why it can exist at zero marginal cost.
+Once you hit the limit, call the same tool at /api/x402/ with a PAYMENT-SIGNATURE header (x402 v2 / USDC) for
+unmetered use. url-meta fetches public pages only and never internal addresses.
 
-支払いは PAYMENT-SIGNATURE ヘッダ（x402 v2・exact スキーム）。対応チェーン: Base / Arbitrum / Polygon / Avalanche / Sei / X Layer（USDC）。
+Payment is the PAYMENT-SIGNATURE header (x402 v2, exact scheme). Supported chains: Base / Arbitrum / Polygon / Avalanche / Sei / X Layer (USDC) / Solana.
 
-## 発見（Discovery）
-- ${origin}/.well-known/x402 — カタログ（価格・受取先・チェーン）
-- ${origin}/.well-known/agent-registration.json — ERC-8004 エージェント登録ファイル
-- ${origin}/.well-known/ai-tool/wealth-agent-<resource>.json — ERC-8257 ツールマニフェスト（7品目。価格・受取先を CAIP-19/CAIP-10 で宣言）
-- ${origin}/.well-known/mcp/server-card.json — MCP サーバーカード（8ツール）
-- ${origin}/api/x402/discovery/resources — 一覧
-- ${origin}/.well-known/agent-card.json — A2A エージェントカード
-- ${origin}/api/a2a , ${origin}/api/mcp — エージェント間プロトコル
+## Discovery
+- ${origin}/.well-known/x402 — catalog with price, payTo and networks
+- ${origin}/openapi.json — OpenAPI 3.1 with per-route x-payment-info (price, asset, payTo, network)
+- ${origin}/agents.json — agent card (machine-readable). Read order: /robots.txt -> /.well-known/x402 -> /openapi.json -> /agents.json -> /llms.txt
+- ${origin}/api/skills/catalog.json — mapping to free agent skills (zero cost)
+- ${origin}/.well-known/agent-registration.json — ERC-8004 agent registration file
+- ${origin}/.well-known/ai-tool/wealth-agent-<resource>.json — ERC-8257 tool manifests (price and payTo declared as CAIP-19/CAIP-10)
+- ${origin}/.well-known/mcp/server-card.json — MCP server card
+- ${origin}/api/x402/discovery/resources — resource list
+- ${origin}/.well-known/agent-card.json — A2A agent card
+- ${origin}/api/a2a , ${origin}/api/mcp — agent-to-agent protocols
 `;
       return new Response(txt, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
     }
@@ -248,12 +273,12 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     if (url.pathname === '/sitemap.xml') {
       const origin = url.origin;
       const { X402_CATALOG: CAT_S} = await import('./agent/x402.js');
-      const urls = ['/', '/llms.txt', '/.well-known/x402', '/openapi.json', ...CAT_S.map((it) => `/api/x402/${it.resource}`)];
+      const urls = ['/', '/llms.txt', '/agents.json', '/x402-index', '/grow', '/api/xindex/summary', '/api/xindex/hosts', '/api/grow/public', '/api/skills/catalog.json', '/.well-known/x402', '/openapi.json', ...CAT_S.map((it) => `/api/x402/${it.resource}`)];
       const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${origin}${u}</loc></url>`).join('\n')}\n</urlset>\n`;
       return new Response(xml, { status: 200, headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
     }
     if (url.pathname === '/robots.txt') {
-      return new Response('User-agent: *\nAllow: /\n\n# AI agents / buyers: /llms.txt, /openapi.json, /.well-known/x402.json describe the paid endpoints\n', { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
+      return new Response('User-agent: *\nAllow: /\n\n# Crawler read order: /robots.txt -> /.well-known/x402 -> /openapi.json -> /agents.json -> /llms.txt\n# AI agents / buyers: /llms.txt, /openapi.json, /.well-known/x402.json, /agents.json, /api/skills/catalog.json\n', { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'public, max-age=3600' } });
     }
 
     // /mcp と /a2a は「プロトコルの入口」なので、SPA のフォールバックより先に通す。
@@ -340,7 +365,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       return handleFree(request, env, url, fdeps);
     }
 
-    if (!url.pathname.startsWith('/api/') && url.pathname !== '/mcp' && url.pathname !== '/a2a') {
+    if (!url.pathname.startsWith('/api/') && url.pathname !== '/mcp' && url.pathname !== '/a2a' && url.pathname !== '/agents.json') {
       // Static PWA assets (Cloudflare): fall back to the index for SPA routes.
       if (env.ASSETS && typeof env.ASSETS.fetch === 'function') {
         if (url.pathname === '/today.json') {
@@ -349,7 +374,9 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
           try { store = wire(env).store; } catch {}
           return new Response(JSON.stringify(await todayDigest(store, { publicOnly: true })), { headers: { 'content-type': 'application/json; charset=utf-8' } });
         }
-        const PRETTY = { '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html', '/loop': '/loop.html', '/lab': '/lab.html', '/improve': '/improve.html' };
+        const PRETTY = {
+  '/bounty': '/bounty.html',
+  '/digest': '/digest.html', '/today': '/today.html', '/surface': '/surface.html', '/rea': '/rea.html', '/loop': '/loop.html', '/lab': '/lab.html', '/improve': '/improve.html', '/sales': '/sales', '/hunt': '/hunt' };
         const pretty = PRETTY[url.pathname] || url.pathname;
         const res = await env.ASSETS.fetch(pretty === url.pathname ? request : new Request(new URL(pretty, url.origin).toString(), request));
         if (res.status === 404) {
@@ -398,7 +425,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 無料枠も「不特定の買い手」向け。トークンでは塞がない（塞ぐと誰も試せない）。
     const isFreeTier = url.pathname === '/api/free' || url.pathname.startsWith('/api/free/');
     if (!isWebhook && !isPaywall && !isPairing && !isFreeTier && !authorized(request, env)) {
-      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/improve/public', '/api/rea/queue', '/api/selfreport'];
+      const OPEN = ['/api/surface', '/api/surface/help', '/api/today/public', '/api/rea', '/api/rea/help', '/api/rea/plan', '/api/rea/runs', '/api/loop/public', '/api/lab/loop/public', '/api/improve/public', '/api/sales/public', '/api/hunt/public', '/api/contact', '/api/grow/public', '/api/market', '/api/market/public', '/api/frontier/public', '/api/repos/public', '/api/direct/public', '/api/ideas', '/api/listings/public', '/api/venues/public', '/api/grow/help', '/api/hunt/help', '/api/sales/help', '/api/loop/help', '/api/improve/help', '/api/kpi', '/api/kpi/public', '/api/xindex/summary', '/api/xindex/hosts', '/api/xindex/help', '/api/rea/queue', '/api/selfreport', '/api/skills/catalog', '/api/skills/catalog.json', '/api/digest/public', '/api/bounty/public', '/agents.json'];
       if (!OPEN.includes(url.pathname)) return json({ ok: false, error: 'unauthorized', hint: 'Authorization: Bearer <OWNER_TOKEN> が必要です' }, 401);
     }
 
@@ -752,9 +779,300 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // 今日なにを拾い、何を試し、何が分かったか — 1画面ぶんのデータ（/today が読む）。
     // 全般の改善ループ — FX だけでなく、ファネル・ネタ帳・特典・REA・収集・売り物まで
     // 同じ形（測る → 壁を名指し → 手を変える → 記録する）でエージェント自身が回す。
+    // --- 販路ポートフォリオ（sales loop）: 「なぜ売れないか」を販路ごとに測り、全販路を同時に打つ ---
+    //   GET  /api/sales          : 状態（?format=text / ?help=1）
+    //   GET  /api/sales/public   : 認証なしの要約（販路ボード）
+    //   POST /api/sales          : その場で1ラウンド（?n=数）
+    if (url.pathname === '/api/sales' || url.pathname === '/api/sales/help' || url.pathname === '/api/sales/public' || url.pathname === '/api/sales/run') {
+      const sl = await import('./agent/sales.js');
+      if (url.pathname === '/api/sales/help' || url.searchParams.get('help') === '1') return json({ ok: true, ...sl.salesHelp() });
+      if (url.pathname === '/api/sales/run' || (url.pathname === '/api/sales' && request.method === 'POST')) {
+        const rounds = await sl.salesTick({ store: deps.store, env, n: Number(url.searchParams.get('n') || 0) || undefined });
+        return json({ ok: true, rounds });
+      }
+      const st = await sl.salesStatus(deps.store, env);
+      if (url.pathname === '/api/sales/public') return json({ ok: true, ...sl.salesPublic(st) });
+      if (url.searchParams.get('format') === 'text') return new Response(sl.salesText(st), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+      return json({ ok: true, ...st });
+    }
+
+    // --- 販路開拓（channel hunt）: まだ知らない売り場を自分で見つけ、載せられる所に載せる ---
+    //   GET  /api/hunt           : 状態（?format=text / ?help=1）
+    //   GET  /api/hunt/public    : 認証なしの要約
+    //   POST /api/hunt           : その場で1ラウンド（?n=数 / ?discover=1 で探索を強制）
+    if (url.pathname === '/api/hunt' || url.pathname === '/api/hunt/help' || url.pathname === '/api/hunt/public' || url.pathname === '/api/hunt/run') {
+      const hn = await import('./agent/chanhunt.js');
+      if (url.pathname === '/api/hunt/help' || url.searchParams.get('help') === '1') return json({ ok: true, ...hn.huntHelp() });
+      if (url.pathname === '/api/hunt/run' || (url.pathname === '/api/hunt' && request.method === 'POST')) {
+        const rec = await hn.huntRound({ store: deps.store, env, n: Number(url.searchParams.get('n') || 0) || 3, discoverNow: url.searchParams.get('discover') === '1' });
+        return json({ ok: true, rounds: [rec] });
+      }
+      const st = await hn.huntStatus(deps.store, env);
+      if (url.pathname === '/api/hunt/public') return json({ ok: true, ...hn.huntPublic(st) });
+      if (url.searchParams.get('format') === 'text') return new Response(hn.huntText(st), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+      return json({ ok: true, ...st });
+    }
+
     //   GET  /api/improve          : 状態（?format=text / ?help=1）
     //   GET  /api/improve/public   : 認証なしの要約
     //   POST /api/improve          : その場で1〜nラウンド（?lane=key&n=数）
+    //   POST /api/contact       : 外部エージェント／売り場からの連絡窓口（登録時に提出する webhook・認証不要）
+    if (url.pathname === '/api/contact') {
+      let b = {};
+      try { b = await request.json(); } catch { b = {}; }
+      const at = new Date().toISOString();
+      const clip = (v, n) => (v == null ? '' : String(typeof v === 'string' ? v : JSON.stringify(v)).slice(0, n));
+      const rec = {
+        id: 'cm_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+        at,
+        from_ref: clip(b.from || b.origin || b.url || b.source || '', 200),
+        subject: clip(b.subject || b.topic || b.kind || 'contact', 200),
+        message: clip(b.message || b.body || b.note || b.detail || '', 4000),
+        raw: clip(b.raw === undefined ? b : b.raw, 2000),
+        ua: clip(request.headers.get('user-agent') || '', 180),
+      };
+      const st = (deps && deps.store) || null;
+      let saved = false;
+      if (st) {
+        const sql = 'INSERT INTO contact_msgs (id, at, from_ref, subject, message, raw, ua) VALUES (?, ?, ?, ?, ?, ?, ?)';
+        const params = [rec.id, rec.at, rec.from_ref, rec.subject, rec.message, rec.raw, rec.ua];
+        try { await st.run(sql, params); saved = true; } catch (e1) {
+          try { await st.run(sql, ...params); saved = true; } catch { saved = false; }
+        }
+      }
+      return json({ ok: true, received_at: rec.at, saved, id: rec.id, note: 'Wealth Agent contact endpoint. Automated agents welcome; we also publish x402/MCP details at /agents.json and /mcp.' });
+    }
+    // --- 自律成長エンジン（grow-1.0）: 全体を1つの目的関数で見て、いまの壁を名指しし、
+    //     期待値の高い原価0の手を自分で選んで打ち、測って記憶する。人に指示されなくても回る。
+    //   GET  /api/grow           : 状態（?format=text / ?help=1）
+    //   GET  /api/grow/public    : 認証なしの要約（公開ボード /grow.html が読む）
+    //   POST /api/grow           : その場で1ラウンド（?n=打つ手の数 / ?lever=手を指定）
+    if (url.pathname === '/api/grow' || url.pathname === '/api/grow/help' || url.pathname === '/api/grow/public' || url.pathname === '/api/grow/run') {
+      const gw = await import('./agent/grow.js');
+      if (url.pathname === '/api/grow/help' || url.searchParams.get('help') === '1') return json({ ok: true, ...gw.growHelp() });
+      if (url.pathname === '/api/grow/run' || (url.pathname === '/api/grow' && request.method === 'POST')) {
+        const rec = await gw.growRound({ store: deps.store, env, n: Number(url.searchParams.get('n') || 0) || undefined, lever: url.searchParams.get('lever') || null });
+        return json({ ok: true, rounds: [rec] });
+      }
+      const gst = await gw.growStatus(deps.store, env);
+      if (url.pathname === '/api/grow/public') return json({ ok: true, ...gw.growPublic(gst) });
+      if (url.searchParams.get('format') === 'text') return new Response(gw.growText(gst), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+      return json({ ok: true, ...gst });
+    }
+
+    // --- x402 市場索引（xindex-1.0）: 公開ディスカバリを読んで作る自前のデータ商品の入口。
+    //     索引そのものは**無料で公開**する（呼び水）。深い操作（取り込み・生存測定）は認証必須。
+    if (url.pathname === '/api/xindex' || url.pathname === '/api/xindex/help' || url.pathname === '/api/xindex/summary'
+        || url.pathname === '/api/xindex/hosts' || url.pathname === '/api/xindex/refresh' || url.pathname === '/api/xindex/probe') {
+      const xi = await import('./agent/xindex.js');
+      if (url.pathname === '/api/xindex/help' || url.searchParams.get('help') === '1') return json({ ok: true, ...xi.xindexHelp() });
+      if (url.pathname === '/api/xindex/refresh') {
+        const r = await xi.refreshIndex({ store: deps.store, env, pages: Number(url.searchParams.get('pages') || 0) || undefined });
+        return json({ ok: true, refresh: r });
+      }
+      if (url.pathname === '/api/xindex/probe') {
+        const p = await xi.probeSlice({ store: deps.store, env, n: Number(url.searchParams.get('n') || 0) || undefined });
+        return json({ ok: true, probe: p });
+      }
+      const xs = await xi.xindexStatus(deps.store);
+      if (url.pathname === '/api/xindex/summary') return json({ ok: true, ...xi.xindexPublic(xs) });
+      if (url.pathname === '/api/xindex/hosts') {
+        const hosts = await xi.topHosts(deps.store, {
+          q: url.searchParams.get('q') || '', limit: Number(url.searchParams.get('limit') || 25),
+          live: url.searchParams.get('live') === '1', sort: url.searchParams.get('sort') || 'n',
+        });
+        return json({ ok: true, hosts, summary: { services_indexed: xs.services_indexed, hosts_known: xs.hosts_known, last_at: xs.crawl && xs.crawl.last_at } });
+      }
+      if (url.searchParams.get('format') === 'text') return new Response(xi.xindexText(xs), { headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+      return json({ ok: true, ...xs });
+    }
+
+
+    // market-1.0 — 市場の真実（公開は読み取りのみ。走査と出品はオーナーだけ）
+    // --- frontier-1.0 / repo-1.0 / direct-1.0（分野の探索・GitHub取り込み・自然言語の指示）
+    {
+      const J = (o, st = 200) => new Response(JSON.stringify(o, null, 2), { status: st, headers: { 'content-type': 'application/json; charset=utf-8', 'access-control-allow-origin': '*', 'cache-control': 'no-store' } });
+      const T = (b, st = 200) => new Response(String(b), { status: st, headers: { 'content-type': 'text/plain; charset=utf-8', 'access-control-allow-origin': '*' } });
+      const body = async () => { try { return (await request.json()) || {}; } catch { return {}; } };
+      const fmt = url.searchParams.get('format') === 'text';
+      const wantHelp = url.searchParams.get('help') === '1';
+      const base = new URL(request.url).origin;
+      if (url.pathname.startsWith('/api/frontier')) {
+        const fr = await import('./agent/frontier.js');
+        if (url.pathname === '/api/frontier' && request.method === 'GET') {
+          if (wantHelp) return T(fr.frontierHelp(base));
+          const st = await fr.frontierStatus(deps.store);
+          return fmt ? T(fr.frontierText(st)) : J(st);
+        }
+        if (url.pathname === '/api/frontier/public' && request.method === 'GET') return J(fr.frontierPublic(await fr.frontierStatus(deps.store)));
+        if (url.pathname === '/api/frontier/think' && request.method === 'POST') {
+          const b = await body();
+          const { freeLlm } = await import('./agent/grow.js');
+          let ai = null; try { ai = await freeLlm(env || {}, deps.store); } catch { ai = null; }
+          const r = await fr.frontierThink({ store: deps.store, env: env || {}, deps, ai, force: b.force !== false });
+          return J({ ok: r.ok, skipped: r.skipped || null, at: r.at, measured: r.measured, measured_at: r.measured_at || null,
+            top: r.top, next: r.next, board: (r.board || []).slice(0, 6), ai_available: r.ai_available, ai_error: r.ai_error || null, new_domains_from_ai: r.new_domains_from_ai, ideas_saved: r.ideas_saved });
+        }
+        return J({ ok: false, error: 'not_found' }, 404);
+      }
+      if (url.pathname.startsWith('/api/repos')) {
+        const rp = await import('./agent/repo.js');
+        if (url.pathname === '/api/repos' && request.method === 'GET') {
+          if (wantHelp) return T(rp.repoHelp(base));
+          const st = await rp.repoStatus(deps.store);
+          return fmt ? T(rp.repoText(st)) : J(st);
+        }
+        if (url.pathname === '/api/repos/public' && request.method === 'GET') {
+          const st = await rp.repoStatus(deps.store, { limit: 24 });
+          return J({ ok: true, version: st.version, last_run_at: st.last_run_at, by_adopt: st.by_adopt,
+            candidates: st.candidates.map((c) => ({ full_name: c.full_name, stars: c.stars, adopt: c.adopt, kind: c.kind, why: c.why, html_url: c.html_url })),
+            listing_candidates: st.listing_candidates });
+        }
+        if (url.pathname === '/api/repos/intake' && request.method === 'POST') {
+          const b = await body();
+          const r = await rp.repoIntake({ store: deps.store, env: env || {}, force: b.force !== false, limit: b.limit || null, readmes: b.readmes || null });
+          return J({ ok: r.ok, skipped: r.skipped || null, at: r.at, scanned: r.scanned, readmes: r.readmes, adopt: r.adopt,
+            listing_candidates: r.listing_candidates, payto_found: r.payto_found, errors: r.errors, top: r.top, items: (r.items || []).slice(0, 20) });
+        }
+        return J({ ok: false, error: 'not_found' }, 404);
+      }
+      if (url.pathname.startsWith('/api/direct')) {
+        const dr = await import('./agent/director.js');
+        if (url.pathname === '/api/direct' && request.method === 'GET') {
+          if (wantHelp) return T(dr.directHelp(base));
+          const st = await dr.directStatus(deps.store);
+          return fmt ? T(dr.directText(st)) : J(st);
+        }
+        if (url.pathname === '/api/direct' && request.method === 'POST') {
+          const b = await body();
+          const text = b.text || b.instruction || b.q || '';
+          if (!text) return J({ ok: false, error: 'text_required', hint: 'POST {"text":"...","run":true}' }, 400);
+          if (b.run === false) { const q = await dr.queueDirective({ store: deps.store, text }); return J(q); }
+          const { freeLlm } = await import('./agent/grow.js');
+          let ai = null; try { ai = await freeLlm(env || {}, deps.store); } catch { ai = null; }
+          const r = await dr.runDirective({ store: deps.store, env: env || {}, deps, text, ai, intent: b.intent || null });
+          return J(r, r.ok ? 200 : 200);
+        }
+        if (url.pathname === '/api/direct/public' && request.method === 'GET') {
+          const st = await dr.directStatus(deps.store, { limit: 8 });
+          const counts = {}; for (const d of st.directives) counts[d.state] = (counts[d.state] || 0) + 1;
+          return J({ ok: true, version: st.version, pending: st.pending, state_counts: counts,
+            intents: st.intents.map((i) => ({ key: i.key, label: i.label, lever: i.lever })),
+            recent: st.directives.map((d) => ({ at: d.at, intent: d.intent, state: d.state, tries: d.tries })) });
+        }
+        return J({ ok: false, error: 'not_found' }, 404);
+      }
+      if (url.pathname.startsWith('/api/listings')) {
+        const rp = await import('./agent/repo.js');
+        if (url.pathname === '/api/listings' && request.method === 'GET') {
+          const st = await rp.repoProspects(deps.store, { limit: 40 });
+          return fmt ? T(rp.prospectsText(st)) : J(st);
+        }
+        if (url.pathname === '/api/listings/public' && request.method === 'GET') {
+          const st = await rp.repoProspects(deps.store, { limit: 40 });
+          return J({ ok: true, version: st.version, at: st.at, hosts: st.hosts, auto_ready: st.auto_ready, human_required: st.human_required, by_state: st.by_state,
+            items: st.items.map((x) => ({ host: x.host, state: x.state, signal: x.signal, kinds: x.kinds, repos: x.repos, urls: x.urls })) });
+        }
+        if (url.pathname === '/api/listings/intake' && request.method === 'POST') {
+          const b = await body();
+          const r = await rp.repoProspectIntake({ store: deps.store, env: env || {}, limit: b.limit || 8, dry: b.dry === true });
+          return J(r);
+        }
+        return J({ ok: false, error: 'not_found' }, 404);
+      }
+      if (url.pathname === '/api/ideas' && request.method === 'GET') {
+        const fr = await import('./agent/frontier.js');
+        const f = await fr.frontierStatus(deps.store);
+        const { dbAll } = await import('./agent/market.js');
+        let hyps = []; try { hyps = await dbAll(deps.store, 'SELECT at,slug,category,op,price_atomic,why,score,source,state FROM market_hypotheses ORDER BY at DESC LIMIT 30'); } catch { hyps = []; }
+        return J({ ok: true, next: f.next, frontier_ideas: f.ideas, market_hypotheses: hyps });
+      }
+    }
+    // 大手の売り場ボード（venues-1.0）: Bazaar の外の到達規模を原価0・自動化可否で並べる。
+    if (url.pathname === '/api/venues' || url.pathname === '/api/venues/public') {
+      const _h = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+      const _pub = url.pathname === '/api/venues/public';
+      if (url.searchParams.get('format') === 'text' && !_pub) {
+        return new Response(venueBoardText(), { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+      }
+      const _board = venueBoard();
+      const _counts = venueCounts();
+      const _snap = await venueSnapshotLoad(env);
+      const _items = _board.map((v) => _pub
+        ? { id: v.id, name: v.name, kind: v.kind, reach: v.reach, cost_usd: v.cost_usd, auto: v.auto, fit: v.fit, state: v.state, score: v.score, url: v.url, publish_api: v.publish_api || null, probe: v.probe || null }
+        : { id: v.id, name: v.name, kind: v.kind, reach: v.reach, cost_usd: v.cost_usd, auto: v.auto, kyc: v.kyc, fit: v.fit, state: v.state, score: v.score, parts: v.parts, url: v.url, submit: v.submit, probe: v.probe || null, publish_api: v.publish_api || null, reach_note: v.reach_note, note: v.note, src: v.src });
+      const _body = {
+        ok: true, version: 'venues-1.0', registry_plan: venueRegistryPlan(), at: new Date().toISOString(),
+        total: _counts.total, by_state: _counts.by_state,
+        auto_queue: venueAutoQueue().map((v) => v.id),
+        human_queue: venueHumanQueue().map((v) => v.id),
+        items: _pub ? _items.slice(0, 8) : _items,
+        last_probe: _snap ? { at: _snap.at, probed: _snap.probed, by_signal: _snap.by_signal } : null,
+        packs: { diligence_pack: { price_usd: 1.0, resource: '/api/x402/diligence-pack', why: 'x402 で金額が出ているのは $1 以上の帯（Base の x402 では $1+ が総額の95%）。既定の買い手は1回 $1 までの上限なので、ちょうど $1.00 に置いた' } },
+      };
+      return new Response(JSON.stringify(_body, null, 2), { status: 200, headers: _h });
+    }
+
+    if (url.pathname === '/api/venues/probe') {
+      const _h = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' };
+      if (request.method !== 'POST') return new Response(JSON.stringify({ ok: false, error: 'method_not_allowed', hint: 'POST {only:[id],dry:true}' }), { status: 405, headers: _h });
+      let _p = {};
+      try { _p = await request.json(); } catch (e) { _p = {}; }
+      const _r = await probeVenues({ env, only: _p.only, dry: !!_p.dry });
+      return new Response(JSON.stringify(_r, null, 2), { status: _r.ok ? 200 : 500, headers: _h });
+    }
+
+    // 収益の計器。売上は receipts（外部の買い手が決済した事実）だけを出典にする。
+    // 測れない指標は推定で埋めず「未測定」と、どう測るかを返す。
+    if (url.pathname === '/api/kpi' || url.pathname === '/api/kpi/public') {
+      try {
+        const { kpiReport } = await import('./agent/kpi.js');
+        const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 7, 1), 365);
+        return json(await kpiReport(deps.store, { days }), 200);
+      } catch (e) {
+        return json({ ok: false, error: 'kpi_failed', detail: String((e && e.message) || e) }, 500);
+      }
+    }
+
+    if (url.pathname === '/api/market' || url.pathname === '/api/market/public') {
+      const { marketStatus, marketPublic, marketText, marketHelp } = await import('./agent/market.js');
+      if (url.searchParams.get('help') === '1') return json({ ok: true, help: marketHelp(url.origin) });
+      const s = url.pathname === '/api/market' ? await marketStatus(deps.store) : await marketPublic(deps.store);
+      if (url.searchParams.get('format') === 'text') return new Response(marketText(s), { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+      return json({ ok: true, ...s });
+    }
+    if (url.pathname === '/api/market/rpc' && request.method === 'POST') {
+      // 自作の品が「中身を返せるか」の根本原因（RPC への到達）を外から見えるようにする。
+      const urls = ['https://mainnet.base.org', 'https://base-rpc.publicnode.com', 'https://ethereum-rpc.publicnode.com', 'https://eth.llamarpc.com'];
+      const out = [];
+      for (const u of urls) {
+        const t0 = Date.now();
+        try {
+          const res = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json', 'user-agent': 'WealthAgent/1.0' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_blockNumber', params: [] }) });
+          const txt = (await res.text()).slice(0, 160);
+          out.push({ url: u, http: res.status, ms: Date.now() - t0, body: txt });
+        } catch (e) { out.push({ url: u, http: 0, ms: Date.now() - t0, error: String(e && e.message).slice(0, 160) }); }
+      }
+      const { fulfillOnchainBalance } = await import('./agent/fulfill.js');
+      const { SELFTEST_ADDRESS } = await import('./agent/market.js');
+      const bal = await fulfillOnchainBalance({ chain: 'base', address: SELFTEST_ADDRESS, tokens: ['0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'] }, { env });
+      return json({ ok: true, rpc: out, deliverable: bal });
+    }
+    if (url.pathname === '/api/market/scan' && request.method === 'POST') {
+      const { marketScan } = await import('./agent/market.js');
+      const r = await marketScan({ store: deps.store, env, deps, force: url.searchParams.get('force') !== '0' });
+      return json(r, r.ok ? 200 : 502);
+    }
+    if (url.pathname === '/api/market/launch' && request.method === 'POST') {
+      const { launchTopProduct } = await import('./agent/market.js');
+      const r = await launchTopProduct({ store: deps.store, env, deps, dryRun: url.searchParams.get('dry') === '1' });
+      return json(r, r.ok ? 200 : 409);
+    }
+    if (url.pathname === '/api/market/delist' && request.method === 'POST') {
+      const { delistProduct } = await import('./agent/market.js');
+      const r = await delistProduct({ store: deps.store, slug: url.searchParams.get('slug') });
+      return json(r, r.ok ? 200 : 404);
+    }
     if (url.pathname === '/api/improve' || url.pathname === '/api/improve/help' || url.pathname === '/api/improve/public') {
       try {
         const im = await import('./agent/improve.js');
@@ -784,7 +1102,37 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       }
     }
 
-    if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
+        if (url.pathname === '/api/bounty/public' || url.pathname === '/api/bounty') {
+      try {
+        const { Store } = await import('./db.js');
+        const bStore = new Store(env.DB);
+        const { bountyBoard, bountyScan } = await import('./agent/bounty.js');
+        const wantRun = request.method === 'POST' || url.searchParams.get('run') === '1';
+        const d = wantRun ? await bountyScan({ store: bStore, env, live: true }) : await bountyBoard(bStore, {});
+        return new Response(JSON.stringify(d), { headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
+      } catch (e) {
+        return new Response(JSON.stringify({ ok: false, error: String((e && e.stack) || e).slice(0, 600) }), {
+          status: 500, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+        });
+      }
+    }
+    if (url.pathname === '/api/digest/public' || url.pathname === '/api/digest') {
+      try {
+        const { Store } = await import('./db.js');
+        const dgStore = new Store(env.DB);
+        const { latestDigest, snsDigest } = await import('./agent/snsdigest.js');
+        const wantRun = request.method === 'POST' || url.searchParams.get('run') === '1';
+        const d = wantRun ? await snsDigest(dgStore, { env, send: true }) : await latestDigest(dgStore);
+        return new Response(JSON.stringify(d || { ok: false, note: 'no report yet' }), {
+          headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ ok: false, error: String((e && e.stack) || e).slice(0, 600) }), {
+          status: 500, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+        });
+      }
+    }
+if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       const { todayDigest, todayText } = await import('./agent/today.js');
       const body = await todayDigest(deps.store, { publicOnly: url.pathname.endsWith('/public') });
       if (url.searchParams.get('format') === 'text') return new Response(todayText(body), { headers: { 'content-type': 'text/plain; charset=utf-8' } });
@@ -821,6 +1169,18 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     }
 
     // 自己修復ループ（なぜ収益0なのかを毎回測る）と REA 自動投入キューの状態。
+    if (url.pathname === '/agents.json' && (request.method === 'GET' || request.method === 'HEAD')) {
+      return new Response(JSON.stringify(agentsJson(env), null, 2), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' },
+      });
+    }
+    if ((url.pathname === '/api/skills/catalog' || url.pathname === '/api/skills/catalog.json') && request.method === 'GET') {
+      return new Response(JSON.stringify(skillCatalog(), null, 2), {
+        status: 200,
+        headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' },
+      });
+    }
     if (url.pathname === '/api/selfreport' && request.method === 'POST') {
       const st = (deps && deps.store) || null;
       if (!st) return json({ ok: false, error: 'no_store' }, 500);
@@ -916,11 +1276,19 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
     // x402 — 値札（402）を出し、facilitator が検証・決済した支払いだけを受け取って
     // 中身を返す。クライアントが付けたヘッダは一切信用しない。
     if ((url.pathname.startsWith('/api/x402-testnet/') || url.pathname.startsWith('/api/x402/')) && !url.pathname.startsWith('/api/x402/catalog')) {
-      const { challenge, preflight, requiredHeader, responseHeader, verifyAndSettle, X402_CATALOG } = await import('./agent/x402.js');
+      const { challenge, preflight, requiredHeader, responseHeader, verifyAndSettle, allItems } = await import('./agent/x402.js');
       const { createJob, recordReceipt } = await import('./agent/revenue.js');
       const resource = url.pathname.replace('/api/x402-testnet/', '').replace('/api/x402/', '');
+      // 決済の前提を満たさない注文は、値札（402）より先に 400 で断る。
+      // 「$1 を払ってから対象なしと言われる」事故を構造的に消す（納品側と同じ判定を使う）。
+      let _preBody = {};
+      try { _preBody = await request.clone().json(); } catch (e) { _preBody = {}; }
+      const _pre = _preValidate(resource, _preBody);
+      if (!_pre.ok) return json({ ok: false, ..._pre, charged: false, note: '入力が前提を満たさないため決済を要求していません（課金なし）' }, 400);
       const notFound = () => new Response(JSON.stringify({ ok: false, error: 'not_found', path: url.pathname }), { status: 404, headers: { 'content-type': 'application/json' } });
-      if (!X402_CATALOG.some((i) => i.resource === resource)) return notFound();
+      if (!allItems(env).some((i) => i.resource === resource)) return notFound();
+      // 自律で作った品は、値札・注文検査・納品をその「実行部品(op)＋固定引数(preset)」に写して扱う。
+      const exItem = allItems(env).find((i) => i.resource === resource && i.op) || null;
       // 売りに出してよいかを先に確認する（受け取り先の形式・ネットワーク・facilitator の対応・
       // Solana なら feePayer）。確認できないものは値札を出さない。
       const pf = await preflight(env);
@@ -938,7 +1306,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
         // 値札には注文書（入力仕様）も添える。買い手はこれを見て本文を組み立てる。
         // 無料枠がある品目は、値札の中でもその入口を案内する（試してから買える）。
         const { freeTierResources, freeQuotaFor: freeLimitFor } = await import('./agent/freemium.js');
-        const priced = { ...ch.body, order_spec: ORDER_SPECS[resource] || null,
+        const priced = { ...ch.body, order_spec: ORDER_SPECS[exItem && exItem.op ? exItem.op : resource] || null,
           free_option: freeTierResources().includes(resource)
             ? { url: `${url.origin}/api/free/${resource}`, daily_limit_per_ip: freeLimitFor(env, resource), note: 'No payment needed up to the daily limit (per IP, per UTC day). Pay here only if you need the limit removed.' }
             : null };
@@ -949,7 +1317,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
       let body = {};
       try { const t = await request.text(); body = t ? JSON.parse(t) : {}; } catch { body = {}; }
       if (request.method === 'GET') for (const [k, v] of url.searchParams) if (!(k in body)) body[k] = v;
-      const order = validateOrder(resource, body);
+      const order = validateOrder(exItem ? exItem.op : resource, exItem ? { ...body, ...(exItem.preset || {}) } : body);
       if (!order.ok) {
         return new Response(JSON.stringify({ ok: false, charged: false, ...order }), { status: 400, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
       }
@@ -990,7 +1358,7 @@ url-meta は公開ページのみ（内部アドレスは取得しません）�
         }).catch(() => {});
       }
       // 確定した注文は、その場で作って同じ応答で渡す（買い手を待たせない・取りこぼさない）。
-      const done = await fulfillOrder(resource, order.input, { router: deps.router, research: deps.research, store: deps.store });
+      const done = await fulfillOrder(exItem ? exItem.op : resource, order.input, { router: deps.router, research: deps.research, store: deps.store });
       const job = await createJob(deps.store, {
         title: `${item?.description || resource}（x402 受注）`, price: settled.amount,
         state: done.ok ? 'delivered' : 'in_progress', thread_id: body.thread_id || null,

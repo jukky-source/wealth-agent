@@ -143,7 +143,7 @@ export async function handleFree(request, env = {}, url, deps = {}) {
       const row = await store.first("SELECT value FROM settings WHERE key=?", `freehits:${day}`);
       hits = Number(row && row.value) || 0;
     } catch { hits = null; }
-    const { INPUT_EXAMPLES } = await import('./x402.js');
+    const { INPUT_EXAMPLES, usdLabel } = await import('./x402.js');
     return jres({
       ok: true, enabled: freeTierEnabled(env),
       free_resources: list.map((r) => {
@@ -151,7 +151,9 @@ export async function handleFree(request, env = {}, url, deps = {}) {
         const ex = Object.entries(INPUT_EXAMPLES[r] || {}).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`).join('&');
         return {
           resource: r, url: `${origin}/api/free/${r}`, example_url: `${origin}/api/free/${r}?${ex}`,
-          price_if_paid_usdc: Number(((item.price_usdc || 0) / 1e6).toFixed(2)),
+          price_if_paid_usdc: Number(usdLabel(item.price_usdc || 0)),
+          price_label: `${usdLabel(item.price_usdc || 0)} USDC`,
+          paid_url: `${origin}/api/x402/${r}`,
           daily_limit_per_ip: freeQuotaFor(env, r), description: item.description || null,
         };
       }),

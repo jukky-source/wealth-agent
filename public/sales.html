@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>販路ボード | Wealth Agent</title>
+<style>
+  :root { --bg:#0b0f14; --card:#121821; --line:#1f2a37; --fg:#e6edf5; --mut:#8b9bb0; --ok:#3ddc97; --warn:#ffc857; --bad:#ff6b6b; --acc:#6ea8fe; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.6 -apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif; padding:20px 16px 64px; }
+  .wrap { max-width:920px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; letter-spacing:.02em; }
+  .sub { color:var(--mut); font-size:13px; margin-bottom:18px; }
+  .totals { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:22px; }
+  .t { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; }
+  .t b { display:block; font-size:22px; font-weight:650; }
+  .t span { color:var(--mut); font-size:12px; }
+  .ch { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:10px; }
+  .ch h2 { font-size:15px; margin:0 0 2px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .kind { font-size:11px; color:var(--mut); border:1px solid var(--line); border-radius:999px; padding:1px 8px; font-weight:400; }
+  .auto { font-size:11px; border-radius:999px; padding:1px 8px; }
+  .auto.full { color:var(--ok); border:1px solid rgba(61,220,151,.4); }
+  .auto.partial { color:var(--warn); border:1px solid rgba(255,200,87,.4); }
+  .auto.none { color:var(--mut); border:1px solid var(--line); }
+  .fun { display:flex; gap:6px; flex-wrap:wrap; margin:10px 0 8px; }
+  .st { font-size:11px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
+  .st.on { color:#04231a; background:var(--ok); border-color:var(--ok); font-weight:600; }
+  .st.wall { color:#2a1005; background:var(--warn); border-color:var(--warn); font-weight:600; }
+  .why { font-size:13px; color:#ffd9a0; margin:6px 0 2px; }
+  .fix { font-size:13px; color:var(--mut); }
+  .fix b { color:var(--fg); font-weight:600; }
+  .lv { font-size:11px; border-radius:6px; padding:1px 6px; margin-left:6px; }
+  .lv.allow { background:rgba(110,168,254,.15); color:var(--acc); }
+  .lv.approve { background:rgba(255,200,87,.15); color:var(--warn); }
+  .lv.human_only { background:rgba(255,107,107,.15); color:var(--bad); }
+  .ev { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; color:var(--mut); margin-top:8px; white-space:pre-wrap; word-break:break-word; }
+  .empty { color:var(--mut); }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>販路ボード</h1>
+  <div class="sub" id="sub">読み込み中…</div>
+  <div class="totals" id="totals"></div>
+  <div id="board"></div>
+</div>
+<script>
+const SL = ['listed','quote','traffic','paid','settled'];
+const LB = { listed:'掲載', quote:'値札', traffic:'呼ばれた', paid:'払われた', settled:'入金' };
+const AUTO = { full:'無人可', partial:'人手あり', none:'人手必須' };
+const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+fetch('/api/sales/public', { headers:{ accept:'application/json' } })
+  .then(r => r.json())
+  .then(d => render(d))
+  .catch(e => { document.getElementById('sub').textContent = '取得に失敗しました: ' + e.message; });
+
+function render(d) {
+  const t = d.totals || {};
+  document.getElementById('sub').textContent = (d.at || '') + ' 時点 / ' + (t.channels||0) + ' 販路を同じ漏斗で測っています';
+  const cards = [
+    ['外部入金', (t.revenue_external_usd||0) + ' USDC', (t.external_receipts||0) + ' 件（自己テストを除く）'],
+    ['入金のある販路', (t.settling||0) + ' / ' + (t.channels||0), '金額が実際に動いた販路'],
+    ['呼ばれた販路', (t.callable||0), '非bot の呼び出し ' + (t.hits_non_bot||0) + ' 件'],
+    ['掲載あり', (t.listed||0), '索引・名簿に我々が居る販路'],
+    ['自己テスト', (t.revenue_self_test_usd||0) + ' USDC', '売上ではない（別枠で数える）'],
+  ];
+  document.getElementById('totals').innerHTML = cards.map(([l,v,s]) =>
+    '<div class="t"><b>' + esc(v) + '</b><span>' + esc(l) + ' — ' + esc(s) + '</span></div>').join('');
+  const board = d.board || [];
+  const el = document.getElementById('board');
+  if (!board.length) {
+    el.innerHTML = '<div class="ch"><div class="empty">まだラウンドを回していません。<code>POST /api/sales</code> で1ラウンド回すか、cron（' + '30分ごと）を待つと、ここに壁が出ます。</div></div>';
+    return;
+  }
+  el.innerHTML = board.map(b => {
+    const f = b.funnel || {};
+    const fun = SL.map(s => '<span class="st ' + (f[s] ? 'on' : (s === b.stage ? 'wall' : '')) + '">' + LB[s] + '</span>').join('');
+    return '<div class="ch">'
+      + '<h2>' + esc(b.label) + '<span class="kind">' + esc(b.kind) + '</span>'
+      + '<span class="auto ' + esc(b.autonomy) + '">' + esc(AUTO[b.autonomy]||b.autonomy) + '</span></h2>'
+      + '<div class="fun">' + fun + '</div>'
+      + '<div class="why">壁: ' + esc(b.wall_why) + '</div>'
+      + '<div class="fix"><b>打ち手 →</b> ' + esc(b.action || '-') + ' … ' + esc(b.fix)
+      + '<span class="lv ' + esc(b.level) + '">' + esc(b.level) + '</span></div>'
+      + (b.evidence && Object.keys(b.evidence).length
+          ? '<div class="ev">' + esc(Object.entries(b.evidence).map(([k,v]) => k + ': ' + (typeof v === 'object' ? JSON.stringify(v) : v)).join('  |  ')) + '</div>'
+          : '')
+      + '</div>';
+  }).join('');
+}
+</script>
+</body>
+</html>

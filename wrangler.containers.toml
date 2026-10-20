@@ -17,7 +17,7 @@ compatibility_flags = ["nodejs_compat"]
 directory = "./public"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/.well-known/*","/api/*","/v1/*","/a2a","/mcp","/llms.txt","/robots.txt","/sitemap.xml","/openapi.json","/server.json"]
+run_worker_first = ["/.well-known/*","/api/*","/v1/*","/a2a","/mcp","/llms.txt","/robots.txt","/sitemap.xml","/openapi.json","/server.json","/agents.json","/hunt","/sales"]
 
 [[d1_databases]]
 binding = "DB"
@@ -55,7 +55,7 @@ FREE_TIER_ENABLED = "1"
 FREE_DAILY_LIMIT = "25"
 FREE_URL_META_DAILY_LIMIT = "5"
 PUBLIC_HOST = "wealth-agent.wealthagent-app.workers.dev"
-FX_LAB_EVERY_MINUTES = "15"
+FX_LAB_EVERY_MINUTES = "60"
 FX_LAB_EXPERIMENTS_PER_TICK = "4"
 FX_LAB_CPU_BUDGET_MS = "20000"
 FX_LAB_DEEP_PER_TICK = "1"
@@ -64,7 +64,7 @@ FX_LAB_LOGIC_ENABLED = "true"
 FX_LAB_LOGIC_SHARED = "true"
 FX_LAB_LOGIC_BASKET = "3"
 FX_LAB_LOGIC_HYPOTHESIS = "true"
-FX_LAB_LOGIC_EVERY_MINUTES = "5"
+FX_LAB_LOGIC_EVERY_MINUTES = "30"
 FX_LAB_LOGIC_PER_TICK = "3"
 FX_LAB_LOGIC_BUDGET_MS = "9000"
 FX_LAB_LOGIC_DEEP_PER_TICK = "1"
@@ -90,6 +90,8 @@ OPT_COLLECTION_EVERY = "3"
 
 # バックテスト作業台（2つのタブ: E8モード / 自己資金モード）。原価0・無料の日足だけ。
 LAB_ENABLED = "true"
+DIGEST_EVERY_MINUTES = "360"
+BOUNTY_EVERY_MINUTES = "360"
 LAB_EVERY_MINUTES = "5"
 LAB_LOOP_EVERY_MINUTES = "15"
 LAB_LOOP_N = "6"

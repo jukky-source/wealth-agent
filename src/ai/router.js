@@ -16,6 +16,7 @@
 //  * no key ever leaves the server (read from env / .dev.vars only)
 
 import { backoffMs, extractJson, sleep, truncate, utcDay, id as newId, nowIso } from '../util.js';
+import { budgetGuard } from '../agent/guardrail.js';
 
 // Workers AI の Neurons 単価（100万トークンあたり。出典: developers.cloudflare.com/workers-ai/platform/pricing）。
 // 無料は1日 10,000 Neurons。Workers Paid では超過分が $0.011/1,000 Neurons で課金されるので、
@@ -429,10 +430,15 @@ export class AIRouter {
   }
 
   async budgetExceeded() {
-    const budget = Number(this.env.AI_DAILY_CALL_BUDGET || 300);
+    // 判定は guardrail.budgetGuard に一本化する（純関数のまま誰も呼んでいなかった）。
+    // used=今日の成功した呼び出し数, cap=AI_DAILY_CALL_BUDGET。cap を 0 にすれば推論は止まる。
+    const cap = Number(this.env.AI_DAILY_CALL_BUDGET || 300);
     const r = await this.store.first(
       `SELECT COUNT(*) AS c FROM ai_usage WHERE day=? AND ok=1`, utcDay());
-    return (r?.c || 0) >= budget;
+    const g = budgetGuard({ used: Number((r && r.c) || 0), cap });
+    this.lastBudget = g;
+    if (!g.allow) console.log('budgetGuard: 推論を止めます', JSON.stringify(g));
+    return !g.allow;
   }
 
   /** Main entry point. Always resolves — never throws into the engine loop. */

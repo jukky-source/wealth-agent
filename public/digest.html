@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>定時報告 — Wealth Agent</title>
+<style>
+:root{color-scheme:dark}
+html,body{margin:0;background:#0C1116;color:#DFE8F0;font-family:'Noto Sans JP',-apple-system,'Hiragino Kaku Gothic ProN','Yu Gothic',sans-serif}
+.wrap{max-width:820px;margin:0 auto;padding:calc(env(safe-area-inset-top,0px) + 18px) 16px calc(env(safe-area-inset-bottom,0px) + 32px)}
+h1{font-size:16px;margin:0 0 4px;letter-spacing:.02em}
+.meta{font-size:12px;color:#8CA0B3;margin-bottom:14px}
+.card{background:#131A22;border:1px solid #22303F;border-radius:12px;padding:14px}
+pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:'IBM Plex Mono',ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.6}
+.hint{margin-top:12px;font-size:12px;color:#8CA0B3}
+a{color:#4FC9A6}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>情報収集の定時報告</h1>
+  <div class="meta" id="m">読み込み中…</div>
+  <div class="card"><pre id="t">—</pre></div>
+  <div class="hint" id="h"></div>
+</div>
+<script>
+(async () => {
+  const m = document.getElementById('m'), t = document.getElementById('t'), h = document.getElementById('h');
+  try {
+    const r = await fetch('/api/digest/public', { cache: 'no-store' });
+    const d = await r.json();
+    if (!d || !d.at) { m.textContent = 'まだ報告がありません（次の定時実行で作られます）'; t.textContent = '—'; return; }
+    m.textContent = `生成 ${d.at}` + (d.note ? ` ・ ${d.note}` : '');
+    t.textContent = d.text || '—';
+    const n = (d.recent || []).length;
+    h.textContent = n > 1 ? `直近 ${n} 回分を保存しています（古いものは自動で残ります）` : '';
+  } catch (e) {
+    m.textContent = '取得できませんでした: ' + (e && e.message ? e.message : e);
+  }
+})();
+</script>
+</body>
+</html>

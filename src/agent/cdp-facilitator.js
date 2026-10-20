@@ -72,11 +72,11 @@ export function decodeCdpSecret(secret) {
   throw new Error(`CDP_API_KEY_SECRET の長さが不正です（${buf.length} bytes / 32 か 64 が必要）`);
 }
 
-/** 16桁の数字 nonce（CDP の要求形式）。crypto から作る。 */
+/** 16バイトを hex 化した nonce。公式 SDK（auth/utils/jwt.js）と同じ形。 */
 function makeNonce(cryptoImpl) {
   const b = new Uint8Array(16);
   cryptoImpl.getRandomValues(b);
-  return Array.from(b, (x) => String(x % 10)).join('');
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 }
 
 /**
@@ -97,9 +97,10 @@ export async function cdpJwt({
   const n = nonce || makeNonce(cryptoImpl);
 
   const header = { alg: 'EdDSA', typ: 'JWT', kid: keyId, nonce: n };
+  // 公式 SDK は `uris`（配列）を出し、iat/nbf/exp を揃える。単数の `uri` は受け付けられない。
   const payload = {
     sub: keyId, iss: 'cdp', aud: ['cdp_service'],
-    nbf: now, exp: now + 120, uri,
+    uris: [uri], iat: now, nbf: now, exp: now + 120,
   };
   const signingInput = `${b64uJson(header)}.${b64uJson(payload)}`;
 
