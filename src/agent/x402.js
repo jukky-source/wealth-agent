@@ -842,11 +842,11 @@ export async function llmsTxt(origin = '', env = {}) {
   L.push('');
   L.push('## Catalog');
   L.push('');
-  for (const it of items) L.push('- /api/x402/' + it.resource + ' - ' + name(it) + ' - ' + usd(it) + (it.free_tier ? ' (free sample)' : '') + ' - ' + first(it.description));
+  for (const it of items) L.push('- /api/x402/' + it.resource + '?venue=llms - ' + name(it) + ' - ' + usd(it) + (it.free_tier ? ' (free sample)' : '') + ' - ' + first(it.description));
   L.push('');
   L.push('## Flagship');
   L.push('');
-  L.push('- /api/x402/diligence-pack - full-surface diligence bundle on any public URL - $1.00 flat (the x402 sweet spot on Base).');
+  L.push('- /api/x402/diligence-pack?venue=llms - full-surface diligence bundle on any public URL - $1.00 flat (the x402 sweet spot on Base).');
   L.push('');
   return L.join('\n') + '\n';
 }

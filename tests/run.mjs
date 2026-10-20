@@ -1330,7 +1330,24 @@ await test('X46', 'X46 discoveryFeed: runtime 産 extra 棚も発見フィード
   ok(f.pagination && f.pagination.total === (f.items || []).length, 'pagination.total も実数');
 });
 
-await test('X47', 'X47 seo-audit棚: 実測チェック+AI提案（任意）の入力検査・SSRF・AI無しでも決定的納品', async () => {
+await test('X48', 'attribution: venue 正規化と不正値の direct 落ち', async () => {
+  const u = new URL('https://x.test/api/x402/regex?venue=llms');
+  assert.equal(venueFromRequest(null, u), 'llms');
+  const bad = new URL('https://x.test/api/x402/regex?venue=<script>');
+  assert.equal(venueFromRequest(null, bad), 'direct');
+  const none = new URL('https://x.test/api/x402/regex');
+  assert.equal(venueFromRequest(null, none), 'direct');
+});
+
+test('X49', 'attribution: llms.txt は venue つき・x402 フィードは canonical', async () => {
+  const txt = await _x4.llmsTxt('https://x.test', {});
+  const buy = txt.split('\n').filter((l) => l.includes('/api/x402/') && l.includes('- /api/x402/'));
+  assert.ok(buy.length >= 20, 'llms catalog lines');
+  assert.ok(buy.every((l) => l.includes('?venue=llms')), 'all buy lines venue-tagged');
+  const feed = _x4.discoveryFeed({}, 'https://x.test');
+  assert.ok(feed.resources.every((r) => !r.includes('?')), 'x402 feed stays canonical for CDP');
+});
+test('X47', 'X47 seo-audit棚: 実測チェック+AI提案（任意）の入力検査・SSRF・AI無しでも決定的納品', async () => {
   const ok = (c, m) => { if (!c) throw new Error(m); };
   const f = await import('../src/agent/fulfill.js');
   const x = await import('../src/agent/x402.js');
@@ -1471,6 +1488,7 @@ await test('X29', 'X29 direct: 自然言語を意図に写像し、空の証拠�
   ok(p.steps[0] === 'market_truth' && p.steps[1] === 'product_launch', '測ってから作る順');
   for (const i of INTENTS) ok(!!planFor(i.key), '計画が引ける: ' + i.key);
 });
+
 
 
 console.log(`\n════════ RESULT: ${pass} passed, ${failures.length} failed ════════`);
