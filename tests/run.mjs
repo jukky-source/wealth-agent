@@ -996,7 +996,7 @@ await test('X22', 'オンチェーン残高は decimals をコントラクトか
 });
 
 await test('X23', '12品の値札と発見メタデータが自己整合（Bazaar の入力仕様と出力例が欠けていない）', async () => {
-  assert.equal(_x4.X402_CATALOG.length, 20);
+  assert.equal(_x4.X402_CATALOG.length, 22);
   const byName = Object.fromEntries(_x4.X402_CATALOG.map((x) => [x.resource, x]));
   assert.equal(byName.random.price_usdc, 5000);
   assert.equal(byName['onchain-balance'].price_usdc, 3000);
@@ -1109,7 +1109,7 @@ if (typeof test === 'function') {
 await test('X35', 'デパート化: 6つの新棚が値札・決済前検査・実データ納品まで自己整合（原価0・鍵不要）', async () => {
   const { fulfillOrder, validateOrder, MARKET_OPS } = await import('../src/agent/fulfill.js');
   const _x4 = await import('../src/agent/x402.js');
-  assert.equal(MARKET_OPS.length, 8);
+  assert.equal(MARKET_OPS.length, 10);
   for (const op of MARKET_OPS) {
     const item = _x4.X402_CATALOG.find((x) => x.resource === op);
     assert.ok(item, op + ' がカタログにある');
@@ -1131,7 +1131,7 @@ await test('X35', 'デパート化: 6つの新棚が値札・決済前検査・�
   // 実データの棚は「取れた」か「取れなかった理由」のどちらかが必ず出る（空の成功を返さない）
   const px = await fulfillOrder('crypto-price', { symbols: ['BTC'], quote: 'usd' }, {});
   assert.ok(px.deliverable.prices.length >= 1 || px.deliverable.gaps.length >= 1);
-  assert.equal(_x4.X402_CATALOG.length, 20);
+  assert.equal(_x4.X402_CATALOG.length, 22);
 });
 
 await test('X36', '入力の正規化: 買い手の指定が無料でも有料でも同じ形で商品に届く', async () => {
@@ -1265,6 +1265,30 @@ await test('X42', 'X42 販路提出URLの焼き込みと funnel の無料体験�
   const { BIG_VENUES } = await import('../src/agent/venues.js');
   ok(BIG_VENUES.every((x) => !('submit_tagged' in x)), '台帳は焼き込みで汚さない');
     
+});
+await test('X43', 'X43 AI棚追補: entities/keywords の検査・正規化・AI無しで偽って納品しない', async () => {
+  const ok = (c, m) => { if (!c) throw new Error(m); };
+  const f = await import('../src/agent/fulfill.js');
+  ok(f.validateMarketOrder('entities', {}).error === 'need_text', 'entities 空 text は断る');
+  ok(f.validateMarketOrder('entities', { text: 'x'.repeat(20001) }).error === 'too_large', 'entities の文字上限');
+  const v1 = f.validateOrder('entities', { text: 'Alice met Bob at Acme in Tokyo.', types: 'person, ORG' });
+  ok(v1.ok === true && JSON.stringify(v1.input.types) === JSON.stringify(['person', 'org']), 'entities の正規化: ' + JSON.stringify(v1));
+  ok(f.validateMarketOrder('keywords', { text: 'hi', max_keywords: 99 }).error === 'bad_max_keywords', 'max_keywords=99 は決済前に断る');
+  const v2 = f.validateOrder('keywords', { text: 'hello', max_keywords: 3 });
+  ok(v2.ok === true && v2.input.max_keywords === 3, 'keywords の正規化: ' + JSON.stringify(v2));
+  const x = await import('../src/agent/x402.js');
+  const cat = (typeof x.allItems === 'function') ? x.allItems({}) : x.X402_CATALOG;
+  for (const r of ['entities', 'keywords']) {
+    const it = cat.find((i) => i.resource === r);
+    ok(it, '棚に ' + r + ' がある');
+    ok(it.description.length <= 500, r + ' の説明 500字以内: ' + it.description.length);
+    ok(!it.description.toLowerCase().startsWith('do not'), r + ' の説明は指示的に読めない');
+    ok(it.free_tier === true, r + ' に無料体験がある');
+  }
+  const ne = await f.fulfillAiShelf('entities', { text: 'hello' }, { env: {} });
+  ok(ne.ok === false && ne.error === 'ai_unavailable', 'entities: AI binding 無しでは偽って納品しない');
+  const nk = await f.fulfillAiShelf('keywords', { text: 'hello', max_keywords: 5 }, { env: {} });
+  ok(nk.ok === false && nk.error === 'ai_unavailable', 'keywords: AI binding 無しでは偽って納品しない');
 });
 console.log(`\n
 await test('X24', '市場の実測は決定的に集計され、価格帯とカテゴリが事実として残る', async () => {

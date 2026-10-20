@@ -17,7 +17,7 @@ const MAX_INPUT = 60000;
 // 実測した需要の所在（支払者数 / 呼び出し数）で我々が持っていなかった棚:
 //   market_data（支払者838・呼び出し最大） / ネットワーク / 計算・時刻。
 // どれも原価0・鍵不要・外から検証可能な決定的処理だけを置く（原価0の設計制約）。
-export const MARKET_OPS = ['crypto-price', 'fx-rates', 'defi-tvl', 'dns-lookup', 'crypto-hash', 'time-convert', 'translate', 'summarize'];
+export const MARKET_OPS = ['crypto-price', 'fx-rates', 'defi-tvl', 'dns-lookup', 'crypto-hash', 'time-convert', 'translate', 'summarize', 'entities', 'keywords'];
 const UA_JSON = { accept: 'application/json', 'user-agent': 'WealthAgent/1.0 (+https://wealth-agent.wealthagent-app.workers.dev)' };
 const KRAKEN_MAP = { BTC: 'XBTUSD', ETH: 'ETHUSD', SOL: 'SOLUSD', XRP: 'XRPUSD', DOGE: 'XDGUSD', ADA: 'ADAUSD', AVAX: 'AVAXUSD', LINK: 'LINKUSD', DOT: 'DOTUSD', LTC: 'LTCUSD', MATIC: 'MATICUSD', USDT: 'USDTUSD' };
 
@@ -80,6 +80,14 @@ export function marketInput(resource, body = {}) {
     const n = Number(b.max_bullets);
     return { text: String(b.text == null ? '' : b.text), max_bullets: Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 10) : 5, lang: b.lang ? String(b.lang).trim().slice(0, 24) : null };
   }
+  if (resource === 'entities') {
+    const raw = b.types == null ? [] : (Array.isArray(b.types) ? b.types : String(b.types).split(','));
+    return { text: String(b.text == null ? '' : b.text), types: raw.map((z) => String(z).trim().toLowerCase().slice(0, 24)).filter(Boolean).slice(0, 8) };
+  }
+  if (resource === 'keywords') {
+    const n = Number(b.max_keywords);
+    return { text: String(b.text == null ? '' : b.text), max_keywords: Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 20) : 8 };
+  }
   return Object.assign({}, b);
 }
 
@@ -127,6 +135,20 @@ export function validateMarketOrder(resource, body = {}) {
     if (t.length > 20000) return { ok: false, error: 'too_large', reason: 'text は 20,000 文字までです' };
     const n = Number(b.max_bullets);
     if (b.max_bullets != null && (!Number.isFinite(n) || n < 1 || n > 10)) return { ok: false, error: 'bad_max_bullets', reason: 'max_bullets は 1〜10 です' };
+    return { ok: true };
+  }
+  if (resource === 'entities') {
+    const t = String(b.text == null ? '' : b.text);
+    if (!t) return { ok: false, error: 'need_text', reason: 'text（解析対象）が必要です（決済前なので請求していません）' };
+    if (t.length > 20000) return { ok: false, error: 'too_large', reason: 'text は 20,000 文字までです' };
+    return { ok: true };
+  }
+  if (resource === 'keywords') {
+    const t = String(b.text == null ? '' : b.text);
+    if (!t) return { ok: false, error: 'need_text', reason: 'text（解析対象）が必要です（決済前なので請求していません）' };
+    if (t.length > 20000) return { ok: false, error: 'too_large', reason: 'text は 20,000 文字までです' };
+    const n = Number(b.max_keywords);
+    if (b.max_keywords != null && (!Number.isFinite(n) || n < 1 || n > 20)) return { ok: false, error: 'bad_max_keywords', reason: 'max_keywords は 1〜20 です' };
     return { ok: true };
   }
   return { ok: true };
@@ -868,7 +890,7 @@ export async function fulfillOrder(resource, input, deps = {}) {
     else if (resource === 'dns-lookup') out = await fulfillDnsLookup(input, deps);
     else if (resource === 'crypto-hash') out = await fulfillCryptoHash(input);
     else if (resource === 'time-convert') out = fulfillTimeConvert(input);
-    else if (resource === 'translate' || resource === 'summarize') out = await fulfillAiShelf(resource, input, deps);
+    else if (resource === 'translate' || resource === 'summarize' || resource === 'entities' || resource === 'keywords') out = await fulfillAiShelf(resource, input, deps);
     else return { ok: false, error: 'unknown_resource' };
     // 出典も所見も無い報告は納品しない。中身が空のまま渡すのは、買い手から見れば
     // 「金を取って何も渡さない」のと同じ。決済済みなら返金・再納品の判断に回す。
@@ -1021,6 +1043,28 @@ export async function fulfillAiShelf(resource, input, deps = {}) {
     const bullets = r.text.split('\n').map((l) => l.replace(/^[\s\-*•\d.)]+/, '').trim()).filter(Boolean).slice(0, input.max_bullets);
     if (!bullets.length) return { ok: false, resource, status: 'failed', error: 'ai_empty', reason: 'no bullets parsed' };
     return { ok: true, resource, status: 'delivered', deliverable: { kind: 'summary', bullets, model: r.model, machine_generated: true, raw: r.text.trim() } };
+  }
+  if (resource === 'entities') {
+    const r = await aiChat(deps, [
+      { role: 'system', content: 'You extract named entities from text. Reply with a JSON array only - each item is an object with keys name and type (type one of: person, organization, location, date, product, other). No prose.' },
+      { role: 'user', content: 'Extract the named entities from the following text' + (input.types && input.types.length ? ' (only these types: ' + input.types.join(', ') + ')' : '') + '. Output only the JSON array.\n\n' + input.text },
+    ], 1500);
+    if (!r.ok) return { ok: false, resource, status: 'failed', ...r };
+    let parsed = null;
+    try { const mm = String(r.text).match(/\[[\s\S]*\]/); if (mm) parsed = JSON.parse(mm[0]); } catch { parsed = null; }
+    if (!Array.isArray(parsed)) parsed = null;
+    const ents = (parsed || []).map((e) => ({ name: String(e && e.name == null ? '' : e.name).slice(0, 120), type: String(e && e.type ? e.type : 'other').toLowerCase().slice(0, 24) })).filter((e) => e.name).slice(0, 100);
+    return { ok: true, resource, status: 'delivered', deliverable: { kind: 'entities', entities: ents, parsed_ok: !!parsed, raw: r.text.trim(), model: r.model, machine_generated: true } };
+  }
+  if (resource === 'keywords') {
+    const r = await aiChat(deps, [
+      { role: 'system', content: 'You extract keywords from text. Reply with a comma-separated list of short keywords or phrases only - no numbering, no prose.' },
+      { role: 'user', content: 'Extract the ' + input.max_keywords + ' most important keywords or short phrases from the following text. Output only the comma-separated list.\n\n' + input.text },
+    ], 800);
+    if (!r.ok) return { ok: false, resource, status: 'failed', ...r };
+    const kws = r.text.split(/[,:\\n]/).map((w) => w.replace(/^[\s\-*\d.)\[\]]+/, '').replace(/[\s\-*.)\[\]]+$/, '').trim()).filter(Boolean).slice(0, input.max_keywords);
+    if (!kws.length) return { ok: false, resource, status: 'failed', error: 'ai_empty', reason: 'no keywords parsed' };
+    return { ok: true, resource, status: 'delivered', deliverable: { kind: 'keywords', keywords: kws, model: r.model, machine_generated: true } };
   }
   return { ok: false, error: 'unknown_resource' };
 }
