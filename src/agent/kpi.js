@@ -1,16 +1,42 @@
-// kpi.js — 収益の計器（kpi-1.0）。
+// kpi.js — 収益の計器（kpi-1.1）。
 //
 // 原則（このファイルの存在理由）:
 //   売上は「外部の買い手が実際に決済した事実」だけを数える。自分のテスト購入・内部リクエスト・
 //   クローラー・未決済リクエストは売上ではない。出典は receipts（署名検証つきの決済の事実）と
 //   ledger（revenue|cost）に限る。x402_hits のような到達カウンタは需要の計器であって売上ではない。
 //
+// kpi-1.1 の修正（実測で見つかった自分の誤り）:
+//   1.0 は receipts をそのまま合計し、**自己テスト購入（$7.182 / 25件）を売上に混ぜていた**。
+//   ユーザーが明示的に禁じた数え方であり、実装が規律に違反していた。
+//   自己テストは source='self_test' の行と、既知の自己テスト wallet からの行で除外する。
+//   外部と自己テストは必ず分けて出し、混ぜた数字を返さない。
+//
 // もう一つの原則: 測れない値は推定で埋めない。'未測定' と、どうすれば測れるかを必ず返す。
-//   捏造した数字は、無い数字より悪い（判断を誤らせる）。
-export const KPI_VERSION = 'kpi-1.0';
+export const KPI_VERSION = 'kpi-1.1';
 export const UNMEASURED = '未測定';
 
-const sum = (rows, k) => (Array.isArray(rows) ? rows.reduce((a, r) => a + (Number(r[k]) || 0), 0) : null);
+/** 自己テスト（外部の買い手ではない）と判定する wallet。実測で特定した自前のテスト wallet。 */
+export const SELF_TEST_PAYERS = ['0x7f06190a3bb8ff63587dc6469f25c6078e648009'];
+/** 自己テストと分かっている source。 */
+export const SELF_TEST_SOURCES = ['self_test', 'selftest', 'self-test'];
+
+/** この決済行は外部の買い手によるものか。false なら売上に数えない。 */
+export function isSelfTest(row = {}) {
+  const src = String(row.source || '').trim().toLowerCase();
+  if (SELF_TEST_SOURCES.includes(src) || src.includes('self_test') || src.includes('selftest')) return true;
+  const payer = String(row.payer || '').trim().toLowerCase();
+  if (payer && SELF_TEST_PAYERS.includes(payer)) return true;
+  return false;
+}
+
+/** 行を外部 / 自己テストに分ける（唯一の分割点。ここを通さない集計をしない）。 */
+export function splitReceipts(rows = []) {
+  const external = []; const selfTest = [];
+  for (const r of rows || []) (isSelfTest(r) ? selfTest : external).push(r);
+  return { external, selfTest };
+}
+
+const sum = (rows, k) => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0);
 const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
 
 async function qa(store, sql, ...args) {
@@ -31,51 +57,51 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
     ok: true, version: KPI_VERSION, at: now.toISOString(),
     window: { days, since },
     source_of_truth: 'receipts（決済の事実）+ ledger（revenue/cost）。到達カウンタは売上ではない。',
-    counts_as_revenue: '外部の買い手が決済した行のみ（自己的購入・内部・クローラ・未決済は除外）',
+    counts_as_revenue: '外部の買い手が決済した行のみ。自己テスト購入（source=self_test / 既知の自己テスト wallet）・内部リクエスト・クローラ・未決済は除外。',
+    self_test_excluded_payers: SELF_TEST_PAYERS,
     revenue: {}, costs: {}, demand: {}, efficiency: {}, unmeasured: [],
   };
 
-  // ---- 売上（外部の決済の事実）
-  const recWin = await qa(store, 'SELECT source, COUNT(*) AS n, SUM(amount) AS amount, SUM(COALESCE(fee,0)) AS fee, SUM(COALESCE(net_amount,0)) AS net, COUNT(DISTINCT payer) AS payers FROM receipts WHERE occurred_on >= ? GROUP BY source', since);
-  const recAll = await q1(store, 'SELECT COUNT(*) AS n, SUM(amount) AS amount, SUM(COALESCE(fee,0)) AS fee, COUNT(DISTINCT payer) AS payers, MIN(occurred_on) AS first_on, MAX(occurred_on) AS last_on FROM receipts');
-  const measured = recAll !== null;
-  out.revenue = {
-    all_time: measured ? {
-      transactions: num(recAll.n) || 0,
-      total: num(recAll.amount) || 0,
-      fees: num(recAll.fee) || 0,
-      unique_payers: num(recAll.payers) || 0,
-      first_paid_on: recAll.first_on || null, last_paid_on: recAll.last_on || null,
-    } : { total: UNMEASURED, why: 'receipts を読めませんでした（DB 未接続 or テーブル未作成）' },
-    window: recWin !== null ? {
-      transactions: sum(recWin, 'n'),
-      total: sum(recWin, 'amount'),
-      fees: sum(recWin, 'fee'),
-      net: sum(recWin, 'net'),
-      unique_payers: recWin.reduce((a, r) => a + (Number(r.payers) || 0), 0),
-      by_source: recWin.map((r) => ({ source: r.source, transactions: Number(r.n) || 0, amount: Number(r.amount) || 0 })),
-    } : { total: UNMEASURED, why: 'receipts を読めませんでした（DB 未接続 or テーブル未作成）' },
+  const rows = await qa(store, 'SELECT occurred_on, source, amount, currency, fee, net_amount, payer, external_id FROM receipts ORDER BY occurred_on DESC');
+  const measured = rows !== null;
+  const { external, selfTest } = splitReceipts(rows || []);
+  const win = external.filter((r) => String(r.occurred_on || '') >= since);
+
+  const agg = (list) => ({
+    transactions: list.length,
+    total: Number(sum(list, 'amount').toFixed(6)),
+    fees: Number(sum(list, 'fee').toFixed(6)),
+    unique_payers: new Set(list.map((r) => r.payer).filter(Boolean)).size,
+    first_paid_on: list.map((r) => r.occurred_on).filter(Boolean).sort()[0] || null,
+    last_paid_on: list.map((r) => r.occurred_on).filter(Boolean).sort().slice(-1)[0] || null,
+  });
+  const repeatOf = (list) => {
+    const c = {}; for (const r of list) if (r.payer) c[r.payer] = (c[r.payer] || 0) + 1;
+    return Object.values(c).filter((n) => n >= 2).length;
   };
-  // 商品別の売上（資源名＝source）
-  out.revenue.by_product = recWin !== null
-    ? recWin.map((r) => ({ product: r.source, transactions: Number(r.n) || 0, amount_usdc: Number(r.amount) || 0 }))
-    : UNMEASURED;
 
-  // ---- リピート（同じ payer が2回以上）
-  const rep = await q1(store, 'SELECT COUNT(*) AS repeat_payers FROM (SELECT payer FROM receipts WHERE payer IS NOT NULL GROUP BY payer HAVING COUNT(*) >= 2)');
-  out.revenue.repeat_payers = rep !== null ? (num(rep.repeat_payers) || 0) : UNMEASURED;
+  out.revenue = measured ? {
+    all_time: agg(external),
+    window: Object.assign(agg(win), { by_source: Object.entries(win.reduce((a, r) => { a[r.source] = (a[r.source] || 0) + (Number(r.amount) || 0); return a; }, {})).map(([s, a]) => ({ source: s, amount: Number(a.toFixed(6)) })) }),
+    by_product: Object.entries(external.reduce((a, r) => { const k = r.source || 'unknown'; a[k] = a[k] || { n: 0, amt: 0 }; a[k].n++; a[k].amt += Number(r.amount) || 0; return a; }, {})).map(([k, v]) => ({ product: k, transactions: v.n, amount_usdc: Number(v.amt.toFixed(6)) })),
+    repeat_payers: repeatOf(external),
+    recent_payments: external.slice(0, 20).map((r) => ({ on: r.occurred_on, product: r.source, amount: Number(r.amount) || 0, currency: r.currency || 'USDC', payer: r.payer || null, tx_id: r.external_id || null, fee: Number(r.fee) || 0 })),
+    self_test: Object.assign(agg(selfTest), { note: '売上に数えない（我々自身のテスト購入）。ここに分離して出す。' }),
+  } : { all_time: { total: UNMEASURED, why: 'receipts を読めませんでした（DB 未接続 or テーブル未作成）' }, window: { total: UNMEASURED }, by_product: UNMEASURED, recent_payments: UNMEASURED };
 
-  // ---- 決済の明細（txid は external_id）
-  const tx = await qa(store, 'SELECT occurred_on, source, amount, currency, payer, external_id, COALESCE(fee,0) AS fee FROM receipts ORDER BY occurred_on DESC LIMIT 20');
-  out.revenue.recent_payments = tx !== null
-    ? tx.map((r) => ({ on: r.occurred_on, product: r.source, amount: Number(r.amount) || 0, currency: r.currency || 'USDC', payer: r.payer || null, tx_id: r.external_id || null, fee: Number(r.fee) || 0 }))
-    : UNMEASURED;
+  // 台帳（basis）との突き合わせ。独立した2経路が一致しなければ、どちらかが間違っている。
+  const led = await q1(store, "SELECT SUM(CASE WHEN basis='self_test' THEN 1 ELSE 0 END) AS st_n, SUM(CASE WHEN basis='self_test' THEN amount ELSE 0 END) AS st_amt, SUM(CASE WHEN basis<>'self_test' THEN 1 ELSE 0 END) AS ex_n, SUM(CASE WHEN basis<>'self_test' THEN amount ELSE 0 END) AS ex_amt FROM ledger WHERE kind='revenue'");
+  out.cross_check = led ? {
+    ledger_external: { transactions: num(led.ex_n) || 0, total: Number((num(led.ex_amt) || 0).toFixed(6)) },
+    ledger_self_test: { transactions: num(led.st_n) || 0, total: Number((num(led.st_amt) || 0).toFixed(6)) },
+    agree: measured ? ((num(led.ex_amt) || 0) === (out.revenue.all_time.total || 0)) : UNMEASURED,
+    note: 'receipts と ledger の外部合計が一致すれば二重の裏取り。食い違ったら receipts を正としつつ原因を調べる。',
+  } : UNMEASURED;
 
-  // ---- コストと純利益（手数料・原価）
+  const fees = (measured && out.revenue.all_time.fees) || 0;
+  const gross = measured ? out.revenue.all_time.total : null;
   const cost = await qa(store, "SELECT source, SUM(amount) AS amount FROM ledger WHERE kind='cost' AND occurred_on >= ? GROUP BY source", since);
-  const fees = out.revenue.all_time && num(out.revenue.all_time.fees) != null ? num(out.revenue.all_time.fees) : 0;
-  const gross = out.revenue.all_time && num(out.revenue.all_time.total) != null ? num(out.revenue.all_time.total) : null;
-  const hardCost = cost !== null ? sum(cost, 'amount') : null;
+  const hardCost = cost !== null ? Number(sum(cost, 'amount').toFixed(6)) : null;
   out.costs = {
     payment_fees_all_time: fees,
     other_costs_window: hardCost === null ? UNMEASURED : hardCost,
@@ -84,7 +110,6 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
   };
   out.net_profit = (gross == null || hardCost === null) ? UNMEASURED : Number((gross - fees - hardCost).toFixed(6));
 
-  // ---- 需要の計器（売上ではない。無料枠の利用数）
   const free = await qa(store, "SELECT key, value FROM settings WHERE key LIKE 'freehits:%'");
   out.demand = {
     free_samples_used: free === null ? UNMEASURED : free.map((r) => ({ day: String(r.key).replace('freehits:', ''), uses: Number(r.value) || 0 })),
@@ -92,7 +117,6 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
     note: '無料枠はモデルを使わない決定的品目のみ。売上には計上しない（需要の計器）。',
   };
 
-  // ---- 効率（AI 利用量・実行）
   const ai = await q1(store, 'SELECT COUNT(*) AS calls, SUM(COALESCE(neurons,0)) AS neurons FROM ai_usage WHERE day >= ?', since);
   out.efficiency = {
     ai_calls_window: ai ? (num(ai.calls) || 0) : UNMEASURED,
@@ -100,7 +124,6 @@ export async function kpiReport(store, { days = 7, now = new Date() } = {}) {
     ai_daily_call_budget: 'AI_DAILY_CALL_BUDGET（既定300）で上限。超過時は budgetGuard が推論を止める。',
   };
 
-  // ---- 測れないもの（正直に列挙し、測り方を書く）
   out.unmeasured = [
     gap('外部からの商品発見数', 'CDP Bazaar / agentic.market / Agent402 の discovery を日次で検索し、自ホストのヒット数を記録する'),
     gap('外部からの適格な訪問数', 'Cloudflare Analytics（GraphQL）で /api/x402/* と /api/free/* のユニーク訪問を日次で取得する（未接続）'),
@@ -121,11 +144,13 @@ export function kpiText(k) {
   L.push(`Wealth Agent KPI (${k.version}) ${k.at}`);
   L.push(`窓: 直近${k.window.days}日（${k.window.since} 以降）`);
   L.push('');
-  L.push('■ 売上（外部の決済のみ）');
+  L.push('■ 売上（外部の買い手の決済のみ）');
   if (at && typeof at.total === 'number') {
     L.push(`  累計: ${at.total} / ${at.transactions}件 / 買い手 ${at.unique_payers}人 / 手数料 ${at.fees}`);
     L.push(`  初回 ${at.first_paid_on || '-'} → 直近 ${at.last_paid_on || '-'}`);
   } else L.push(`  累計: ${UNMEASURED}`);
+  const st = k.revenue && k.revenue.self_test;
+  if (st) L.push(`  自己テスト（売上に数えない）: ${st.total} / ${st.transactions}件`);
   L.push(`  純利益: ${k.net_profit === UNMEASURED ? UNMEASURED : k.net_profit}`);
   L.push('');
   L.push(`■ 測れていないもの（${k.unmeasured.length}件）`);

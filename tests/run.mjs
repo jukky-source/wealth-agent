@@ -1175,6 +1175,14 @@ await test('X37', 'KPI: 測れない値を捏造せず「未測定」と測り�
   // 売上の定義が出典つきで明示されている（自己的購入を数えないため）
   assert.ok(/receipts/.test(r.source_of_truth));
   assert.ok(/外部の買い手/.test(r.counts_as_revenue));
+  // 自己テスト購入を売上に混ぜない（実装が規律に違反していた箇所の回帰テスト）
+  const { isSelfTest, splitReceipts, SELF_TEST_PAYERS } = await import('../src/agent/kpi.js');
+  assert.equal(isSelfTest({ source: 'self_test', payer: '0xabc' }), true, 'self_test は売上ではない');
+  assert.equal(isSelfTest({ source: 'x402', payer: SELF_TEST_PAYERS[0] }), true, '既知のテスト wallet も除外');
+  assert.equal(isSelfTest({ source: 'x402', payer: '0xDEADBEEF' }), false, '外部の買い手は売上');
+  const sp = splitReceipts([{ source: 'x402', payer: '0x1', amount: 0.001 }, { source: 'self_test', payer: '0x2', amount: 9 }, { source: 'x402', payer: SELF_TEST_PAYERS[0], amount: 5 }]);
+  assert.equal(sp.external.length, 1);
+  assert.equal(sp.selfTest.length, 2);
 });
 
 console.log(`\n
