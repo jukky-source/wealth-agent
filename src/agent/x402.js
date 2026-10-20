@@ -817,11 +817,16 @@ export function priceTagHtml(priced) {
 // ---------------------------------------------------------------------------
 export function llmsTxt(origin = '', env = {}) {
   const o = String(origin || '').replace(/\/$/, '');
-  // extra 棚（X402_EXTRA_CATALOG）も載せる。env を落とすと本番で静的22品しか出ない。
-  const items = allItems(env || {});
+  // 品目は discoveryFeed(env)（カタログ JSON と同じ源）から取る。extra 棚の混入方法はここが唯一の正。
+  let items = [];
+  try {
+    const feed = discoveryFeed(env);
+    items = ((feed && feed.items) || []).filter((it) => it && it.sellable !== false).map((it) => ({ resource: String(it.resource || '').split('/').pop(), price_usdc: it.price_usdc != null ? it.price_usdc : (it.price_atomic || 0), description: it.description || '' }));
+  } catch { items = []; }
+  if (!items.length) items = allItems(env || {}).map((it) => ({ resource: it.resource, price_usdc: it.price_usdc, description: it.description, free_tier: it.free_tier }));
   const usd = (it) => { const v = (it.price_usdc || 0) / 1e6; return '$' + (v < 0.01 ? v.toFixed(3) : v.toFixed(2)); };
   const first = (d) => { const s = String(d || '').split('. ')[0]; return s.length > 180 ? s.slice(0, 177) + '...' : s; };
-  const name = (it) => (LISTING[it.resource] && LISTING[it.resource].name) ? LISTING[it.resource].name : it.label_ja;
+  const name = (it) => (LISTING[it.resource] && LISTING[it.resource].name) ? LISTING[it.resource].name : (it.label_ja || it.resource);
   const L = [];
   L.push('# Wealth Agent - machine-payable API storefront');
   L.push('');
