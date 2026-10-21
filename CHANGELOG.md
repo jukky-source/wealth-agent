@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.0.8 — 2026-10-21
+
+- Venue ledger measured: Circle Discovery API (`api.circle.com/v2/x402/discovery/resources`, keyless) probed for our host; PayAPI Market re-classified manual_form (read-only public API, free listing form).
 ## v1.0.7 — 2026-10-21
 
 - Venue ledger +8 channels mined from awesome-agentic-commerce with live probes: PayAPI Market (free listing, API-based), Onyx Bazaar (CDP-derived, not indexed yet), x402station, AgentZone (ERC-8004), Circle Discovery API, gold-402 (PR), Pyrimid, stablecoin.com 402.

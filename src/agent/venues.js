@@ -20,9 +20,9 @@ export const BIG_VENUES = [
     id: 'payapi_market', name: 'PayAPI Market', kind: 'x402_market',
     url: 'https://payapi.market/', submit: 'https://payapi.market/',
     reach: 'medium', reach_note: 'x402 専用マーケット。Listing is free・売上100%還元を謳う',
-    cost_usd: 0, kyc: false, registrable: 'api', auto: true, fit: 1.0,
-    state: 'not_listed', src: 'search',
-    note: '2026-10-21 実測: サイトに /api/marketplace と /api/listings を確認。出品 API の仕様確認が次の手。',
+    cost_usd: 0, kyc: false, registrable: 'manual_form', auto: false, fit: 1.0,
+    state: 'manual_form', src: 'self_measured',
+    note: '2026-10-21 実測: 公開 API は読み取り専用（GET /agent/list,/agent/search,/agent/get）— 出品はサイトのフォーム（人タップ1件・掲載無料・売上100%）。',
   },
   {
     id: 'onyx_bazaar', name: 'Onyx Bazaar', kind: 'x402_market',
@@ -53,8 +53,8 @@ export const BIG_VENUES = [
     url: 'https://www.circle.com/blog/discover-the-whole-agent-marketplace-in-one-call', submit: 'クロール型',
     reach: 'medium', reach_note: 'Circle の keyless Discovery API — USDC を受ける x402 サービスを1コールで発見',
     cost_usd: 0, kyc: false, registrable: 'auto', auto: true, fit: 1.0,
-    state: 'unknown', src: 'self_measured',
-    note: '2026-10-21 実測: 推定エンドポイントは 404。正規の発見 API の所在を次回特定（自店索引の有無を確認する）。',
+    state: 'not_listed', src: 'self_measured',
+    note: '2026-10-21 実測: 正規エンドポイント api.circle.com/v2/x402/discovery/resources（キーレス・自店索引 0 件）。agents.circle.com/services がそのカタログ面。',
   },
   {
     id: 'gold_402', name: 'gold-402 (24K Labs)', kind: 'directory',
