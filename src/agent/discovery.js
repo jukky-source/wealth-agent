@@ -21,9 +21,10 @@ export function listingSlug(resource) {
 }
 
 /** /.well-known/x402 と /.well-known/x402.json が返す中身（V2 マニフェスト）。 */
-export function discoveryManifest(env = {}, origin = '') {
+export function discoveryManifest(env = {}, origin = '', opts = {}) {
+  const venue = opts.venue ? `?venue=${opts.venue}` : '';
   const items = x402Catalog(env).map((i) => ({
-    resource: `${origin}/api/x402/${i.resource}`,
+    resource: `${origin}/api/x402/${i.resource}${venue}`,
     method: METHOD,
     description: i.description,
     price: i.price_label,

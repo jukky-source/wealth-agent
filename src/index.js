@@ -204,6 +204,11 @@ export default {
         return new Response(JSON.stringify(body, null, 2), { status: 200, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'public, max-age=300', 'access-control-allow-origin': '*' } });
       }
       const { discoveryManifest } = await import('./agent/discovery.js');
+      if (url.pathname === '/api/x402/catalog.json') {
+        // 当店自身の販売面: 買い手の入口 URL に venue タグを焼く（帰属計測用）。
+        // /.well-known/x402.json は canonical のまま（X49・x402scan の発見面）。
+        return json(discoveryManifest(env, url.origin, { venue: 'catalog' }), 200, { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=300' });
+      }
       return json(discoveryManifest(env, url.origin), 200, { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=300' });
     }
     // 有料ルートの機械可読な契約（x402scan / @agentcash/discovery はここを読む）。

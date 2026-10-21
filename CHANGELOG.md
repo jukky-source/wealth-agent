@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.0.3 — 2026-10-21
+
+- Face split: `/api/x402/catalog.json` tags buyer-entry resource URLs with `?venue=catalog` for attribution, while `/.well-known/x402.json` stays canonical for indexers (x402scan, CDP crawlers).
 ## v1.0.2 — 2026-10-21
 
 - 402 quote body carries a machine-readable `vendor` block (docs, catalog, free samples, verification surface, refund policy, pay-to).
