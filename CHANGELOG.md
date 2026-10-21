@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.5 — 2026-10-21
+
+- Signed responses: every paid response now carries an HMAC-SHA256 `proof` block (resource, timestamp, input/output hashes, signature) with a public `POST /api/verify` endpoint — integrators can verify offline. Motivated by seller intel from r/AI_Agents (verification is what won integrators, not price).
+- Intel sources: r/AI_Agents added to the agent's own Reddit scanning.
 ## v1.0.4 — 2026-10-21
 
 - Async settlement callbacks now record `x402:<venue>:<resource>` attribution when the facilitator echoes venue/resource (sync path already tagged).

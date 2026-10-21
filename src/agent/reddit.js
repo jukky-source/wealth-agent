@@ -16,6 +16,7 @@ import { perkSignals, isBeneficial, perkFrom } from './perks.js';
 
 /** ジャンル横断のサブレ一覧。genre ごとに「なぜ見るか」を持つ。 */
 export const SUBREDDITS = [
+  { name: 'AI_Agents', genre: 'AIエージェント経済', why: 'x402 販売者の実体験・発見の壁の一次情報（2026-10-21 実測: 売り手スレッドから署名・発見の知見を取得済み）' },
   { name: 'beermoney', genre: '現金化', why: '少額でも実際に現金化できた報告が集まる。$表記つきの実績が濃い' },
   { name: 'sidehustle', genre: '副業', why: '「これで月$X入った」の一次報告。無料で始められるものが混ざる' },
   { name: 'passive_income', genre: '不労', why: '放置で入る仕組みの共有。原価0のものだけ拾う' },

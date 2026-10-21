@@ -217,6 +217,13 @@ export default {
       return json(openapi(env, url.origin), 200, { 'access-control-allow-origin': '*', 'cache-control': 'public, max-age=300' });
     }
 
+    // 応答署名の検証面（統合者がオフライン検証の代わりにここで検証できる）。
+    if (url.pathname === '/api/verify' && request.method === 'POST') {
+      const { verifyBlock } = await import('./agent/proof.js');
+      let b = {}; try { b = await request.json(); } catch { }
+      return json({ ok: true, ...(await verifyBlock(env, b)) }, 200, { 'access-control-allow-origin': '*' });
+    }
+
     // AI クローラ向けの説明。人手を介さずに「見つけてもらう」ための面。
     if (url.pathname === '/llms.txt') {
       const origin = url.origin;
@@ -1400,6 +1407,9 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       }
       // 確定した注文は、その場で作って同じ応答で渡す（買い手を待たせない・取りこぼさない）。
       const done = await fulfillOrder(exItem ? exItem.op : resource, order.input, { router: deps.router, research: deps.research, store: deps.store });
+      // 応答の証明: すべての有料応答に HMAC 署名を添える（統合者がオフライン検証できる）。
+      // 出典: r/AI_Agents 実売り手「integrator を決めたのは署名とオフライン検証可能性」(2026-10-21 調査)。
+      try { const { proofBlock } = await import('./agent/proof.js'); done.proof = await proofBlock(env, resource, order.input, done); } catch { }
       const job = await createJob(deps.store, {
         title: `${item?.description || resource}（x402 受注）`, price: settled.amount,
         state: done.ok ? 'delivered' : 'in_progress', thread_id: body.thread_id || null,
