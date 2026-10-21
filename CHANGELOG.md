@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.4 — 2026-10-21
+
+- Async settlement callbacks now record `x402:<venue>:<resource>` attribution when the facilitator echoes venue/resource (sync path already tagged).
+- Daily IndexNow pings cover discovery faces: /agents.json, /x402-index, /grow, /api/skills/catalog.json.
 ## v1.0.3 — 2026-10-21
 
 - Face split: `/api/x402/catalog.json` tags buyer-entry resource URLs with `?venue=catalog` for attribution, while `/.well-known/x402.json` stays canonical for indexers (x402scan, CDP crawlers).

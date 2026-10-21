@@ -22,6 +22,11 @@ export const PUBLIC_PATHS = [
   '/api/free/diff',
   '/api/free/csv-json',
   '/api/free/url-meta',
+  // 発見・成長の面（robots.txt の推奨読み順と同じ組）。毎日の IndexNow ping で検索面へ。
+  '/agents.json',
+  '/x402-index',
+  '/grow',
+  '/api/skills/catalog.json',
 ];
 
 export function indexNowKey(env) {

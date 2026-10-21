@@ -759,11 +759,19 @@ export const requiredHeader = (obj) => Buffer.from(j(obj)).toString('base64');
 /** facilitator からの非同期通知を、そのまま入金として扱える形に整える。 */
 export function receiptFromCallback(body = {}) {
   const b = body || {};
+  // 帰属: コールバックが venue/resource を伴う場合のみタグ形式（x402:<venue>:<resource>）。
+  // 無ければ旧形式 'x402' のまま（attribution.parseSource が両形式を読む）。
+  let _source = 'x402';
+  {
+    const _v = String(b.venue || '').trim().toLowerCase();
+    const _r = String(b.resource || b.product || '').trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 64);
+    if (/^[a-z0-9][a-z0-9_-]{0,31}$/.test(_v) && _r) _source = `x402:${_v}:${_r}`;
+  }
   const raw = Number(b.amount ?? b.maxAmountRequired ?? b.value ?? 0);
   const currency = String(b.currency || 'USDC').toUpperCase();
   const amount = currency === 'USDC' ? Number((raw / 1e6).toFixed(6)) : raw;  // 最小単位→表示単位
   return {
-    source: 'x402',
+    source: _source,
     external_id: String(b.transaction || b.txHash || b.id || b.paymentId || ''),
     amount, currency,
     fee: Number(b.fee || 0),
