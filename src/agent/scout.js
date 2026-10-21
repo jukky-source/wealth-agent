@@ -20,6 +20,7 @@ import { id as newId, nowIso, safeJson, j, round } from '../util.js';
 // 実測は probe の結果で更新される（推測で true にしない）。
 // ---------------------------------------------------------------------------
 export const SOURCES = [
+  { id: 'cloudflare_blog', url: () => 'https://blog.cloudflare.com/rss/', format: 'rss', parse: 'rss', source: 'https://blog.cloudflare.com/' },
   { id: 'hn_show', label: 'Hacker News (Show HN)', kind: 'launch', free: true, needs_key: false,
     url: (n) => `https://hn.algolia.com/api/v1/search_by_date?tags=show_hn&hitsPerPage=${n}`,
     format: 'json', parse: 'hn', source: 'https://hn.algolia.com/api' },

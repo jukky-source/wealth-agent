@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.7 — 2026-10-21
+
+- Venue ledger +8 channels mined from awesome-agentic-commerce with live probes: PayAPI Market (free listing, API-based), Onyx Bazaar (CDP-derived, not indexed yet), x402station, AgentZone (ERC-8004), Circle Discovery API, gold-402 (PR), Pyrimid, stablecoin.com 402.
+- Scout sources: Cloudflare blog RSS added (x402 infra news line).
 ## v1.0.6 — 2026-10-21
 
 - `proof` now ships inside the paid response body; `output_hash` signs the deliverable (offline-verification contract: input_hash=HMAC(request body), output_hash=HMAC(deliverable)).
