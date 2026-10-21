@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.6 — 2026-10-21
+
+- `proof` now ships inside the paid response body; `output_hash` signs the deliverable (offline-verification contract: input_hash=HMAC(request body), output_hash=HMAC(deliverable)).
+- llms.txt advertises signed responses and `POST /api/verify`.
 ## v1.0.5 — 2026-10-21
 
 - Signed responses: every paid response now carries an HMAC-SHA256 `proof` block (resource, timestamp, input/output hashes, signature) with a public `POST /api/verify` endpoint — integrators can verify offline. Motivated by seller intel from r/AI_Agents (verification is what won integrators, not price).

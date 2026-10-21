@@ -859,6 +859,7 @@ export async function llmsTxt(origin = '', env = {}) {
   L.push('- Paid: POST ' + (o || '') + '/api/x402/<resource> with a JSON body. Unpaid requests get 402 + x402 payment terms (X-PAYMENT header). Any x402 client or the CDP Facilitator works.');
   L.push('- Free sample: GET ' + (o || '') + '/api/free/<resource> (per-IP daily limit, same input schema, marked as machine-generated where AI is used).');
   L.push('- Machine catalog: ' + (o || '') + '/.well-known/x402.json - Discovery: ' + (o || '') + '/api/x402/discovery/resources');
+  L.push('- Signed responses: every paid response carries an HMAC-SHA256 proof block (input/output hashes + signature). Verify offline or POST it to /api/verify.');
   L.push('');
   L.push('## Catalog');
   L.push('');

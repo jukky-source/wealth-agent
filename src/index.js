@@ -1409,7 +1409,7 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
       const done = await fulfillOrder(exItem ? exItem.op : resource, order.input, { router: deps.router, research: deps.research, store: deps.store });
       // 応答の証明: すべての有料応答に HMAC 署名を添える（統合者がオフライン検証できる）。
       // 出典: r/AI_Agents 実売り手「integrator を決めたのは署名とオフライン検証可能性」(2026-10-21 調査)。
-      try { const { proofBlock } = await import('./agent/proof.js'); done.proof = await proofBlock(env, resource, order.input, done); } catch { }
+      try { const { proofBlock } = await import('./agent/proof.js'); done.proof = await proofBlock(env, resource, order.input, done.deliverable === undefined ? null : done.deliverable); } catch { }
       const job = await createJob(deps.store, {
         title: `${item?.description || resource}（x402 受注）`, price: settled.amount,
         state: done.ok ? 'delivered' : 'in_progress', thread_id: body.thread_id || null,
@@ -1427,6 +1427,7 @@ if (url.pathname === '/api/today' || url.pathname === '/api/today/public') {
         ok: done.ok, resource, status: done.ok ? 'delivered' : 'paid_not_delivered', job_id: job?.id || null,
         receipt_id: receipt?.receipt?.id || null, tx: settled.tx || null,
         deliverable: done.ok ? done.deliverable : null,
+        proof: done.proof || null,
         error: done.ok ? null : done.error,
         note: done.ok ? '支払いを確認し、納品しました。' : '支払いは確認しましたが納品に失敗しました。担当者が返金か再納品を行います。',
       }), { status: done.ok ? 200 : 502, headers: { 'content-type': 'application/json', 'PAYMENT-RESPONSE': responseHeader(settled.response), ...PAY_CORS } });
