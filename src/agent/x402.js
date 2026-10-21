@@ -507,6 +507,18 @@ export function challenge(resource, env = {}, { origin = '', feePayer = null, me
       error: 'payment required',
       resource: { url: `${origin}${env.X402_TESTNET === '1' ? '/api/x402-testnet/' : '/api/x402/'}${item.resource}`, name: (LISTING[item.resource] || {}).name || item.resource, description: clampDesc((LISTING[item.resource] || item).description), mimeType: 'application/json', serviceName: (LISTING[item.resource] || {}).serviceName || 'Wealth Agent', tags: (LISTING[item.resource] || {}).tags || ['x402'] },
       accepts,
+      // 買い手側の信頼面（機械可読）。bazaar 拡張のスキーマには触れない — 兄弟フィールドとして追加。
+      vendor: {
+        name: 'Wealth Agent',
+        homepage: `${origin}/`,
+        docs: `${origin}/llms.txt`,
+        catalog: `${origin}/api/x402/catalog.json`,
+        free_samples: `${origin}/api/free/<resource>`,
+        free_sample_note: 'catalog items with free_tier:true are sampleable there without payment',
+        verification: `${origin}/api/discwatch/public`,
+        refund_policy: 'delivery failures are refunded or re-delivered — POST /api/contact',
+        pay_to: c.payTo,
+      },
     },
   };
 }
