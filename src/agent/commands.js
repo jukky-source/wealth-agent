@@ -968,6 +968,24 @@ async function askAi(text, d) {
   try {
     const character = await d.engine.getCharacter();
     const m = await boardMetrics(d);
+    // 収集済みの情報を会話の文脈へ。データがあるのに「そんな機能ない」と答えさせない。
+    let intel = '';
+    try {
+      const { latestDigest } = await import('./snsdigest.js');
+      const dg = await latestDigest(d.store);
+      if (dg && dg.text) intel += `\n# 最新の収集報告（X・ニュース巡回・自動収集済み）\n${String(dg.text).slice(0, 1800)}`;
+    } catch { }
+    try {
+      const tw = await import('./twitter.js');
+      const s = await tw.twitterSummary(d.store);
+      const rows = Array.isArray(s.rows) ? s.rows.slice(0, 8) : [];
+      intel += `\n# X 巡回の状態\nウォッチ: ${JSON.stringify(s.watch || [])} / 検索クエリ: ${JSON.stringify(s.queries || [])}`;
+      if (rows.length) intel += `\n直近の X 収集: ${rows.map((r) => `- ${r.title || r.text || r.url || '?'}`).join(' / ')}`;
+    } catch { }
+    try {
+      const rows = await d.store.all('SELECT title, source_id FROM scout_findings ORDER BY score DESC LIMIT 12');
+      if (rows && rows.length) intel += `\n# スカウト収集の最新トピック（HN・Reddit・lobsters・Cloudflare blog ほか）\n${rows.map((r) => `- ${r.title} [${r.source_id}]`).join('\n')}`;
+    } catch { }
     const prompts = await import('../ai/prompts.js');
     const r = await d.router.complete({
       role: 'chat',
@@ -978,7 +996,8 @@ async function askAi(text, d) {
 実測収益: ${m.led.revenue.measured} / 推定: ${m.led.revenue.total_estimated}
 目標: ${m.mission?.title || '未設定'}
 # 指示
-短く、日本語で、次に何をするかまで書くこと。`,
+短く、日本語で、次に何をするかまで書くこと。
+上の文脈（収集報告・X 巡回・スカウト結果）を根拠に答えること。「そんな機能はない」と言う前に手持ちのデータで答え、無い場合は何が取得できて何が未接続か（例: X の検索は上流が認証必須で不可・トレンドとウォッチ中アカウントの投稿は可）を正直に説明する。`,
       user: text, maxTokens: 900, temperature: 0.6,
     });
     if (r && r.text && !r.fallback) return { reply: r.text, suggest: SUGGESTIONS };

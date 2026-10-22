@@ -1,5 +1,8 @@
 # Changelog
 
+## v1.0.9 — 2026-10-22
+
+- Chat brain fix: the owner-chat fallback now feeds collected intelligence into the LLM context (latest digest, X watch state, top scout findings) and answers from real data instead of claiming no capability; honest can/cannot explanation for unavailable upstreams.
 ## v1.0.8 — 2026-10-21
 
 - Venue ledger measured: Circle Discovery API (`api.circle.com/v2/x402/discovery/resources`, keyless) probed for our host; PayAPI Market re-classified manual_form (read-only public API, free listing form).
