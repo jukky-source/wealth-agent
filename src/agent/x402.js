@@ -214,8 +214,8 @@ export const X402_CATALOG = [
   { resource: 'fx-rates', price_usdc: 1_000, free_tier: true, label_ja: '為替レート（仲値）', description: 'Foreign-exchange reference rates for a base currency and up to 12 target currencies, with the reference date and the source that answered. Primary path is the ECB-based frankfurter.dev feed; if it is unavailable the call falls back to a second provider and says so in the report rather than hiding the substitution. Currencies the source does not publish are listed in gaps. Use it to convert amounts, sanity-check an invoice, or settle a cross-currency budget.', unit: '件' },
   { resource: 'defi-tvl', price_usdc: 2_000, label_ja: 'DeFi の TVL', description: 'Total value locked read from DefiLlama: pass a protocol slug (for example aave) for that protocol TVL, or omit it to get the top chains ranked by TVL, or filter by one chain. Every figure is the aggregator value at the time of the call, with the source URL attached, and any missing section is listed in gaps. Use it for DeFi due diligence, chain comparison, or a quick read on where liquidity sits.', unit: '件' },
   { resource: 'dns-lookup', price_usdc: 1_000, free_tier: true, label_ja: 'DNS レコード照会', description: 'Resolve one hostname for one record type (A, AAAA, MX, TXT, NS, CNAME, SOA, CAA) over DNS-over-HTTPS, returning every record with its TTL, the resolver that answered and the DNS response code. It tries a second resolver before giving up, and when nothing comes back it says so with the rcode instead of reporting an empty success. Use it for email deliverability checks, domain ownership evidence, or pre-flight checks before calling an API.', unit: '件' },
-  { resource: 'crypto-hash', price_usdc: 500, label_ja: 'ハッシュ / HMAC 計算', description: 'Deterministic hashing on the server: SHA-256, SHA-384, SHA-512 or SHA-1 over your text, or HMAC with the same digests when you pass a key. Returns the lowercase hex digest and the input byte length; the HMAC key is never echoed back. Same input always gives the same digest, so any third party can recompute and verify it.', unit: '件' },
-  { resource: 'time-convert', price_usdc: 500, free_tier: true, label_ja: '時刻のタイムゾーン変換', description: 'Convert one instant into the local time of up to 12 IANA time zones at once, with the UTC offset in minutes for each, plus the Unix seconds and the canonical ISO-8601 UTC form. Daylight saving is handled by the runtime time-zone database, and an unknown zone is reported in gaps rather than skipped. Use it to schedule across regions, check business hours, or turn an ambiguous timestamp into an unambiguous one.', unit: '件' },
+  { resource: 'crypto-hash', price_usdc: 1_000, label_ja: 'ハッシュ / HMAC 計算', description: 'Deterministic hashing on the server: SHA-256, SHA-384, SHA-512 or SHA-1 over your text, or HMAC with the same digests when you pass a key. Returns the lowercase hex digest and the input byte length; the HMAC key is never echoed back. Same input always gives the same digest, so any third party can recompute and verify it.', unit: '件' },
+  { resource: 'time-convert', price_usdc: 1_000, free_tier: true, label_ja: '時刻のタイムゾーン変換', description: 'Convert one instant into the local time of up to 12 IANA time zones at once, with the UTC offset in minutes for each, plus the Unix seconds and the canonical ISO-8601 UTC form. Daylight saving is handled by the runtime time-zone database, and an unknown zone is reported in gaps rather than skipped. Use it to schedule across regions, check business hours, or turn an ambiguous timestamp into an unambiguous one.', unit: '件' },
   { resource: 'diligence-pack', price_usdc: 1_000_000, label_ja: '総合デューデリジェンス一式（大口・$1.00ちょうど）', description: 'One call, one consolidated due-diligence pack: (1) a read-only capability map of one public website or API - entry points, forms, MCP tools, auth behaviour, with the evidence behind every claim; (2) the on-chain balances of one EVM address, read from the chain at a stated block height with contract decimals read on-chain, not assumed. Give either target or both.', unit: '件' },
   { resource: 'brief', price_usdc: 10_000, label_ja: '出典つき調査ブリーフ', description: LISTING.brief.description, unit: '件' },
   { resource: 'data-clean', price_usdc: 5_000, label_ja: '表データの整形・検証', description: LISTING['data-clean'].description, unit: '件' },
@@ -362,11 +362,15 @@ export function overrides(env = {}) {
 function priceOf(item, env = {}) {
   if (env.X402_TESTNET === '1') { const n = Number(env.X402_TEST_AMOUNT); return Number.isFinite(n) && n >= 0 ? n : 0; }
   const ov = overrides(env).prices;
+  let p = item.price_usdc;
   if (ov && Object.prototype.hasOwnProperty.call(ov, item.resource)) {
     const v = Number(ov[item.resource]);
-    if (Number.isFinite(v) && v >= 0 && v <= item.price_usdc) return Math.round(v);
+    if (Number.isFinite(v) && v >= 0 && v <= item.price_usdc) p = Math.round(v);
   }
-  return item.price_usdc;
+  // CDP Bazaar の出品最低額は 1,000 atomic ($0.001)。これ未満の値札は validate で
+  // valid:false になり索引に入らない（実測: crypto-hash 100 / time-convert 500 が該当）。
+  // 自律価格レバー（grow）が下げても壊れないよう、売価の下限をここで保証する。
+  return p > 0 && p < 1000 ? 1000 : p;
 }
 
 /** 買う側に見せる値札。売れない状態なら理由も返す（隠さない）。 */
