@@ -662,6 +662,8 @@ export const OUTPUT_EXAMPLES = {
   'rea-report': { ok: true, resource: 'rea-report', status: 'delivered', deliverable: { kind: 'rea-report', summary: 'capability map ready', capabilities: [{ name: 'public API', evidence: '/api returns HTTP 200' }], undetermined: ['paid features'] } },
   random: { ok: true, resource: 'random', status: 'delivered', deliverable: { kind: 'random', summary: '3 values from drand round 6568084', values: [42, 7, 91], round: 6568084, randomness: '72a272594e58703b4f4605a0a74558e02f8284ed85bc44a0a04a94c85d4cabce', signature: '860abc15894f1f6305a0034e592c984c3b7a24c9231390ced079bb1ff659861a', derivation: 'value = min + (sha256 expanded hex mod (max-min+1))', verify: 'https://api.drand.sh/public/6568084' } },
   'onchain-balance': { ok: true, resource: 'onchain-balance', status: 'delivered', deliverable: { kind: 'onchain-balance', summary: 'balance read at block 52828013', block: 52828013, balances: [{ asset: 'native', symbol: 'ETH', raw: '4156903', decimals: 18, value: '0.000000000004156903' }], errors: [] } },
+  'crypto-hash': { ok: true, resource: 'crypto-hash', status: 'delivered', deliverable: { kind: 'crypto-hash', summary: 'SHA-256 を計算（32 バイト）', algo: 'sha256', digest: '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', input_bytes: 5, gaps: [] } },
+  'time-convert': { ok: true, resource: 'time-convert', status: 'delivered', deliverable: { kind: 'time-convert', summary: '2 ゾーンの現地時刻に変換（UTC 2026-10-20T09:00:00.000Z）', iso_utc: '2026-10-20T09:00:00.000Z', unix_ms: 1792486800000, unix_s: 1792486800, rows: [{ zone: 'UTC', local: 'Tuesday, October 20, 2026 at 9:00:00 AM UTC', offset_minutes: 0 }, { zone: 'Asia/Tokyo', local: 'Tuesday, October 20, 2026 at 6:00:00 PM JST', offset_minutes: 540 }], gaps: [] } },
 };
 const DELIVERABLE_PROPS = {
   brief: { kind: { type: 'string' }, summary: { type: 'string' }, findings: { type: 'array', items: {} }, gaps: { type: 'array', items: {} }, sources: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, url: { type: 'string' } } } } },
@@ -793,12 +795,24 @@ Object.assign(INPUT_SCHEMAS, {
   'csv-json': { type: 'object', required: ['data'], properties: { data: { type: 'string', description: 'CSV/TSV text or a JSON array of objects' }, to: { type: 'string', enum: ['json', 'csv'], description: 'Target format (optional; inferred when omitted)' } } },
   regex: { type: 'object', required: ['pattern', 'text'], properties: { pattern: { type: 'string', description: 'Regular expression (max 200 chars)' }, text: { type: 'string', description: 'Text to search (max 20,000 chars)' }, flags: { type: 'string', description: 'g, i, m, s, u, y (optional)' } } },
   diff: { type: 'object', required: ['a', 'b'], properties: { a: { type: 'string', description: 'Original text' }, b: { type: 'string', description: 'Changed text' } } },
+  'crypto-price': { type: 'object', properties: { symbols: { type: 'array', items: { type: 'string' }, description: 'Crypto symbols, up to 10 (default ["BTC","ETH"])' }, quote: { type: 'string', description: 'Quote currency (default usd)' } } },
+  'fx-rates': { type: 'object', properties: { base: { type: 'string', description: 'Base currency code, 3 letters (default USD)' }, symbols: { type: 'array', items: { type: 'string' }, description: 'Target currency codes (default JPY, EUR, GBP)' } } },
+  'defi-tvl': { type: 'object', properties: { protocol: { type: 'string', description: 'DefiLlama protocol slug, e.g. aave (omit for top chains)' }, chain: { type: 'string', description: 'Optional chain filter when protocol is omitted' }, limit: { type: 'integer', description: 'Max rows (default 10, cap 25)' } } },
+  'dns-lookup': { type: 'object', required: ['name'], properties: { name: { type: 'string', description: 'Hostname to resolve, e.g. example.com' }, type: { type: 'string', description: 'Record type (default A): A, AAAA, MX, TXT, NS, CNAME, SOA, CAA' } } },
+  'crypto-hash': { type: 'object', required: ['text'], properties: { text: { type: 'string', description: 'Text to hash (max 200,000 chars)' }, algo: { type: 'string', enum: ['sha256', 'sha384', 'sha512', 'sha1'], description: 'Digest algorithm (default sha256)' }, hmac_key: { type: 'string', description: 'Optional HMAC key; when given, returns HMAC instead (the key is never echoed back)' } } },
+  'time-convert': { type: 'object', properties: { at: { type: 'string', description: 'ISO-8601 instant or Unix milliseconds (default: now)' }, zones: { type: 'array', items: { type: 'string' }, description: 'IANA time zone names, up to 12 (default UTC, Asia/Tokyo, America/New_York)' } } },
 });
 Object.assign(INPUT_EXAMPLES, {
   'url-meta': { url: 'https://x402.org/' },
   'csv-json': { data: 'name,price\nA,100\nB,250', to: 'json' },
   regex: { pattern: 'ERROR (\\w+)', text: 'ERROR timeout\nINFO ok\nERROR io', flags: 'g' },
   diff: { a: 'line1\nline2\nline3', b: 'line1\nline2 changed\nline3\nline4' },
+  'crypto-price': { symbols: ['BTC', 'ETH', 'SOL'], quote: 'usd' },
+  'fx-rates': { base: 'USD', symbols: ['JPY', 'EUR'] },
+  'defi-tvl': { protocol: 'aave' },
+  'dns-lookup': { name: 'example.com', type: 'A' },
+  'crypto-hash': { text: 'hello', algo: 'sha256' },
+  'time-convert': { at: '2026-10-20T09:00:00Z', zones: ['UTC', 'Asia/Tokyo'] },
 });
 Object.assign(OUTPUT_EXAMPLES, {
   'url-meta': { kind: 'url-meta', status: 200, title: 'x402', description: 'Payment standard for the internet', links_count: 42, text_chars: 1830, took_ms: 240 },

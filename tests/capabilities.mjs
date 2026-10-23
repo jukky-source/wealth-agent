@@ -94,7 +94,7 @@ test('[C10] 途中再開・見張り・判定のAPIが配線されている', ()
   assert.match(read('public/app.js'), /openWatch/);
   assert.match(read('public/app.js'), /openMode/);
   assert.match(read('src/agent/commands.js'), /judgeOutcome/);
-  assert.match(read('public/sw.js'), /wa-v1[2-9]/);
+  assert.match(read('public/sw.js'), /const VERSION\s*=\s*'wa-[0-9a-z]+'/);
 });
 
 // ------------------------------------------------- 完了条件としての見張り（hold）
@@ -306,7 +306,7 @@ test('[C26] x402 は受け取り先が未設定なら売りに出さず、入金
   assert.equal(ch.configured, true);
   assert.equal(ch.body.accepts[0].payTo, EVM_TO);
   assert.equal(ch.body.accepts[0].scheme, 'exact');
-  assert.ok(ch.body.accepts[0].maxAmountRequired);
+  // v2 では maxAmountRequired は出さない（出すと facilitator が invalid_payment_requirements で棄却する。x402.js の注記参照）
   assert.ok(ch.body.accepts[0].amount);
   const w = parseWatch('入金が3万円に達したら教えて');
   assert.equal(w.metric, 'verified_revenue');
@@ -333,7 +333,7 @@ test('[C29] ネットワークは CAIP-2 で扱い、形式の違う受け取り
   assert.equal(withFee.configured, true);
   assert.equal(withFee.body.accepts[0].network, 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp');
   assert.equal(withFee.body.accepts[0].asset, SVM_TO);
-  assert.equal(withFee.body.accepts[0].amount, String(catalog({ X402_PAY_TO: EVM_TO, X402_NETWORK: 'solana' })[0].price_usdc));
+  assert.equal(withFee.body.accepts[0].amount, String(catalog({ X402_PAY_TO: EVM_TO, X402_NETWORK: 'solana' }).find((i) => i.resource === 'brief').price_usdc));
   assert.equal(withFee.body.accepts[0].extra.feePayer, 'EwWqGE4ZFKLofuestmU4LDdK7XM1N4ALgdZccwYugwGd');
 });
 
@@ -901,7 +901,9 @@ tests.push(['C75 Bazaar宣言とディスカバリ・フィードが仕様どお
   const f = discoveryFeed({ X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base' }, 'https://ex.test');
   const { catalog: cat75 } = await import('../src/agent/x402.js');
   __ck(f.x402Version === 2 && f.items.length === cat75({ X402_PAY_TO: '0x3291398dC7070472CF2ED2e757246d089760Ca91', X402_NETWORK: 'base' }).length, 'feed items=全品目');
-  __ck(f.items[0].metadata.input.properties.question, 'feed input schema');
+  const briefItem = f.items.find((i) => i.resource.endsWith('/brief'));
+  __ck(briefItem && briefItem.metadata.input.properties.question, 'feed input schema');
+  __ck(f.items.every((i) => i.metadata && i.metadata.input && i.metadata.input.type === 'object'), 'feed input schema on all items');
 }]);
 tests.push(['C76 MCPサーバがinitializeとtools/listに応答し、有料ツールを公開', async () => {
   const { handleMcp, toolList } = await import('../src/agent/mcp.js');
@@ -922,7 +924,7 @@ tests.push(['C77 未払いのMCP呼び出しは402とPAYMENT-REQUIREDを返す�
   __ck(res.status === 402, 'status 402');
   __ck(!!res.headers.get('PAYMENT-REQUIRED'), 'challenge header');
   const body = await res.json();
-  const px = String(catalog(env)[0].price_usdc);
+  const px = String(catalog(env).find((i) => i.resource === 'brief').price_usdc);
   __ck(body.error.code === -32402 && body.error.data.accepts[0].amount === px, 'challenge body');
 }]);
 
@@ -1048,15 +1050,17 @@ tests.push(['C86 発見面: /openapi.json が x402scan の discovery spec を満
     __ck(/^\d+\.\d{6}$/.test(pi.price.amount), path + ' price is decimal USD');
   }
   const brief = o.paths['/api/x402/brief'].post['x-payment-info'];
-  const briefUsd = (Number(catalog(env)[0].price_usdc) / 1e6);
+  const briefRow = cat86(env).find((i) => i.resource === 'brief');
+  const briefUsd = (Number(briefRow.price_usdc) / 1e6);
   __ck(brief.price.amount === briefUsd.toFixed(6), 'brief price matches the catalog');
   const m = discoveryManifest(env, 'https://example.test');
   __ck(m.x402Version === 2 && m.items.length === cat86(env).length, 'manifest lists all items');
   __ck(m.items[0].resource.startsWith('https://example.test/api/x402/'), 'absolute resource urls');
   __ck(m.payment.accounts_required === false && m.payment.api_keys_required === false, 'says no accounts/keys needed');
   __ck(Number(o.paths['/api/x402/brief'].post['x-payment-info'].price.amount) === briefUsd, 'openapi price is USD, not atomic units');
-  __ck(m.items[0].price_usdc === briefUsd && m.items[0].price_atomic === String(catalog(env)[0].price_usdc), 'manifest separates USD from atomic units');
-  __ck(m.items[0].price === `${Number(brief.price.amount).toFixed(2)} USDC`, 'manifest price label matches the openapi amount');
+  const mBrief = m.items.find((i) => i.resource.endsWith('/brief'));
+  __ck(mBrief.price_usdc === briefUsd && mBrief.price_atomic === String(briefRow.price_usdc), 'manifest separates USD from atomic units');
+  __ck(mBrief.price === `${Number(brief.price.amount).toFixed(2)} USDC`, 'manifest price label matches the openapi amount');
 }]);
 tests.push(['C87 停滞回収: 何時間も実行中のままの作業を拾い直し、試行上限なら理由つきで打ち切る', async () => {
   const { staleDecisions, reapStaleTasks } = await import('../src/engine/reaper.js');
