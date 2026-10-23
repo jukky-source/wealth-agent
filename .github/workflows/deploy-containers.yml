@@ -57,8 +57,5 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          for k in OWNER_TOKEN RUNNER_TOKEN GEMINI_API_KEY GROQ_API_KEY OPENROUTER_API_KEY CEREBRAS_API_KEY MISTRAL_API_KEY; do
-            v="${{ secrets.$k }}" 2>/dev/null || true
-          done
           [ -n "${{ secrets.OWNER_TOKEN }}" ] && printf '%s' "${{ secrets.OWNER_TOKEN }}" | npx wrangler secret put OWNER_TOKEN -c wrangler.containers.toml || true
           [ -n "${{ secrets.RUNNER_TOKEN }}" ] && printf '%s' "${{ secrets.RUNNER_TOKEN }}" | npx wrangler secret put RUNNER_TOKEN -c wrangler.containers.toml || true
